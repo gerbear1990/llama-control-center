@@ -1,0 +1,11 @@
+"""Portable core for Llama Control Center.
+
+This package intentionally avoids machine-specific defaults. Discovery comes
+from environment variables, PATH, standard per-OS app/cache locations, and the
+current project root.
+"""
+
+from .inventory import build_inventory
+from .profile_resolver import resolve_profiles
+
+__all__ = ["build_inventory", "resolve_profiles"]

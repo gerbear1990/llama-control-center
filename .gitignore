@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+
+# Local app state and logs
+*.log
+lcc-api-out.log
+lcc-api-err.log
+streamlit-out*.log
+streamlit-err*.log
+logs/
+chat_history/
+metrics.json
+
+# Local backups and scratch space
+backups/
+.sandbox-home/
+.sandbox-tmp/
+.claw/
+nul
+*.backup
+
+# Large local model artifacts
+*.gguf
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.onnx
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
