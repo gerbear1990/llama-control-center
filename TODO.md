@@ -16,3 +16,25 @@
 - [x] Store and display precise benchmark tokens/sec and other useful runtime measurements.
 - [x] Commit finished work to `gerbear1990/llama-control-center`.
 - [x] Generate a repository README with setup and run instructions.
+
+## Roadmap Candidates
+
+- [ ] Runtime cards should show binary location, API URL, and active port.
+- [ ] Runtime cards should check for runtime updates automatically.
+- [ ] Settings should let users choose stable releases or another update channel.
+- [ ] Runtime cards should include an update/apply button when an update is available.
+- [ ] Run a full UI pass for spacing, responsive layout, visual polish, and modern clean styling.
+- [ ] Draft model field should suggest compatible draft models for the selected profile.
+- [ ] Draft model workflow should optionally pull compatible draft models from Hugging Face.
+- [ ] Detect whether the Hugging Face CLI is installed and use it for pulls when available.
+- [ ] Add a main-page Hugging Face CLI widget:
+  - install option when missing
+  - detected version when present
+  - update availability check
+  - apply update button
+- [ ] Estimated speed should aim for high confidence when enough hardware/model data exists, then fall back to medium or low.
+- [ ] RAM detection should include DDR generation, speed, and estimated bandwidth where the OS exposes it.
+- [ ] VRAM detection should include memory generation, speed, and bandwidth where the GPU tooling exposes it.
+- [ ] RAM/VRAM speed and bandwidth should feed into tokens/sec estimates and fit scoring when useful.
+- [ ] Add a button to check Hugging Face for updates to the selected model.
+- [ ] Add full Ollama support so users can use Ollama as a preferred model/runtime source instead of Hugging Face.

@@ -142,6 +142,16 @@ The process manager only stops servers that this app started and recorded in
 its own state file. It does not scan for or kill arbitrary `llama-server`
 processes.
 
+## Acknowledgements
+
+This project is built around the local inference ecosystem created by projects
+such as `llama.cpp`, Ollama, LM Studio, vLLM, MLX, Hugging Face, FastAPI, and
+Uvicorn.
+
+The product direction was inspired in part by Alex Jones' `llama-panel`,
+`llmfit`, and `llmserve` projects. No source code from those repositories has
+been copied or vendored into this repository at this stage.
+
 ## Development
 
 Run tests:
