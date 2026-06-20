@@ -292,6 +292,36 @@ function modelMatches(model) {
   return [model.name, model.path, model.quant, model.source].join(' ').toLowerCase().includes(query);
 }
 
+function runtimeUrl(env) {
+  return env.api_url || env.details?.probe_url || '';
+}
+
+function runtimePort(env) {
+  const url = runtimeUrl(env);
+  if (!url) return '';
+  try {
+    const parsed = new URL(url);
+    if (parsed.port) return parsed.port;
+    return parsed.protocol === 'https:' ? '443' : '80';
+  } catch {
+    const match = String(url).match(/:(\d+)(?:\/|$)/);
+    return match ? match[1] : '';
+  }
+}
+
+function runtimeLocation(env) {
+  return env.binary_path || env.details?.python_module || 'Not found on disk';
+}
+
+function runtimeLine(label, value, extraClass = '') {
+  return `
+    <div class="runtime-line ${extraClass}">
+      <span>${escapeHtml(label)}</span>
+      <code title="${escapeHtml(value || '-')}">${escapeHtml(value || '-')}</code>
+    </div>
+  `;
+}
+
 function renderSummary() {
   const summary = state.inventory?.summary || {};
   $('#metric-runtimes').textContent = `${summary.available_environment_count ?? 0}/${summary.environment_count ?? 0}`;
@@ -519,13 +549,27 @@ function applyFitResultParams(result) {
 
 function renderRuntimes() {
   const envs = state.inventory?.environments || [];
-  $('#runtime-grid').innerHTML = envs.map((env) => `
-    <article class="runtime-card">
-      <span class="badge ${env.available ? 'ok' : 'warn'}">${env.available ? 'ready' : 'not found'}</span>
-      <strong>${escapeHtml(env.name)}</strong>
-      <small>${escapeHtml(env.version || env.api_url || env.binary_path || env.details?.probe_url || 'No endpoint detected')}</small>
-    </article>
-  `).join('') || '<div class="loading">No runtimes detected.</div>';
+  $('#runtime-grid').innerHTML = envs.map((env) => {
+    const url = runtimeUrl(env);
+    const port = runtimePort(env);
+    const warning = env.warnings?.[0] || env.details?.probe_error || '';
+    return `
+      <article class="runtime-card">
+        <div class="runtime-card-top">
+          <span class="badge ${env.available ? 'ok' : 'warn'}">${env.available ? 'ready' : 'not found'}</span>
+          <span class="runtime-kind">${escapeHtml(env.kind || env.id || 'runtime')}</span>
+        </div>
+        <strong>${escapeHtml(env.name)}</strong>
+        ${env.version ? `<small>${escapeHtml(env.version)}</small>` : ''}
+        <div class="runtime-facts">
+          ${runtimeLine('Location', runtimeLocation(env), env.binary_path ? '' : 'muted')}
+          ${runtimeLine(env.api_url ? 'URL' : 'Probe URL', url || 'Not configured', url ? '' : 'muted')}
+          ${runtimeLine('Port', port || 'Not configured', port ? '' : 'muted')}
+        </div>
+        ${warning ? `<p class="runtime-warning">${escapeHtml(warning)}</p>` : ''}
+      </article>
+    `;
+  }).join('') || '<div class="loading">No runtimes detected.</div>';
 }
 
 function statusBadge(profile) {

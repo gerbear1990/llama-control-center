@@ -616,12 +616,20 @@ textarea {
 }
 
 .runtime-card {
-  min-height: 116px;
+  min-height: 184px;
   padding: 14px;
   background: var(--surface);
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 9px;
+  min-width: 0;
+}
+
+.runtime-card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
 }
 
 .runtime-card strong {
@@ -633,6 +641,66 @@ textarea {
   line-height: 1.35;
   font-size: 12px;
   overflow-wrap: anywhere;
+}
+
+.runtime-kind {
+  color: var(--subtle);
+  font-size: 10px;
+  font-weight: 760;
+  text-transform: uppercase;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.runtime-facts {
+  display: grid;
+  gap: 6px;
+}
+
+.runtime-line {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 58px minmax(0, 1fr);
+  gap: 7px;
+  align-items: baseline;
+}
+
+.runtime-line span {
+  color: var(--subtle);
+  font-size: 10px;
+  font-weight: 780;
+  text-transform: uppercase;
+}
+
+.runtime-line code {
+  min-width: 0;
+  padding: 2px 5px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--text);
+  background: var(--surface-2);
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  font-size: 11px;
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.runtime-line.muted code {
+  color: var(--muted);
+}
+
+.runtime-warning {
+  margin: auto 0 0;
+  color: var(--amber);
+  font-size: 11px;
+  line-height: 1.35;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 .badge {

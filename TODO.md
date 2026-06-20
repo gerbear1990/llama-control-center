@@ -19,7 +19,7 @@
 
 ## Roadmap Candidates
 
-- [ ] Runtime cards should show binary location, API URL, and active port.
+- [x] Runtime cards should show binary location, API URL, and active port.
 - [ ] Runtime cards should check for runtime updates automatically.
 - [ ] Settings should let users choose stable releases or another update channel.
 - [ ] Runtime cards should include an update/apply button when an update is available.

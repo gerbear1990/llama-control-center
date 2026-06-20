@@ -4,10 +4,13 @@ This roadmap collects candidate features before they are designed and scheduled.
 Items here are not release promises; they are the working direction for the next
 passes.
 
+## Completed
+
+- Runtime cards show each runtime's binary/module location, API or probe URL,
+  and port. Added in `v0.1.1`.
+
 ## Runtime Management
 
-- Show each runtime's binary location, API URL, and active port on its runtime
-  card.
 - Add automatic runtime update checks.
 - Let users choose an update channel in settings, such as stable or another
   release stream when the runtime supports it.

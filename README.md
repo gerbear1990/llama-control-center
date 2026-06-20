@@ -10,6 +10,8 @@ variables, not in source code.
 ## Features
 
 - Detects local `llama.cpp`, WSL `llama.cpp`, Ollama, LM Studio, vLLM, and MLX.
+- Shows runtime binary/module location, API or probe URL, and port directly on
+  runtime cards.
 - Finds GGUF models from configured folders, common model folders, LM Studio,
   and Hugging Face cache locations.
 - Detects CPU model, core count, system memory, GPU, VRAM, and acceleration
