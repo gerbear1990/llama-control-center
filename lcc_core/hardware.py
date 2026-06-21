@@ -401,6 +401,63 @@ def _amd_data_rate(rev: int | None) -> int | None:
     return rate_map.get(rev)
 
 
+def _linux_lspci_bus_width(pci_bus: str, name: str, vendor: str | None) -> int | None:
+    """Guess bus width from GPU name for Linux lspci fallback."""
+    if not vendor:
+        return None
+    lowered = name.lower()
+    if vendor == "NVIDIA":
+        if any(m in lowered for m in ["rtx 4090", "rtx 4080 super", "rtx 4080", "rtx 3090 ti", "rtx 3090", "a100", "h100"]):
+            return 384
+        if any(m in lowered for m in ["rtx 4070", "rtx 3080 ti", "rtx 3080", "rtx 2080 ti", "rtx 2080", "titan rtx"]):
+            return 256
+        if any(m in lowered for m in ["rtx 4060", "rtx 3070", "rtx 3060", "rtx 2070", "gtx 1660", "gtx 1080", "gtx 1070"]):
+            return 192
+        if any(m in lowered for m in ["gt 1030", "gt 1050", "gtx 1650", "gtx 750"]):
+            return 128
+        if any(m in lowered for m in ["quadro", "tesla"]):
+            return 256
+    elif vendor == "AMD":
+        if any(m in lowered for m in ["rx 7900 xtx", "rx 7900 xt", "rx 6900 xt"]):
+            return 256
+        if any(m in lowered for m in ["rx 7800 xt", "rx 7700 xt", "rx 6800 xt", "rx 6800"]):
+            return 256
+        if any(m in lowered for m in ["rx 6700 xt", "rx 6600 xt", "rx 5700 xt"]):
+            return 256
+        if any(m in lowered for m in ["rx 6600", "rx 5600", "rx 5500"]):
+            return 128
+    elif vendor == "Intel":
+        if any(m in lowered for m in ["arc a770", "arc a750"]):
+            return 256
+        if any(m in lowered for m in ["arc a380"]):
+            return 128
+    return None
+
+
+def _linux_lspci_data_rate(vendor: str | None, bus_width: int | None) -> int | None:
+    """Guess data rate from vendor for Linux lspci fallback."""
+    if not vendor:
+        return None
+    lowered = vendor.lower()
+    if "nvidia" in lowered:
+        if bus_width == 384:
+            return 17500
+        if bus_width == 256:
+            return 16000
+        if bus_width == 192:
+            return 14000
+        if bus_width == 128:
+            return 12000
+    elif "amd" in lowered:
+        if bus_width == 256:
+            return 18000
+        if bus_width == 128:
+            return 16000
+    elif "intel" in lowered:
+        return 16000
+    return None
+
+
 def _gpu_vendor(name: str) -> str | None:
     lowered = name.lower()
     if "nvidia" in lowered or "geforce" in lowered or "quadro" in lowered or "rtx" in lowered:
@@ -550,12 +607,16 @@ def _mac_display_gpus() -> list[dict[str, Any]]:
             value = float(match.group(1))
             unit = match.group(2).lower()
             vram_bytes = int(value * (1024**3 if unit == "gb" else 1024**2))
+        vram_info = _guess_vram_specs(str(name), vendor, "", "", "")
         gpus.append(
             {
                 "index": idx,
                 "name": str(name),
                 "vram_total_bytes": vram_bytes,
                 "vram_free_bytes": None,
+                "vram_data_rate_mts": vram_info.get("data_rate_mts"),
+                "vram_bus_width_bits": vram_info.get("bus_width_bits"),
+                "vram_bandwidth_gbps": vram_info.get("bandwidth_gbps"),
                 "driver_version": None,
                 "backend": "system-profiler",
                 "vendor": vendor,
@@ -585,12 +646,23 @@ def _linux_lspci_gpus() -> list[dict[str, Any]]:
         if _is_virtual_display(name):
             continue
         vendor = _gpu_vendor(name)
+        pci_addr = re.match(r"^([0-9a-fA-F:.]+)", line)
+        pci_bus = pci_addr.group(1).split(":")[0] if pci_addr else ""
+        vram_total = None
+        vram_info = _guess_vram_specs(name, vendor, "", "", "")
+        vram_info["bus_width_bits"] = _linux_lspci_bus_width(pci_bus, name, vendor)
+        vram_info["data_rate_mts"] = _linux_lspci_data_rate(vendor, vram_info.get("bus_width_bits"))
+        if vram_info["bus_width_bits"] and vram_info["data_rate_mts"]:
+            vram_info["bandwidth_gbps"] = round(vram_info["bus_width_bits"] * vram_info["data_rate_mts"] / 1000, 1)
         gpus.append(
             {
                 "index": len(gpus),
                 "name": name,
-                "vram_total_bytes": None,
+                "vram_total_bytes": vram_total,
                 "vram_free_bytes": None,
+                "vram_data_rate_mts": vram_info.get("data_rate_mts"),
+                "vram_bus_width_bits": vram_info.get("bus_width_bits"),
+                "vram_bandwidth_gbps": vram_info.get("bandwidth_gbps"),
                 "driver_version": None,
                 "backend": "lspci",
                 "vendor": vendor,
