@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -444,6 +445,142 @@ class HuggingFaceMetadataTests(unittest.TestCase):
         self.assertIn("Gemma", query)
         self.assertIn("26B", query)
         self.assertNotIn("Q6_K_XL", query)
+
+
+class RuntimeUpdatesTests(unittest.TestCase):
+    def setUp(self) -> None:
+        from lcc_core import runtime_updates
+
+        self.runtime_updates = runtime_updates
+        self._orig_fetch = runtime_updates.fetch_latest_release
+        self._orig_cache_path = runtime_updates._cache_path
+
+        tmp_dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp_dir, ignore_errors=True)
+        fake_cache = Path(tmp_dir) / "runtime-updates.json"
+        runtime_updates._cache_path = lambda: fake_cache  # type: ignore[assignment]
+
+    def tearDown(self) -> None:
+        self.runtime_updates.fetch_latest_release = self._orig_fetch  # type: ignore[assignment]
+        self.runtime_updates._cache_path = self._orig_cache_path  # type: ignore[assignment]
+
+    def test_parse_version_handles_v_prefix_and_suffixes(self) -> None:
+        from lcc_core.runtime_updates import parse_version
+
+        self.assertEqual(parse_version("v1.2.3"), (1, 2, 3))
+        self.assertEqual(parse_version("b4500"), (4500,))
+        self.assertEqual(parse_version("1.2.3-rc1"), (1, 2, 3))
+        self.assertIsNone(parse_version("unknown"))
+        self.assertIsNone(parse_version(None))
+
+    def test_compare_versions(self) -> None:
+        from lcc_core.runtime_updates import compare_versions
+
+        self.assertEqual(compare_versions("1.2.3", "1.2.3"), 0)
+        self.assertLess(compare_versions("1.2.2", "1.2.3"), 0)
+        self.assertGreater(compare_versions("1.3.0", "1.2.99"), 0)
+        self.assertEqual(compare_versions(None, "1.0"), 0)
+        self.assertLess(compare_versions("b4400", "b4500"), 0)
+
+    def test_is_prerelease_tag(self) -> None:
+        from lcc_core.runtime_updates import is_prerelease_tag
+
+        self.assertTrue(is_prerelease_tag("v1.2.3-rc1"))
+        self.assertTrue(is_prerelease_tag("1.0.0-preview"))
+        self.assertFalse(is_prerelease_tag("v1.2.3"))
+        self.assertFalse(is_prerelease_tag(None))
+
+    def test_candidate_runtimes_filters_unsupported_and_dedupes(self) -> None:
+        from lcc_core.runtime_updates import _candidate_runtimes
+
+        envs = [
+            {"id": "llama.cpp", "version": "b4500"},
+            {"id": "llama.cpp", "version": "ignored-duplicate"},
+            {"id": "lm-studio", "version": "0.2.10"},
+            {"id": "ollama", "details": {"version": "0.3.0"}},
+            {"id": "vllm", "version": ""},
+        ]
+        candidates = _candidate_runtimes(envs)
+        self.assertEqual([item[0] for item in candidates], ["llama.cpp", "ollama"])
+
+    def test_check_runtime_updates_reports_update_when_newer(self) -> None:
+        from lcc_core.runtime_updates import check_runtime_updates
+
+        def fake_fetch(repo: str, channel: str, timeout: float = 1.0) -> dict:
+            return {
+                "ok": True,
+                "tag": "b4600",
+                "release_url": f"https://github.com/{repo}/releases/tag/b4600",
+                "error": None,
+            }
+
+        self.runtime_updates.fetch_latest_release = fake_fetch  # type: ignore[assignment]
+        result = check_runtime_updates(
+            [{"id": "llama.cpp", "version": "b4500"}],
+            channel="stable",
+            force_refresh=True,
+        )
+
+        self.assertEqual(result["channel"], "stable")
+        self.assertEqual(len(result["updates"]), 1)
+        info = result["updates"][0]
+        self.assertEqual(info["runtime_id"], "llama.cpp")
+        self.assertEqual(info["current_version"], "b4500")
+        self.assertEqual(info["latest_version"], "b4600")
+        self.assertTrue(info["update_available"])
+        self.assertEqual(info["release_url"], "https://github.com/ggml-org/llama.cpp/releases/tag/b4600")
+
+    def test_check_runtime_updates_no_update_when_current_is_higher(self) -> None:
+        from lcc_core.runtime_updates import check_runtime_updates
+
+        def fake_fetch(repo: str, channel: str, timeout: float = 1.0) -> dict:
+            return {"ok": True, "tag": "0.5.0", "release_url": "https://example.com", "error": None}
+
+        self.runtime_updates.fetch_latest_release = fake_fetch  # type: ignore[assignment]
+        result = check_runtime_updates(
+            [{"id": "ollama", "version": "0.6.0"}],
+            channel="stable",
+            force_refresh=True,
+        )
+        info = result["updates"][0]
+        self.assertFalse(info["update_available"])
+
+    def test_check_runtime_updates_records_fetch_errors(self) -> None:
+        from lcc_core.runtime_updates import check_runtime_updates
+
+        def fake_fetch(repo: str, channel: str, timeout: float = 1.0) -> dict:
+            return {"ok": False, "tag": None, "release_url": "https://example.com", "error": "timeout"}
+
+        self.runtime_updates.fetch_latest_release = fake_fetch  # type: ignore[assignment]
+        result = check_runtime_updates(
+            [{"id": "vllm", "version": "0.6.0"}],
+            force_refresh=True,
+        )
+        info = result["updates"][0]
+        self.assertFalse(info["update_available"])
+        self.assertIsNone(info["latest_version"])
+        self.assertEqual(info["notes"], "timeout")
+
+    def test_check_runtime_updates_uses_cache_on_second_pass(self) -> None:
+        from lcc_core.runtime_updates import check_runtime_updates
+
+        call_count = {"n": 0}
+
+        def fake_fetch(repo: str, channel: str, timeout: float = 1.0) -> dict:
+            call_count["n"] += 1
+            return {"ok": True, "tag": "b4600", "release_url": "https://example.com", "error": None}
+
+        self.runtime_updates.fetch_latest_release = fake_fetch  # type: ignore[assignment]
+        envs = [{"id": "llama.cpp", "version": "b4500"}]
+        check_runtime_updates(envs, force_refresh=True)
+        first_calls = call_count["n"]
+        self.assertEqual(first_calls, 1)
+
+        cached_result = check_runtime_updates(envs, force_refresh=False)
+        self.assertEqual(call_count["n"], first_calls)
+        info = cached_result["updates"][0]
+        self.assertEqual(info["latest_version"], "b4600")
+        self.assertTrue(info["update_available"])
 
 
 if __name__ == "__main__":

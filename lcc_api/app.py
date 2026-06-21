@@ -21,10 +21,11 @@ from lcc_core.hardware import detect_system_hardware
 from lcc_core.hf_metadata import fetch_model_info
 from lcc_core.inventory import build_inventory
 from lcc_core.profile_resolver import resolved_inventory, resolve_profiles
+from lcc_core.runtime_updates import check_runtime_updates
 from lcc_core.server_manager import list_servers, prepare_launch_command, server_logs, start_profile, stop_server
 
 
-app = FastAPI(title="Llama Control Center API", version="0.1.3")
+app = FastAPI(title="Llama Control Center API", version="0.2.0")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -63,6 +64,7 @@ class ConfigRequest(BaseModel):
     llama_server_path: str = ""
     llama_fit_params_path: str = ""
     extra_llama_args: list[str] = Field(default_factory=list)
+    update_channel: str = "stable"
 
 
 class EstimateRequest(BaseModel):
@@ -125,6 +127,27 @@ def post_inventory(request: InventoryRequest) -> dict[str, Any]:
     return build_inventory(
         project_root=request.project_root,
         model_dirs=[Path(path) for path in request.model_dirs] or None,
+    )
+
+
+@app.get("/api/runtime-updates")
+def get_runtime_updates() -> dict[str, Any]:
+    config = AppConfig.load()
+    inventory = build_inventory(model_dirs=[Path(path) for path in config.model_dirs] or None)
+    return check_runtime_updates(
+        inventory.get("environments") or [],
+        channel=config.update_channel or "stable",
+    )
+
+
+@app.post("/api/runtime-updates/refresh")
+def refresh_runtime_updates() -> dict[str, Any]:
+    config = AppConfig.load()
+    inventory = build_inventory(model_dirs=[Path(path) for path in config.model_dirs] or None)
+    return check_runtime_updates(
+        inventory.get("environments") or [],
+        channel=config.update_channel or "stable",
+        force_refresh=True,
     )
 
 

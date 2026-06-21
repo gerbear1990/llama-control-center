@@ -5,6 +5,7 @@ const state = {
   profiles: [],
   servers: [],
   meta: null,
+  runtimeUpdates: null,
   selectedProfileMode: null,
   selectedServerId: null,
   paramOverrides: {},
@@ -643,19 +644,33 @@ function applyFitResultParams(result) {
   return applied;
 }
 
+function runtimeUpdateFor(runtimeId) {
+  const updates = state.runtimeUpdates?.updates || [];
+  return updates.find((item) => item.runtime_id === runtimeId) || null;
+}
+
 function renderRuntimes() {
   const envs = state.inventory?.environments || [];
   const statusEl = $('#runtime-status');
+  const updates = state.runtimeUpdates?.updates || [];
+  const updateCount = updates.filter((item) => item.update_available).length;
   if (statusEl) {
     const available = envs.filter((env) => env.available).length;
+    const suffix = updateCount
+      ? ` ${updateCount} update${updateCount === 1 ? '' : 's'} available.`
+      : '';
     statusEl.textContent = envs.length
-      ? `${available} of ${envs.length} runtime${envs.length === 1 ? '' : 's'} available.`
+      ? `${available} of ${envs.length} runtime${envs.length === 1 ? '' : 's'} available.${suffix}`
       : 'No runtimes detected.';
   }
   $('#runtime-grid').innerHTML = envs.map((env) => {
     const url = runtimeUrl(env);
     const port = runtimePort(env);
     const warning = env.warnings?.[0] || env.details?.probe_error || '';
+    const update = runtimeUpdateFor(env.id || env.kind);
+    const updateBadge = update?.update_available
+      ? `<a class="badge update-badge" href="${escapeHtml(update.release_url || '#')}" target="_blank" rel="noopener noreferrer" title="Update available: ${escapeHtml(update.latest_version || '')} (you have ${escapeHtml(update.current_version || 'unknown')})">Update: v${escapeHtml(update.latest_version || '?')}</a>`
+      : '';
     return `
       <article class="runtime-card">
         <div class="runtime-card-top">
@@ -669,6 +684,7 @@ function renderRuntimes() {
           ${runtimeLine(env.api_url ? 'URL' : 'Probe URL', url || 'Not configured', url ? '' : 'muted')}
           ${runtimeLine('Port', port || 'Not configured', port ? '' : 'muted')}
         </div>
+        ${updateBadge}
         ${warning ? `<p class="runtime-warning">${escapeHtml(warning)}</p>` : ''}
       </article>
     `;
@@ -1021,6 +1037,7 @@ function renderSettings() {
   $('#settings-default-host').value = config.default_host || '127.0.0.1';
   $('#settings-default-port').value = config.default_port || 8080;
   $('#settings-default-backend').value = config.default_backend || 'llama.cpp';
+  $('#settings-update-channel').value = config.update_channel || 'stable';
   $('#settings-extra-args').value = listToLines(config.extra_llama_args);
 }
 
@@ -1076,6 +1093,7 @@ function collectSettings() {
     default_host: $('#settings-default-host').value.trim() || '127.0.0.1',
     default_port: Number($('#settings-default-port').value || 8080),
     default_backend: $('#settings-default-backend').value || 'llama.cpp',
+    update_channel: $('#settings-update-channel').value || 'stable',
     extra_llama_args: linesToList($('#settings-extra-args').value),
   };
 }
@@ -1120,6 +1138,7 @@ async function refresh() {
       loadDashboardResource('settings', '/api/config', (data) => { state.config = data; }),
       loadDashboardResource('hardware', '/api/system', (data) => { state.hardware = data; }),
       loadDashboardResource('meta', '/api/meta', (data) => { state.meta = data; }),
+      loadDashboardResource('runtime-updates', '/api/runtime-updates', (data) => { state.runtimeUpdates = data; }),
     ])).filter(Boolean);
 
     if (!state.selectedProfileMode && state.profiles.length) {
@@ -1132,7 +1151,7 @@ async function refresh() {
     if (failures.length) {
       const summary = failures.slice(0, 2).join('; ');
       const suffix = failures.length > 2 ? ` and ${failures.length - 2} more` : '';
-      setApiStatus(false, failures.length >= 6 ? 'API error' : 'API partial');
+      setApiStatus(false, failures.length >= 7 ? 'API error' : 'API partial');
       toast(`Refresh partial: ${summary}${suffix}`);
     } else {
       setApiStatus(true, 'API ready');
@@ -1143,6 +1162,25 @@ async function refresh() {
   } finally {
     $('#refresh-button').disabled = false;
   }
+}
+
+async function refreshRuntimeUpdates(trigger) {
+  await withBusy(trigger, async () => {
+    try {
+      const data = await api('/api/runtime-updates/refresh', { method: 'POST' });
+      state.runtimeUpdates = data;
+      renderRuntimes();
+      const updates = data.updates || [];
+      const available = updates.filter((item) => item.update_available).length;
+      if (!available) {
+        toast('All runtimes are up to date');
+      } else {
+        toast(`${available} runtime update${available === 1 ? '' : 's'} available`);
+      }
+    } catch (error) {
+      toast(`Update check failed: ${error.message}`);
+    }
+  });
 }
 
 async function prepareProfile(mode, trigger) {
@@ -1366,6 +1404,7 @@ function wireEvents() {
   applyTheme();
   enhanceTooltips();
   $('#refresh-button').addEventListener('click', refresh);
+  $('#check-updates-button').addEventListener('click', (event) => refreshRuntimeUpdates(event.currentTarget));
   $('#settings-button').addEventListener('click', openSettings);
   $('#settings-close-button').addEventListener('click', closeSettings);
   $('#settings-cancel-button').addEventListener('click', closeSettings);

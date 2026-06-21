@@ -675,6 +675,26 @@ textarea {
   font-weight: 760;
 }
 
+.panel-heading-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.update-badge {
+  align-self: flex-start;
+  margin-top: auto;
+  color: var(--green);
+  background: var(--badge-ok-bg);
+  border-color: var(--badge-ok-border);
+  text-decoration: none;
+}
+
+.update-badge:hover {
+  background: color-mix(in srgb, var(--green) 12%, var(--surface));
+  text-decoration: underline;
+}
+
 .runtime-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));

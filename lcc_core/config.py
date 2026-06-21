@@ -23,6 +23,7 @@ class AppConfig:
     llama_server_path: str = ""
     llama_fit_params_path: str = ""
     extra_llama_args: list[str] = field(default_factory=list)
+    update_channel: str = "stable"
 
     @classmethod
     def load(cls, path: str | Path | None = None) -> "AppConfig":
