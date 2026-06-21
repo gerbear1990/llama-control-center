@@ -30,7 +30,7 @@ from lcc_core.server_manager import list_servers, prepare_launch_command, start_
 from lcc_core.smart_tune import auto_tune_fit
 
 
-app = FastAPI(title="Llama Control Center API", version="0.6.2")
+app = FastAPI(title="Llama Control Center API", version="0.6.3")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 

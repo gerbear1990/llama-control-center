@@ -49,12 +49,12 @@ passes.
 - Smart fit auto-tune: greedy search over the memory estimator (GPU layers →
   context → KV cache type) that applies the highest safe-utilization config with a
   before/after fit + speed summary and per-change rationale. Rejects near-limit and
-  unsized-VRAM candidates. Added in `Unreleased`. (Ceiling: only as accurate as the
+  unsized-VRAM candidates. Added in `v0.6.3`. (Ceiling: only as accurate as the
   estimator; verify with a fit test or benchmark.)
 - Smart sampling suggestions: task-intent presets (coding / factual / balanced /
   creative) for temperature, top-k, top-p, min-p, and repeat penalty, each with a
   one-line rationale, applied to the profile's sampling fields. Added in
-  `Unreleased`. (Ceiling: convention presets, not learned per-model optima.)
+  `v0.6.3`. (Ceiling: convention presets, not learned per-model optima.)
 
 ## Running Server Tooling
 

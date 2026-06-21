@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.3] - 2026-06-21
+
 ### Added
 
 - **Smart fit auto-tune.** A "Smart fit" button searches the launch-parameter space

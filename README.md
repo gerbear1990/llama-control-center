@@ -4,11 +4,11 @@
 > runtimes, preparing `llama.cpp` launch commands, running fit tests, and managing
 > tracked local inference servers.
 
-**v0.6.2** — Selected-model Hugging Face update check: an "HF update" button resolves the
-model's HF repo, compares the remote file against your local copy (size diff primary,
-repo last-modified fallback), and offers a confirm-gated re-download of just that file.
-Built on v0.6.1's per-runtime Recheck and separated Model Notes panel. See
-[CHANGELOG.md](./CHANGELOG.md) for details.
+**v0.6.3** — Smart fit auto-tune (a "Smart fit" button that searches GPU layers,
+context, and KV cache for the best safe memory fit and applies it with a before/after
+summary) and task-intent sampling suggestions (coding / factual / balanced / creative
+presets for temperature, top-k, top-p, min-p, and repeat penalty). Built on v0.6.2's
+selected-model Hugging Face update check. See [CHANGELOG.md](./CHANGELOG.md) for details.
 
 The app is designed to be portable: paths live in user settings or environment
 variables, not in source code.
