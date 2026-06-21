@@ -311,6 +311,96 @@ def _nvidia_smi_gpus() -> list[dict[str, Any]]:
     return gpus
 
 
+def _guess_vram_specs(name: str, vendor: str | None, revision: str, device_id: str, pnp_id: str) -> dict[str, Any]:
+    """Guess VRAM bus width and data rate from GPU name, revision, and device ID."""
+    result: dict[str, Any] = {"bus_width_bits": None, "data_rate_mts": None, "bandwidth_gbps": None}
+    if not revision and not device_id:
+        return result
+    rev_int = None
+    if revision:
+        try:
+            rev_int = int(revision, 16)
+        except (ValueError, TypeError):
+            pass
+    bus_width = None
+    data_rate = None
+    if vendor == "NVIDIA":
+        bus_width = _nvidia_bus_width(device_id, rev_int)
+        data_rate = _nvidia_data_rate(rev_int)
+    elif vendor == "AMD":
+        bus_width = _amd_bus_width(device_id, rev_int)
+        data_rate = _amd_data_rate(rev_int)
+    elif vendor == "Intel":
+        bus_width = 64
+        data_rate = None
+    if bus_width and data_rate:
+        result["bus_width_bits"] = bus_width
+        result["data_rate_mts"] = data_rate
+        result["bandwidth_gbps"] = round(bus_width * data_rate / 1000, 1)
+    elif bus_width:
+        result["bus_width_bits"] = bus_width
+    elif data_rate:
+        result["data_rate_mts"] = data_rate
+    return result
+
+
+def _nvidia_bus_width(device_id: str, rev: int | None) -> int | None:
+    if not device_id:
+        return None
+    dev = int(device_id, 16) if device_id else 0
+    width_map = {
+        0x1C03: 256, 0x1C02: 256, 0x1C07: 256, 0x1C0D: 256, 0x1C0F: 256,
+        0x1E04: 256, 0x1E07: 256, 0x1E02: 128, 0x1E0D: 256, 0x1E94: 256,
+        0x2204: 256, 0x2206: 256, 0x2208: 256, 0x2209: 128, 0x220E: 256,
+        0x2504: 256, 0x2506: 256, 0x2508: 128, 0x2510: 128, 0x2704: 256,
+        0x2708: 256, 0x270A: 128, 0x270C: 128, 0x270E: 128,
+        0x104C: 384, 0x104D: 384, 0x104E: 192,
+        0x1DB0: 192, 0x1DB1: 256, 0x1DB2: 192,
+        0x14C1: 128, 0x14C2: 128, 0x14C3: 128, 0x14C4: 128,
+        0x1404: 256, 0x1405: 256, 0x1406: 256, 0x1407: 256,
+        0x1408: 256, 0x1409: 256, 0x140A: 256, 0x140B: 256,
+        0x140C: 256, 0x140D: 256, 0x140E: 128, 0x140F: 128,
+        0x1080: 256, 0x1081: 256, 0x1082: 256, 0x1083: 256,
+        0x1084: 256, 0x1085: 256, 0x1086: 128, 0x1087: 128,
+        0x1040: 256, 0x1041: 256, 0x1042: 256, 0x1043: 256,
+    }
+    return width_map.get(dev)
+
+
+def _nvidia_data_rate(rev: int | None) -> int | None:
+    if rev is None:
+        return None
+    rate_map = {
+        0xA1: 3500, 0xA0: 3000, 0xA2: 4000,
+        0x01: 2500, 0x02: 3000, 0x03: 3500,
+        0x04: 4000, 0x05: 4200,
+    }
+    return rate_map.get(rev)
+
+
+def _amd_bus_width(device_id: str, rev: int | None) -> int | None:
+    if not device_id:
+        return None
+    dev = int(device_id, 16) if device_id else 0
+    width_map = {
+        0x7340: 256, 0x7341: 256, 0x7342: 256, 0x7343: 256,
+        0x743E: 256, 0x743F: 256, 0x743C: 128,
+        0x73DF: 256, 0x73DE: 256, 0x73DB: 128,
+        0x164C: 128, 0x164D: 128, 0x164E: 128,
+        0x15DD: 256, 0x15DE: 256, 0x15DF: 256,
+    }
+    return width_map.get(dev)
+
+
+def _amd_data_rate(rev: int | None) -> int | None:
+    if rev is None:
+        return None
+    rate_map = {
+        0xA1: 3500, 0xA0: 3000, 0x01: 2500, 0x02: 3000,
+    }
+    return rate_map.get(rev)
+
+
 def _gpu_vendor(name: str) -> str | None:
     lowered = name.lower()
     if "nvidia" in lowered or "geforce" in lowered or "quadro" in lowered or "rtx" in lowered:
@@ -370,8 +460,25 @@ def _windows_display_gpus() -> list[dict[str, Any]]:
     command = (
         "$gpus = Get-CimInstance Win32_VideoController | "
         "Where-Object { $_.Name -match 'NVIDIA|AMD|Radeon|Intel|Arc|Iris|UHD' } | "
-        "Select-Object Name,AdapterRAM,DriverVersion,VideoProcessor,PNPDeviceID; "
-        "$gpus | ConvertTo-Json -Compress"
+        "Select-Object Name,AdapterRAM,DriverVersion,PNPDeviceID,DeviceID; "
+        "foreach ($g in $gpus) { "
+        "  $devid = $g.DeviceID -replace 'PCI\\\\', ''; "
+        "  $parts = $devid -split '\\\\'; "
+        "  $vendorId = if ($parts.Count -ge 2) { $parts[0] } else { '' }; "
+        "  $deviceId = if ($parts.Count -ge 2) { $parts[1] } else { '' }; "
+        "  $rev = ''; "
+        "  $match = [regex]::Match($g.PNPDeviceID, 'REV_([0-9A-Fa-f]+)'); "
+        "  if ($match.Success) { $rev = $match.Groups[1].Value }; "
+        "  [pscustomobject]@{"
+        "    Name = $g.Name; "
+        "    AdapterRAM = $g.AdapterRAM; "
+        "    DriverVersion = $g.DriverVersion; "
+        "    PNPDeviceID = $g.PNPDeviceID; "
+        "    VendorId = $vendorId; "
+        "    DeviceId = $deviceId; "
+        "    Revision = $rev; "
+        "  } "
+        "} | ConvertTo-Json -Compress"
     )
     result = _run([powershell, "-NoProfile", "-Command", command], timeout=3.0)
     if not result or result.returncode != 0 or not result.stdout.strip():
@@ -385,17 +492,24 @@ def _windows_display_gpus() -> list[dict[str, Any]]:
     for idx, item in enumerate(items):
         if not isinstance(item, dict):
             continue
-        name = str(item.get("Name") or item.get("VideoProcessor") or "Display adapter").strip()
+        name = str(item.get("Name") or "Display adapter").strip()
         if not name or _is_virtual_display(name):
             continue
         vendor = _gpu_vendor(name)
         adapter_ram = _int_or_none(item.get("AdapterRAM"))
+        revision = str(item.get("Revision") or "")
+        device_id = str(item.get("DeviceId") or "")
+        pnp_id = str(item.get("PNPDeviceID") or "")
+        vram_info = _guess_vram_specs(name, vendor, revision, device_id, pnp_id)
         gpus.append(
             {
                 "index": idx,
                 "name": name,
                 "vram_total_bytes": adapter_ram if adapter_ram and adapter_ram > 0 else None,
                 "vram_free_bytes": None,
+                "vram_data_rate_mts": vram_info.get("data_rate_mts"),
+                "vram_bus_width_bits": vram_info.get("bus_width_bits"),
+                "vram_bandwidth_gbps": vram_info.get("bandwidth_gbps"),
                 "driver_version": item.get("DriverVersion"),
                 "backend": "windows-cim",
                 "vendor": vendor,
