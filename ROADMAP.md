@@ -18,12 +18,19 @@ passes.
 - Let users choose an update channel in settings, such as stable or another
   release stream when the runtime supports it.
 - Add a small apply-update button on runtime cards when an update is available.
+- Verify and harden stop-server logic so a tracked server actually
+  transitions from running to stopped after Stop is clicked, with the
+  dashboard reflecting the new state.
 
 ## UI Polish
 
 - Continue iterating on spacing, alignment, and visual hierarchy as new
   panels are added.
 - Keep the style clean, modern, and utilitarian rather than decorative.
+- Refine the Model Notes panel after a benchmark runs so the result is
+  laid out cleanly and clearly separated from the fit-test output.
+- When the API status indicator shows a partial state, surface a hover
+  tooltip listing which endpoints succeeded and which failed (and why).
 
 ## Draft Models
 
@@ -50,6 +57,19 @@ passes.
 - Detect VRAM memory generation, speed, and estimated bandwidth where available.
 - Feed RAM and VRAM speed/bandwidth into tokens/sec estimates and fit scoring
   when the signal is reliable enough to help.
+- Tighten the tokens-per-second estimation logic so it tracks real
+  measured performance more closely across model sizes, quantizations,
+  and runtimes. The current heuristic can drift wildly from real
+  benchmarks and must be recalibrated.
+- After a benchmark completes for a profile, let the user pin the
+  measured tokens/sec over the heuristic estimate on the live
+  Estimated Speed card.
+
+## Downstream Integration
+
+- Investigate whether a script can register locally tracked llama.cpp
+  servers with downstream apps such as OpenCode, so the running server
+  appears as a usable model provider without manual configuration.
 
 ## Ollama
 

@@ -38,3 +38,9 @@
 - [ ] RAM/VRAM speed and bandwidth should feed into tokens/sec estimates and fit scoring when useful.
 - [ ] Add a button to check Hugging Face for updates to the selected model.
 - [ ] Add full Ollama support so users can use Ollama as a preferred model/runtime source instead of Hugging Face.
+- [ ] Refine and tighten the Model Notes panel after a benchmark runs so the result is laid out cleanly and clearly separated from the fit-test output.
+- [ ] Verify and harden stop-server logic so a tracked server actually transitions from running to stopped after Stop is clicked, with the dashboard reflecting the new state.
+- [ ] After a benchmark completes, force the live "Estimated speed" card to show the benchmarked tokens/sec for the current profile instead of the heuristic estimate.
+- [ ] Tighten the tokens-per-second estimation logic so it tracks real measured performance more closely across model sizes, quantizations, and runtimes (current heuristic can drift wildly from actual benchmarks).
+- [ ] Investigate whether a script can register locally tracked llama.cpp servers with downstream apps such as OpenCode, so the running server appears as a usable model provider without manual configuration.
+- [ ] When the API status indicator shows a partial state, surface a hover tooltip listing which endpoints succeeded and which failed (and why).
