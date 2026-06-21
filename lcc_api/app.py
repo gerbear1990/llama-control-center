@@ -27,7 +27,7 @@ from lcc_core.runtime_updates import check_runtime_updates
 from lcc_core.server_manager import list_servers, prepare_launch_command, server_logs, start_profile, stop_server
 
 
-app = FastAPI(title="Llama Control Center API", version="0.4.0")
+app = FastAPI(title="Llama Control Center API", version="0.5.0")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import os
 import re
 from typing import Any
 
@@ -29,6 +30,76 @@ CACHE_BYTES = {
     "Q4_0": 0.53,
     "IQ4_NL": 0.52,
 }
+
+# GGUF tensor name patterns that reveal n_layer
+_N_LAYER_PATTERNS = [
+    r"\.h\[(\d+)\]\.",
+    r"transformer\.layer\.(\d+)\.",
+    r"model\.layers\.(\d+)\.",
+    r"blk\.(\d+)\.",
+    r"block\.(\d+)\.",
+]
+
+
+def _read_gguf_n_layer(model_path: str | None) -> int | None:
+    """Read the actual number of transformer layers from a GGUF file header.
+    
+    First tries architecture-specific KV keys (e.g. 'llama.block_count',
+    'gemma4.block_count'), then falls back to scanning tensor names for
+    the highest layer index.
+    """
+    if not model_path:
+        return None
+    try:
+        import gguf as _gguf
+        reader = _gguf.GGUFReader(str(model_path))
+
+        def _field_value(field):
+            """Extract the actual value from a ReaderField."""
+            if field is None or not field.parts:
+                return None
+            # The last part contains the actual value bytes
+            last_part = field.parts[-1]
+            if hasattr(last_part, "tobytes"):
+                raw = last_part.tobytes()
+                if not raw:
+                    return None
+                # Try to interpret as integer
+                if len(raw) <= 8:
+                    return int.from_bytes(raw, "little")
+                # String value
+                return raw.decode("utf-8", errors="replace").strip("\x00")
+            return None
+
+        # Get architecture name
+        arch_field = reader.get_field("general.architecture")
+        arch = _field_value(arch_field)
+
+        if arch:
+            for key_suffix in ("block_count", "n_layer"):
+                full_key = f"{arch}.{key_suffix}"
+                field = reader.get_field(full_key)
+                val = _field_value(field)
+                if isinstance(val, int) and val > 0:
+                    return val
+
+        # Fall back: scan tensor names for blk.N or block.N indices
+        max_layer = -1
+        for tensor in reader.tensors:
+            name = tensor.name
+            for pattern in _N_LAYER_PATTERNS:
+                m = re.search(pattern, name)
+                if m:
+                    idx = int(m.group(1))
+                    if idx > max_layer:
+                        max_layer = idx
+                    break
+
+        if max_layer >= 0:
+            return max_layer + 1
+        return None
+    except Exception:
+        return None
 
 
 def _float_or_none(value: Any) -> float | None:
@@ -88,6 +159,19 @@ def _model_size_mib(model: dict[str, Any] | None) -> float | None:
     return params_b * 1_000_000_000 * bits / 8 / 1024 / 1024
 
 
+def _get_total_layers(model: dict[str, Any] | None) -> int | None:
+    """Get the total number of layers from a model's GGUF file."""
+    if not model:
+        return None
+    model_path = model.get("path") or model.get("model_path")
+    if not model_path:
+        return None
+    # Check if we already have layer info cached
+    if "n_layer" in model:
+        return model.get("n_layer")
+    return _read_gguf_n_layer(str(model_path))
+
+
 def _quant_factor(model: dict[str, Any] | None, params: dict[str, Any]) -> float:
     quant = str((model or {}).get("quant") or "").upper()
     if not quant:
@@ -120,7 +204,7 @@ def _gpu_factor(gpu_name: str) -> float:
     return 0.32
 
 
-def _layer_fraction(params: dict[str, Any]) -> float:
+def _layer_fraction(params: dict[str, Any], model: dict[str, Any] | None = None) -> float:
     layers = params.get("gpu_layers", 999)
     if str(layers).lower() in {"all", "auto"}:
         return 1.0
@@ -130,6 +214,10 @@ def _layer_fraction(params: dict[str, Any]) -> float:
         return 1.0
     if count >= 999:
         return 1.0
+    # Get actual layer count from GGUF file if available
+    total_layers = _get_total_layers(model)
+    if total_layers is not None and total_layers > 0:
+        return max(0.0, min(1.0, count / total_layers))
     return max(0.0, min(1.0, count / 80))
 
 
@@ -200,7 +288,7 @@ def estimate_memory_fit(
     ctx = _float_or_none(params.get("ctx_size")) or 4096.0
     batch = _float_or_none(params.get("batch_size")) or 512.0
     ubatch = _float_or_none(params.get("ubatch_size")) or min(batch, 512.0)
-    layer_fraction = _layer_fraction(params)
+    layer_fraction = _layer_fraction(params, model)
     kv_offload = bool(params.get("kv_offload", True))
     op_offload = bool(params.get("op_offload", True))
     mmap = bool(params.get("mmap", True))
@@ -333,7 +421,7 @@ def estimate_tokens_per_second(
     elif selected_backend == "cpu":
         gpu_factor = 0.0
     quant_factor = _quant_factor(model, params)
-    layer_fraction = 0.0 if selected_backend == "cpu" else _layer_fraction(params)
+    layer_fraction = 0.0 if selected_backend == "cpu" else _layer_fraction(params, model)
 
     gpu_bandwidth_gbps = primary_gpu.get("vram_bandwidth_gbps")
     ram_bandwidth_gbps = (hardware.get("memory") or {}).get("ram_bandwidth_gbps")

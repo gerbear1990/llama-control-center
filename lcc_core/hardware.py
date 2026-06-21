@@ -271,7 +271,7 @@ def _nvidia_smi_gpus() -> list[dict[str, Any]]:
     result = _run(
         [
             binary,
-            "--query-gpu=index,name,memory.total,memory.free,driver_version,memory.bus_width,memory.data_rate",
+            "--query-gpu=index,name,memory.total,memory.free,driver_version,clocks.current.memory,clocks.max.memory",
             "--format=csv,noheader,nounits",
         ],
         timeout=2.5,
@@ -286,21 +286,28 @@ def _nvidia_smi_gpus() -> list[dict[str, Any]]:
             continue
         total_mib = _int_or_none(parts[2])
         free_mib = _int_or_none(parts[3])
-        bus_width = _int_or_none(parts[5]) if len(parts) > 5 else None
-        data_rate = _int_or_none(parts[6]) if len(parts) > 6 else None
+        driver_version = parts[4]
+        # clocks.current.memory and clocks.max.memory may be "N/A" on some GPUs
+        current_mem_clock = _int_or_none(parts[5]) if len(parts) > 5 else None
+        max_mem_clock = _int_or_none(parts[6]) if len(parts) > 6 else None
+        # Use max memory clock as the data rate (in MHz = MT/s for DDR)
+        data_rate = max_mem_clock if max_mem_clock and max_mem_clock > 0 else current_mem_clock
+        # Look up bus width and compute bandwidth from GPU name
+        gpu_name = parts[1] if len(parts) > 1 else ""
+        bus_width = _nvidia_bus_width_from_name(gpu_name)
         vram_bandwidth_gbps = None
         if bus_width and data_rate and data_rate > 0:
             vram_bandwidth_gbps = round(bus_width * data_rate / 1000, 1)
         gpus.append(
             {
                 "index": _int_or_none(parts[0]),
-                "name": parts[1],
+                "name": gpu_name,
                 "vram_total_bytes": total_mib * 1024 * 1024 if total_mib is not None else None,
                 "vram_free_bytes": free_mib * 1024 * 1024 if free_mib is not None else None,
                 "vram_bus_width_bits": bus_width,
                 "vram_data_rate_mts": data_rate,
                 "vram_bandwidth_gbps": vram_bandwidth_gbps,
-                "driver_version": parts[4],
+                "driver_version": driver_version,
                 "backend": "nvidia-smi",
                 "vendor": "NVIDIA",
                 "integrated": False,
@@ -309,6 +316,68 @@ def _nvidia_smi_gpus() -> list[dict[str, Any]]:
             }
         )
     return gpus
+
+
+def _nvidia_bus_width_from_name(name: str) -> int | None:
+    """Guess NVIDIA bus width from GPU product name."""
+    if not name:
+        return None
+    lowered = name.lower()
+    # RTX 50-series
+    if any(m in lowered for m in ["rtx 5090"]):
+        return 384
+    if any(m in lowered for m in ["rtx 5080"]):
+        return 256
+    if any(m in lowered for m in ["rtx 5070 ti", "rtx 5070"]):
+        return 192
+    if any(m in lowered for m in ["rtx 5060"]):
+        return 128
+    # RTX 40-series
+    if any(m in lowered for m in ["rtx 4090"]):
+        return 384
+    if any(m in lowered for m in ["rtx 4080 super", "rtx 4080"]):
+        return 256
+    if any(m in lowered for m in ["rtx 4070 ti super", "rtx 4070 ti", "rtx 4070 super", "rtx 4070"]):
+        return 192
+    if any(m in lowered for m in ["rtx 4060 ti 16gb", "rtx 4060 ti 8gb", "rtx 4060 ti", "rtx 4060"]):
+        return 128
+    # RTX 30-series
+    if any(m in lowered for m in ["rtx 3090 ti", "rtx 3090"]):
+        return 384
+    if any(m in lowered for m in ["rtx 3080 ti", "rtx 3080 16gb", "rtx 3080"]):
+        return 384
+    if any(m in lowered for m in ["rtx 3070 ti", "rtx 3070"]):
+        return 192
+    if any(m in lowered for m in ["rtx 3060 12gb", "rtx 3060 ti", "rtx 3060"]):
+        return 192
+    # RTX 20-series
+    if any(m in lowered for m in ["rtx 2080 ti", "rtx 2080 super", "rtx 2080"]):
+        return 256
+    if any(m in lowered for m in ["rtx 2070 super", "rtx 2070"]):
+        return 192
+    if any(m in lowered for m in ["rtx 2060"]):
+        return 192
+    # GTX series
+    if any(m in lowered for m in ["gtx 1660 ti", "gtx 1660 super", "gtx 1660"]):
+        return 192
+    if any(m in lowered for m in ["gtx 1080 ti", "gtx 1080"]):
+        return 256
+    if any(m in lowered for m in ["gtx 1070 ti", "gtx 1070"]):
+        return 192
+    if any(m in lowered for m in ["gtx 1650", "gtx 1060 6gb", "gtx 1060 3gb", "gtx 1050 ti", "gtx 1050"]):
+        return 128
+    # Tesla / Quadro / A-series / L-series
+    if any(m in lowered for m in ["a100", "a100 pcie", "a100 sfp+", "a800"]):
+        return 5120 if "hbm" in lowered or "hbm2" in lowered else 384
+    if any(m in lowered for m in ["a10", "a40"]):
+        return 384 if "a40" in lowered else 256
+    if any(m in lowered for m in ["l40", "l40s"]):
+        return 384
+    if any(m in lowered for m in ["l4"]):
+        return 96
+    if any(m in lowered for m in ["quadro", "tesla"]):
+        return 256
+    return None
 
 
 def _guess_vram_specs(name: str, vendor: str | None, revision: str, device_id: str, pnp_id: str) -> dict[str, Any]:
@@ -349,20 +418,38 @@ def _nvidia_bus_width(device_id: str, rev: int | None) -> int | None:
         return None
     dev = int(device_id, 16) if device_id else 0
     width_map = {
-        0x1C03: 256, 0x1C02: 256, 0x1C07: 256, 0x1C0D: 256, 0x1C0F: 256,
-        0x1E04: 256, 0x1E07: 256, 0x1E02: 128, 0x1E0D: 256, 0x1E94: 256,
+        # RTX 50-series (Blackwell)
+        0x2784: 384, 0x2785: 384, 0x2B85: 384, 0x2789: 384, 0x278A: 384, 0x278B: 384,
+        0x278C: 384, 0x278D: 256, 0x278E: 256, 0x2790: 256, 0x2791: 256,
+        0x2792: 256, 0x2793: 256, 0x2794: 256, 0x2795: 256, 0x2796: 256,
+        0x2797: 128, 0x2798: 128, 0x2799: 128, 0x279A: 128,
+        # RTX 40-series (Ada Lovelace)
         0x2204: 256, 0x2206: 256, 0x2208: 256, 0x2209: 128, 0x220E: 256,
-        0x2504: 256, 0x2506: 256, 0x2508: 128, 0x2510: 128, 0x2704: 256,
-        0x2708: 256, 0x270A: 128, 0x270C: 128, 0x270E: 128,
-        0x104C: 384, 0x104D: 384, 0x104E: 192,
-        0x1DB0: 192, 0x1DB1: 256, 0x1DB2: 192,
-        0x14C1: 128, 0x14C2: 128, 0x14C3: 128, 0x14C4: 128,
-        0x1404: 256, 0x1405: 256, 0x1406: 256, 0x1407: 256,
-        0x1408: 256, 0x1409: 256, 0x140A: 256, 0x140B: 256,
-        0x140C: 256, 0x140D: 256, 0x140E: 128, 0x140F: 128,
-        0x1080: 256, 0x1081: 256, 0x1082: 256, 0x1083: 256,
-        0x1084: 256, 0x1085: 256, 0x1086: 128, 0x1087: 128,
-        0x1040: 256, 0x1041: 256, 0x1042: 256, 0x1043: 256,
+        0x2210: 256, 0x2211: 256, 0x2212: 128, 0x2213: 128, 0x2214: 128,
+        0x2215: 128, 0x2216: 128, 0x2304: 128, 0x2306: 128, 0x2308: 128,
+        0x2309: 128, 0x230A: 128, 0x230B: 128,
+        # RTX 30-series (Ampere)
+        0x2204: 256, 0x2206: 256, 0x2208: 256, 0x2209: 128, 0x220E: 256,
+        0x2210: 256, 0x2211: 256, 0x2212: 128, 0x2213: 128, 0x2214: 128,
+        0x2215: 128, 0x2216: 128, 0x2304: 128, 0x2306: 128, 0x2308: 128,
+        0x2309: 128, 0x230A: 128, 0x230B: 128,
+        # RTX 20-series (Turing)
+        0x1E04: 256, 0x1E07: 256, 0x1E02: 128, 0x1E0D: 256, 0x1E94: 256,
+        0x1D04: 256, 0x1D83: 128, 0x1D84: 128, 0x1D85: 128, 0x1D87: 128,
+        0x1D88: 128, 0x1D89: 128, 0x1D8A: 128, 0x1D8B: 128, 0x1D8C: 128,
+        0x1D8D: 128, 0x1D8F: 128, 0x1DB0: 192, 0x1DB1: 256, 0x1DB2: 192,
+        # GTX 16-series (Turing)
+        0x1F10: 128, 0x1F11: 128, 0x1F12: 128, 0x1F14: 128,
+        0x1F91: 128, 0x1F92: 128, 0x1F93: 128, 0x1F95: 128,
+        # GTX 10-series (Pascal)
+        0x1B80: 256, 0x1B81: 256, 0x1B82: 256, 0x1B83: 256,
+        0x1B84: 256, 0x1B86: 256, 0x1B87: 128,
+        0x1C03: 256, 0x1C02: 256, 0x1C07: 256, 0x1C0D: 256, 0x1C0F: 256,
+        0x1A10: 256, 0x1A11: 256, 0x1A12: 256, 0x1A14: 256,
+        0x1A18: 256, 0x1A19: 256, 0x1A1C: 128, 0x1A1D: 128, 0x1A1F: 128,
+        # Tesla / Quadro (various)
+        0x1DBF: 256, 0x1DBE: 256, 0x1DBD: 256, 0x1DBC: 256,
+        0x1D7C: 48, 0x1D7D: 48, 0x1D7E: 96,
     }
     return width_map.get(dev)
 
@@ -371,9 +458,13 @@ def _nvidia_data_rate(rev: int | None) -> int | None:
     if rev is None:
         return None
     rate_map = {
+        # Common revisions
         0xA1: 3500, 0xA0: 3000, 0xA2: 4000,
         0x01: 2500, 0x02: 3000, 0x03: 3500,
         0x04: 4000, 0x05: 4200,
+        # RTX 50-series revisions
+        0xC0: 18000, 0xC1: 18000, 0xC2: 18000,
+        0xD0: 16000, 0xD1: 16000,
     }
     return rate_map.get(rev)
 
@@ -383,11 +474,25 @@ def _amd_bus_width(device_id: str, rev: int | None) -> int | None:
         return None
     dev = int(device_id, 16) if device_id else 0
     width_map = {
-        0x7340: 256, 0x7341: 256, 0x7342: 256, 0x7343: 256,
+        # RX 9000 series (RDNA 4)
+        0x1AAA: 128, 0x1AAB: 128, 0x1AAC: 128, 0x1AAD: 128,
+        0x1B00: 128, 0x1B01: 128, 0x1B02: 128, 0x1B03: 128,
+        # RX 8000 series (RDNA 4)
+        0x173F: 128, 0x173E: 128, 0x173D: 128, 0x173C: 128,
+        # RX 7000 series (RDNA 3)
         0x743E: 256, 0x743F: 256, 0x743C: 128,
+        0x741F: 256, 0x741E: 256, 0x741D: 256, 0x741C: 128,
+        0x7408: 128, 0x7409: 128, 0x740A: 128, 0x740B: 128,
+        0x7420: 128, 0x7421: 128, 0x7422: 128, 0x7423: 128,
+        0x7424: 128, 0x7425: 128, 0x7426: 128, 0x7427: 128,
+        # RX 6000 series (RDNA 2)
         0x73DF: 256, 0x73DE: 256, 0x73DB: 128,
+        0x73A0: 256, 0x73A1: 256, 0x73A2: 256, 0x73A3: 256,
+        0x73BF: 256, 0x73BE: 256, 0x73BD: 128,
+        # RX 5000 series (RDNA)
         0x164C: 128, 0x164D: 128, 0x164E: 128,
         0x15DD: 256, 0x15DE: 256, 0x15DF: 256,
+        0x15D8: 128, 0x15D9: 128, 0x15DA: 128, 0x15DB: 128,
     }
     return width_map.get(dev)
 
@@ -397,6 +502,8 @@ def _amd_data_rate(rev: int | None) -> int | None:
         return None
     rate_map = {
         0xA1: 3500, 0xA0: 3000, 0x01: 2500, 0x02: 3000,
+        0xB0: 18000, 0xB1: 18000, 0xB2: 16000,
+        0xC0: 20000, 0xC1: 20000,
     }
     return rate_map.get(rev)
 
@@ -517,15 +624,15 @@ def _windows_display_gpus() -> list[dict[str, Any]]:
     command = (
         "$gpus = Get-CimInstance Win32_VideoController | "
         "Where-Object { $_.Name -match 'NVIDIA|AMD|Radeon|Intel|Arc|Iris|UHD' } | "
-        "Select-Object Name,AdapterRAM,DriverVersion,PNPDeviceID,DeviceID; "
+        "Select-Object Name,AdapterRAM,DriverVersion,PNPDeviceID; "
         "foreach ($g in $gpus) { "
-        "  $devid = $g.DeviceID -replace 'PCI\\\\', ''; "
-        "  $parts = $devid -split '\\\\'; "
-        "  $vendorId = if ($parts.Count -ge 2) { $parts[0] } else { '' }; "
-        "  $deviceId = if ($parts.Count -ge 2) { $parts[1] } else { '' }; "
-        "  $rev = ''; "
-        "  $match = [regex]::Match($g.PNPDeviceID, 'REV_([0-9A-Fa-f]+)'); "
-        "  if ($match.Success) { $rev = $match.Groups[1].Value }; "
+        "  $pnp = $g.PNPDeviceID; "
+        "  $venMatch = [regex]::Match($pnp, 'VEN_([0-9A-Fa-f]{4})'); "
+        "  $devMatch = [regex]::Match($pnp, 'DEV_([0-9A-Fa-f]{4})'); "
+        "  $revMatch = [regex]::Match($pnp, 'REV_([0-9A-Fa-f]+)'); "
+        "  $vendorId = if ($venMatch.Success) { $venMatch.Groups[1].Value } else { '' }; "
+        "  $deviceId = if ($devMatch.Success) { $devMatch.Groups[1].Value } else { '' }; "
+        "  $rev = if ($revMatch.Success) { $revMatch.Groups[1].Value } else { '' }; "
         "  [pscustomobject]@{"
         "    Name = $g.Name; "
         "    AdapterRAM = $g.AdapterRAM; "
