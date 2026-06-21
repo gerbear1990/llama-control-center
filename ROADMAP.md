@@ -11,6 +11,12 @@ passes.
 - Full UI pass over spacing, responsive behavior, visual hierarchy, modal
   patterns, focus management, color contrast, and version surface. Added in
   `v0.1.2`.
+- Manual OpenCode CLI/Desktop wiring for LCC-spun llama.cpp servers: added
+  `lcc_default_port` and `lcc_alt_port` providers (ports 8080 and 8081) to
+  `~/.config/opencode/opencode.jsonc` with model IDs that match the
+  `--alias {profile.mode}` convention LCC uses when launching. OpenCode
+  Desktop reads the same JSONC, so both clients are covered. Verified with
+  a live `chat.completions` call against the running Qwen3.6 server.
 
 ## Runtime Management
 
@@ -67,9 +73,11 @@ passes.
 
 ## Downstream Integration
 
-- Investigate whether a script can register locally tracked llama.cpp
-  servers with downstream apps such as OpenCode, so the running server
-  appears as a usable model provider without manual configuration.
+- Auto-sync LCC's tracked server state with the OpenCode provider config:
+  on Start, register an OpenCode provider (or refresh the model IDs) for
+  the chosen host/port and `--alias`; on Stop, retire it. Avoid the
+  current limitation where new profile modes need a manual JSONC edit
+  before OpenCode can address them.
 
 ## Ollama
 

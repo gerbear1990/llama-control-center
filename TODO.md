@@ -42,5 +42,6 @@
 - [ ] Verify and harden stop-server logic so a tracked server actually transitions from running to stopped after Stop is clicked, with the dashboard reflecting the new state.
 - [ ] After a benchmark completes, force the live "Estimated speed" card to show the benchmarked tokens/sec for the current profile instead of the heuristic estimate.
 - [ ] Tighten the tokens-per-second estimation logic so it tracks real measured performance more closely across model sizes, quantizations, and runtimes (current heuristic can drift wildly from actual benchmarks).
-- [ ] Investigate whether a script can register locally tracked llama.cpp servers with downstream apps such as OpenCode, so the running server appears as a usable model provider without manual configuration.
+- [x] Investigate whether a script can register locally tracked llama.cpp servers with downstream apps such as OpenCode, so the running server appears as a usable model provider without manual configuration.
+- [ ] Auto-sync LCC's tracked server state with the OpenCode provider config so a new profile mode does not need a manual JSONC edit before OpenCode can address it.
 - [ ] When the API status indicator shows a partial state, surface a hover tooltip listing which endpoints succeeded and which failed (and why).
