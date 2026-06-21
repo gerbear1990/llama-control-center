@@ -158,6 +158,10 @@ def get_profiles() -> dict[str, Any]:
     hardware = detect_system_hardware()
     profiles = [profile.to_dict() for profile in resolve_profiles(model_dirs=[Path(path) for path in config.model_dirs] or None)]
     profiles = enrich_profiles_with_fit_status(profiles, hardware)
+    for profile in profiles:
+        mode = profile.get("mode")
+        if mode and mode in config.profile_names:
+            profile["name"] = config.profile_names[mode]
     return {
         "profiles": profiles,
         "launchable_count": len([profile for profile in profiles if profile["launchable"]]),
@@ -346,3 +350,22 @@ def check_hf_updates() -> dict[str, Any]:
 @app.post("/api/hf-cli/install")
 def install_hf_cli_endpoint() -> dict[str, Any]:
     return install_hf_cli()
+
+
+class ProfileNameRequest(BaseModel):
+    mode: str
+    name: str
+
+
+@app.post("/api/profiles/name")
+def save_profile_name(request: ProfileNameRequest) -> dict[str, Any]:
+    config = AppConfig.load()
+    config.profile_names[request.mode] = request.name
+    config.save()
+    return {"success": True, "mode": request.mode, "name": request.name}
+
+
+@app.get("/api/profiles/names")
+def get_profile_names() -> dict[str, Any]:
+    config = AppConfig.load()
+    return {"profile_names": config.profile_names}

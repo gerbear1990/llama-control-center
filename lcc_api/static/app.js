@@ -774,35 +774,76 @@ function filteredProfiles() {
     .filter(profileMatches);
 }
 
-function renderProfiles() {
-  const rows = filteredProfiles().map((profile) => {
-    const selected = profile.mode === state.selectedProfileMode;
+function groupProfilesByModel(profiles) {
+  const groups = {};
+  profiles.forEach((profile) => {
     const modelName = profile.model?.name || 'Unresolved model';
-    const warningText = profile.warnings?.[0] || profile.missing?.join(', ') || '';
-    return `
-      <tr class="profile-row ${selected ? 'selected' : ''}" data-profile-mode="${escapeHtml(profile.mode)}" tabindex="0" role="button" aria-label="Select profile ${escapeHtml(profile.name || profile.mode)}">
-        <td>
-          <div class="cell-title">${escapeHtml(profile.name || profile.mode)}</div>
-          <div class="cell-subtitle">${escapeHtml(profile.mode)}</div>
-        </td>
-        <td>
-          <div class="cell-title">${escapeHtml(modelName)}</div>
-          <div class="cell-subtitle">${escapeHtml(warningText || `${Math.round((profile.confidence || 0) * 100)}% match`)}</div>
-        </td>
-        <td>${statusBadge(profile)}</td>
-        <td>${fitBadge(profile)}</td>
-        <td>${escapeHtml(profile.params?.ctx_size || '-')}</td>
-        <td>${escapeHtml(profile.params?.port || '-')}</td>
-        <td>
-          <div class="row-actions">
-            <button class="mini-button" type="button" data-action="prepare" data-mode="${escapeHtml(profile.mode)}">Prepare</button>
-            ${_profileActionButtons(profile)}
-          </div>
-        </td>
-      </tr>
+    if (!groups[modelName]) {
+      groups[modelName] = { model: modelName, profiles: [] };
+    }
+    groups[modelName].profiles.push(profile);
+  });
+  return Object.values(groups).sort((a, b) => a.model.localeCompare(b.model));
+}
+
+async function saveProfileName(mode, currentName) {
+  const newName = prompt('Enter profile name:', currentName || '');
+  if (newName === null) return;
+  try {
+    await api('/api/profiles/name', {
+      method: 'POST',
+      body: JSON.stringify({ mode, name: newName }),
+    });
+    toast(`Profile name saved for ${mode}`);
+    await refresh();
+  } catch (error) {
+    toast(`Failed to save profile name: ${error.message}`);
+  }
+}
+
+function renderProfiles() {
+  const groupedProfiles = groupProfilesByModel(filteredProfiles());
+  let html = '';
+  groupedProfiles.forEach((group) => {
+    html += `
+      <thead class="profile-group-header">
+        <tr>
+          <td colspan="7">
+            <span class="profile-group-title">${escapeHtml(group.model)}</span>
+          </td>
+        </tr>
+      </thead>
     `;
-  }).join('');
-  $('#profiles-table').innerHTML = rows || '<tr><td colspan="7"><div class="empty-state">No profiles match the current filter.</div></td></tr>';
+    group.profiles.forEach((profile) => {
+      const selected = profile.mode === state.selectedProfileMode;
+      const modelName = profile.model?.name || 'Unresolved model';
+      const warningText = profile.warnings?.[0] || profile.missing?.join(', ') || '';
+      html += `
+        <tr class="profile-row ${selected ? 'selected' : ''}" data-profile-mode="${escapeHtml(profile.mode)}" tabindex="0" role="button" aria-label="Select profile ${escapeHtml(profile.name || profile.mode)}">
+          <td>
+            <div class="cell-title">${escapeHtml(profile.name || profile.mode)}</div>
+            <div class="cell-subtitle">${escapeHtml(profile.mode)}</div>
+          </td>
+          <td>
+            <div class="cell-title">${escapeHtml(modelName)}</div>
+            <div class="cell-subtitle">${escapeHtml(warningText || `${Math.round((profile.confidence || 0) * 100)}% match`)}</div>
+          </td>
+          <td>${statusBadge(profile)}</td>
+          <td>${fitBadge(profile)}</td>
+          <td>${escapeHtml(profile.params?.ctx_size || '-')}</td>
+          <td>${escapeHtml(profile.params?.port || '-')}</td>
+          <td>
+            <div class="row-actions">
+              <button class="mini-button" type="button" data-action="prepare" data-mode="${escapeHtml(profile.mode)}">Prepare</button>
+              <button class="mini-button" type="button" data-action="rename" data-mode="${escapeHtml(profile.mode)}" title="Rename profile">Rename</button>
+              ${_profileActionButtons(profile)}
+            </div>
+          </td>
+        </tr>
+      `;
+    });
+  });
+  $('#profiles-table').innerHTML = html || '<tr><td colspan="7"><div class="empty-state">No profiles match the current filter.</div></td></tr>';
 }
 
 function renderModels() {
@@ -1288,6 +1329,21 @@ function renderAll() {
   renderVersion();
 }
 
+function refreshUI() {
+  renderSummary();
+  renderHardware();
+  renderRuntimes();
+  renderProfiles();
+  renderModels();
+  renderServers();
+  renderIssues();
+  renderParameters();
+  state.paramPreviewHost = $('#param-host')?.value.trim() || '127.0.0.1';
+  state.paramPreviewPort = $('#param-port') ? (Number($('#param-port').value) || 8080) : 8080;
+  renderSettings();
+  renderVersion();
+}
+
 async function refresh() {
   $('#refresh-button').disabled = true;
   setApiStatus(false, 'Refreshing');
@@ -1367,15 +1423,24 @@ async function refreshRuntimeUpdates(trigger) {
 }
 
 async function prepareProfile(mode, trigger) {
-  state.selectedProfileMode = mode || selectedMode();
-  const targetMode = state.selectedProfileMode;
-  const overrides = saveCurrentOverrides();
+  const targetMode = mode || selectedMode();
+  if (!targetMode) {
+    toast('No profile selected');
+    return;
+  }
+  state.selectedProfileMode = targetMode;
+  const overrides = collectOverrides();
   await withBusy(trigger, async () => {
     try {
       const result = await api('/api/servers/prepare', {
         method: 'POST',
         body: JSON.stringify({ mode: targetMode, overrides }),
       });
+      if (!result.success) {
+        toast(result.message || 'Prepare failed');
+        return;
+      }
+      state.selectedProfileMode = targetMode;
       $('#log-preview').textContent = result.command?.command_line || 'Prepared command unavailable.';
       renderProfiles();
       renderParameters();
@@ -1387,8 +1452,12 @@ async function prepareProfile(mode, trigger) {
 }
 
 async function startProfile(mode, trigger) {
-  state.selectedProfileMode = mode || selectedMode();
-  const targetMode = state.selectedProfileMode;
+  const targetMode = mode || selectedMode();
+  if (!targetMode) {
+    toast('No profile selected');
+    return;
+  }
+  state.selectedProfileMode = targetMode;
   const confirmed = await confirmAction({
     title: 'Start profile',
     message: `Start profile "${targetMode}" with the resolved local model and current parameters?`,
@@ -1396,15 +1465,16 @@ async function startProfile(mode, trigger) {
     confirmKind: 'primary',
   });
   if (!confirmed) return;
-  const overrides = saveCurrentOverrides();
+  const overrides = collectOverrides();
   setActionsBusy(targetMode, true);
   try {
-    await withBusy(trigger, () => api('/api/servers/start', {
+    const result = await withBusy(trigger, () => api('/api/servers/start', {
       method: 'POST',
       body: JSON.stringify({ mode: targetMode, overrides, wait_ready: true, ready_timeout_seconds: 45 }),
     }));
     toast(`Started ${targetMode}`);
     await refresh();
+    renderProfiles();
   } catch (error) {
     toast(`Start failed: ${error.message}`);
   } finally {
@@ -1561,6 +1631,13 @@ async function fetchHFInfo() {
 }
 
 async function stopTracked(serverId, trigger) {
+  const confirmed = await confirmAction({
+    title: 'Stop server',
+    message: `Stop the tracked server?`,
+    confirmLabel: 'Stop',
+    confirmKind: 'danger',
+  });
+  if (!confirmed) return;
   await withBusy(trigger, async () => {
     try {
       await api('/api/servers/stop', {
@@ -1569,6 +1646,7 @@ async function stopTracked(serverId, trigger) {
       });
       toast('Stop requested');
       await refresh();
+      renderProfiles();
     } catch (error) {
       toast(`Stop failed: ${error.message}`);
     }
@@ -1591,6 +1669,7 @@ async function stopProfileByMode(mode, trigger) {
       });
       toast(`Stopped ${mode}`);
       await refresh();
+      renderProfiles();
     } catch (error) {
       toast(`Stop failed: ${error.message}`);
     }
@@ -1682,6 +1761,10 @@ function wireEvents() {
       if (serverId) stopTracked(serverId, target);
       else if (mode) stopProfileByMode(mode, target);
     }
+    else if (action === 'rename') {
+      const profile = state.profiles.find((p) => p.mode === mode);
+      if (profile) saveProfileName(mode, profile.name || profile.mode);
+    }
   });
   $('#open-logs-button').addEventListener('click', () => {
     const serverId = state.selectedServerId || state.servers[0]?.id;
@@ -1703,9 +1786,10 @@ function wireEvents() {
   $('#fit-button').addEventListener('click', runFitTest);
   $('#benchmark-button').addEventListener('click', runBenchmark);
   $('#hf-info-button').addEventListener('click', fetchHFInfo);
-  $('#hf-check-updates-button').addEventListener('click', async () => {
+  $('#hf-check-updates-button').addEventListener('click', (event) => {
+    event.stopPropagation();
     const trigger = $('#hf-check-updates-button');
-    await withBusy(trigger, async () => {
+    withBusy(trigger, async () => {
       try {
         const result = await api('/api/hf-cli/check-updates', { method: 'POST' });
         if (result.needs_update) {
@@ -1718,9 +1802,10 @@ function wireEvents() {
       }
     });
   });
-  $('#hf-install-button').addEventListener('click', async () => {
+  $('#hf-install-button').addEventListener('click', (event) => {
+    event.stopPropagation();
     const trigger = $('#hf-install-button');
-    await withBusy(trigger, async () => {
+    withBusy(trigger, async () => {
       try {
         const result = await api('/api/hf-cli/install', { method: 'POST' });
         if (result.success) {

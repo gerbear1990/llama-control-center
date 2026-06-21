@@ -926,6 +926,23 @@ tr.profile-row {
   cursor: pointer;
 }
 
+thead.profile-group-header tr {
+  background: var(--surface-2);
+}
+
+thead.profile-group-header td {
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.profile-group-title {
+  font-weight: 600;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
 th:nth-child(1),
 td:nth-child(1) {
   width: 21%;

@@ -24,6 +24,7 @@ class AppConfig:
     llama_fit_params_path: str = ""
     extra_llama_args: list[str] = field(default_factory=list)
     update_channel: str = "stable"
+    profile_names: dict[str, str] = field(default_factory=dict)
 
     @classmethod
     def load(cls, path: str | Path | None = None) -> "AppConfig":
