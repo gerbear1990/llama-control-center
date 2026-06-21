@@ -28,6 +28,137 @@ def _int_or_none(value: Any) -> int | None:
         return None
 
 
+def _detect_ram_speed() -> dict[str, Any] | None:
+    """Detect RAM speed, type, and bandwidth where available."""
+    if is_windows():
+        return _windows_ram_speed()
+    elif platform.system() == "Darwin":
+        return _mac_ram_speed()
+    else:
+        return _linux_ram_speed()
+
+
+def _windows_ram_speed() -> dict[str, Any] | None:
+    powershell = shutil.which("powershell") or shutil.which("pwsh")
+    if not powershell:
+        return None
+    command = (
+        "$mem = @(Get-CimInstance Win32_PhysicalMemory); "
+        "if ($mem.Count -eq 0) { exit 0 }; "
+        "[pscustomobject]@{"
+        "Speed = ($mem | Select-Object -First 1).Speed; "
+        "Type = ($mem | Select-Object -First 1).MemoryType; "
+        "Manufacturer = ($mem | Select-Object -First 1).Manufacturer; "
+        "ConfiguredSpeed = ($mem | Select-Object -First 1).ConfiguredClockSpeed; "
+        "} | ConvertTo-Json -Compress"
+    )
+    result = _run([powershell, "-NoProfile", "-Command", command], timeout=3.0)
+    if not result or result.returncode != 0 or not result.stdout.strip():
+        return None
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+    speed = _int_or_none(payload.get("Speed")) or _int_or_none(payload.get("ConfiguredSpeed"))
+    mem_type = payload.get("Type")
+    ram_type = _windows_memory_type(mem_type)
+    return {
+        "speed_mts": speed,
+        "type": ram_type,
+        "bandwidth_gbps": _calculate_ram_bandwidth(speed, ram_type),
+    }
+
+
+def _windows_memory_type(mem_type_code: Any) -> str | None:
+    if mem_type_code is None:
+        return None
+    try:
+        code = int(mem_type_code)
+        type_map = {
+            20: "DDR", 21: "DDR2", 24: "DDR3", 26: "DDR4", 30: "DDR5",
+        }
+        return type_map.get(code, f"RAM-{code}")
+    except (ValueError, TypeError):
+        return None
+
+
+def _mac_ram_speed() -> dict[str, Any] | None:
+    profiler = shutil.which("system_profiler")
+    if not profiler:
+        return None
+    result = _run([profiler, "SPMemoryDataType", "-json"], timeout=4.0)
+    if not result or result.returncode != 0 or not result.stdout.strip():
+        return None
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+    memory_modules = payload.get("SPMemoryDataType") or []
+    if not memory_modules:
+        return None
+    speed_str = memory_modules[0].get("SPMemorySpeedKey", "") if isinstance(memory_modules[0], dict) else ""
+    speed = None
+    ram_type = None
+    if isinstance(speed_str, str):
+        match = re.search(r"(\d+)", speed_str)
+        if match:
+            speed = int(match.group(1))
+        if "DDR4" in speed_str:
+            ram_type = "DDR4"
+        elif "DDR5" in speed_str:
+            ram_type = "DDR5"
+        elif "LPDDR" in speed_str:
+            ram_type = "LPDDR"
+    return {
+        "speed_mts": speed,
+        "type": ram_type,
+        "bandwidth_gbps": _calculate_ram_bandwidth(speed, ram_type),
+    }
+
+
+def _linux_ram_speed() -> dict[str, Any] | None:
+    dmidecode = shutil.which("dmidecode")
+    if not dmidecode:
+        return None
+    result = _run([dmidecode, "-t", "memory"], timeout=3.0)
+    if not result or result.returncode != 0:
+        return None
+    speed = None
+    ram_type = None
+    for line in result.stdout.splitlines():
+        line_lower = line.lower().strip()
+        if "speed" in line_lower and "unknown" not in line_lower:
+            match = re.search(r"(\d+)\s*MT/s", line)
+            if match:
+                speed = int(match.group(1))
+        if "type" in line_lower and "unknown" not in line_lower and "error" not in line_lower:
+            for t in ["DDR", "DDR2", "DDR3", "DDR4", "DDR5"]:
+                if t.lower() in line_lower:
+                    ram_type = t
+                    break
+    if speed:
+        return {
+            "speed_mts": speed,
+            "type": ram_type,
+            "bandwidth_gbps": _calculate_ram_bandwidth(speed, ram_type),
+        }
+    return None
+
+
+def _calculate_ram_bandwidth(speed_mts: int | None, ram_type: str | None) -> float | None:
+    if not speed_mts or speed_mts <= 0:
+        return None
+    if ram_type in ("DDR", "DDR2", "DDR3"):
+        return round(speed_mts * 8 / 1000, 1)
+    if ram_type == "DDR4":
+        return round(speed_mts * 8 / 1000, 1)
+    if ram_type == "DDR5":
+        return round(speed_mts * 16 / 1000, 1)
+    if ram_type and "LPDDR" in ram_type:
+        return round(speed_mts * 16 / 1000, 1)
+    return round(speed_mts * 8 / 1000, 1)
+
+
 def _windows_memory_info() -> dict[str, int | None]:
     if not is_windows():
         return {"total_bytes": None, "available_bytes": None}
@@ -76,6 +207,16 @@ def detect_memory() -> dict[str, Any]:
         memory["unified"] = True
     else:
         memory["unified"] = False
+    
+    ram_speed = _detect_ram_speed()
+    if ram_speed:
+        memory["ram_speed_mts"] = ram_speed.get("speed_mts")
+        memory["ram_bandwidth_gbps"] = ram_speed.get("bandwidth_gbps")
+        memory["ram_type"] = ram_speed.get("type")
+    else:
+        memory["ram_type"] = None
+        memory["ram_bandwidth_gbps"] = None
+    
     return memory
 
 
@@ -130,7 +271,7 @@ def _nvidia_smi_gpus() -> list[dict[str, Any]]:
     result = _run(
         [
             binary,
-            "--query-gpu=index,name,memory.total,memory.free,driver_version",
+            "--query-gpu=index,name,memory.total,memory.free,driver_version,memory.bus_width,memory.data_rate",
             "--format=csv,noheader,nounits",
         ],
         timeout=2.5,
@@ -145,12 +286,20 @@ def _nvidia_smi_gpus() -> list[dict[str, Any]]:
             continue
         total_mib = _int_or_none(parts[2])
         free_mib = _int_or_none(parts[3])
+        bus_width = _int_or_none(parts[5]) if len(parts) > 5 else None
+        data_rate = _int_or_none(parts[6]) if len(parts) > 6 else None
+        vram_bandwidth_gbps = None
+        if bus_width and data_rate and data_rate > 0:
+            vram_bandwidth_gbps = round(bus_width * data_rate / 1000, 1)
         gpus.append(
             {
                 "index": _int_or_none(parts[0]),
                 "name": parts[1],
                 "vram_total_bytes": total_mib * 1024 * 1024 if total_mib is not None else None,
                 "vram_free_bytes": free_mib * 1024 * 1024 if free_mib is not None else None,
+                "vram_bus_width_bits": bus_width,
+                "vram_data_rate_mts": data_rate,
+                "vram_bandwidth_gbps": vram_bandwidth_gbps,
                 "driver_version": parts[4],
                 "backend": "nvidia-smi",
                 "vendor": "NVIDIA",

@@ -314,7 +314,7 @@ def estimate_tokens_per_second(
     model: dict[str, Any] | None = None,
     hardware: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Return a coarse decode-speed estimate for comparing parameter choices."""
+    """Return a decode-speed estimate calibrated with hardware bandwidth data."""
 
     hardware = hardware or {}
     model_params_b = _model_params_b(model) or 13.0
@@ -334,6 +334,10 @@ def estimate_tokens_per_second(
         gpu_factor = 0.0
     quant_factor = _quant_factor(model, params)
     layer_fraction = 0.0 if selected_backend == "cpu" else _layer_fraction(params)
+
+    gpu_bandwidth_gbps = primary_gpu.get("vram_bandwidth_gbps")
+    ram_bandwidth_gbps = (hardware.get("memory") or {}).get("ram_bandwidth_gbps")
+    has_bandwidth_info = gpu_bandwidth_gbps is not None or ram_bandwidth_gbps is not None
 
     gpu_decode = 1140 * gpu_factor * quant_factor / math.sqrt(max(model_params_b, 0.5))
     cpu_decode = max(1.2, 9.0 * math.sqrt(max(float(logical_cores), 1.0)) / math.sqrt(max(model_params_b, 1.0)))
@@ -355,15 +359,33 @@ def estimate_tokens_per_second(
     if params.get("draft_model") and str(params.get("spec_type", "")).strip():
         batch_factor *= 1.08
 
+    if layer_fraction >= 1.0 and gpu_bandwidth_gbps and gpu_bandwidth_gbps > 0:
+        gpu_speed = _estimate_gpu_gpu_speed(gpu_bandwidth_gbps, gpu_name, model_params_b, quant_factor, layer_fraction)
+        blended = max(blended, gpu_speed)
+
+    if layer_fraction < 1.0 and ram_bandwidth_gbps and ram_bandwidth_gbps > 0:
+        ram_speed = _estimate_ram_spill_speed(ram_bandwidth_gbps, model_params_b, layer_fraction)
+        blended = max(blended, ram_speed)
+
     estimate = max(0.5, blended * ctx_factor * batch_factor)
-    confidence = "medium" if model and primary_gpu else "low"
-    low = estimate * (0.72 if confidence == "medium" else 0.55)
-    high = estimate * (1.28 if confidence == "medium" else 1.55)
+    if has_bandwidth_info and model and primary_gpu:
+        confidence = "high"
+    elif model and primary_gpu:
+        confidence = "medium"
+    else:
+        confidence = "low"
+    low = estimate * (0.82 if confidence == "high" else 0.72 if confidence == "medium" else 0.55)
+    high = estimate * (1.18 if confidence == "high" else 1.28 if confidence == "medium" else 1.55)
 
     assumptions = [
         "Estimate is for decode speed after the prompt is processed.",
         "Real speed depends on the exact llama.cpp build, prompt shape, and background load.",
     ]
+    if has_bandwidth_info:
+        if gpu_bandwidth_gbps:
+            assumptions.append(f"GPU VRAM bandwidth detected: {gpu_bandwidth_gbps} GB/s.")
+        if ram_bandwidth_gbps:
+            assumptions.append(f"System RAM bandwidth detected: {ram_bandwidth_gbps} GB/s.")
     if layer_fraction < 1:
         assumptions.append("Partial GPU layers usually means more system RAM traffic and lower speed.")
     if not params.get("kv_offload", True):
@@ -379,3 +401,36 @@ def estimate_tokens_per_second(
         "gpu_layer_fraction": round(layer_fraction, 2),
         "assumptions": assumptions,
     }
+
+
+def _estimate_gpu_gpu_speed(gpu_bandwidth_gbps: float, gpu_name: str, model_params_b: float, quant_factor: float, layer_fraction: float) -> float:
+    """Estimate TPS based on GPU memory bandwidth bound."""
+    model_size_mib = _model_size_mib(None) if model_params_b > 0 else 0
+    if model_params_b > 0:
+        quant = "Q4"
+        model_size_mib = model_params_b * 1e9 * 4.8 / 8 / 1024 / 1024
+    else:
+        return 0.0
+    
+    gpu_bw = gpu_bandwidth_gbps
+    if "4090" in gpu_name.lower():
+        gpu_bw = min(gpu_bw, 1000)
+    elif "3090" in gpu_name.lower():
+        gpu_bw = min(gpu_bw, 600)
+    elif "4080" in gpu_name.lower():
+        gpu_bw = min(gpu_bw, 450)
+    elif "4070" in gpu_name.lower():
+        gpu_bw = min(gpu_bw, 350)
+    
+    tps = (gpu_bw * 1000 / 8) / (model_size_mib * 1024 * 1024 / 1e6) * quant_factor * layer_fraction
+    tps = min(tps, gpu_bw / model_params_b * 500 * quant_factor)
+    return max(tps, 1.0)
+
+
+def _estimate_ram_spill_speed(ram_bandwidth_gbps: float, model_params_b: float, layer_fraction: float) -> float:
+    """Estimate TPS when model data spills to system RAM."""
+    if ram_bandwidth_gbps <= 0 or model_params_b <= 0:
+        return 0.0
+    spill_fraction = 1.0 - layer_fraction
+    ram_tps = (ram_bandwidth_gbps * 1000 / 8) / (model_params_b * 1e9 / 8) * spill_fraction * 3
+    return max(ram_tps, 0.3)
