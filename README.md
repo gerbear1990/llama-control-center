@@ -21,6 +21,8 @@ variables, not in source code.
 - Resolves `models.json` profiles against discovered local model files.
 - Shows profile fit badges: Good, Tight, or Near Limit based on estimated
   accelerator memory and host RAM pressure.
+- Groups profiles by matched model in the Profiles table with section headers.
+- Lets you rename profiles to custom names that persist across sessions.
 - Provides a parameter editor for context length, threads, batch sizes, GPU
   layers, KV cache quantization, offload toggles, temperature, sampling, and
   more.
@@ -96,8 +98,8 @@ your choice in browser storage.
   model count, and how many items need setup.
 - The **Runtimes** panel shows each detected runtime's binary/module location,
   API or probe URL, and port.
-- The **Profiles** table is clickable row-by-row and shows fit badges, context
-  size, port, and Prepare/Start actions for each profile.
+- The **Profiles** table groups profiles by matched model, shows fit badges,
+  context size, port, and Prepare/Rename/Start actions for each profile.
 - The **Models** panel lists local GGUF files with quant, size, source, and
   path.
 - The right-side inspector holds the **Parameters** editor (with draft model
