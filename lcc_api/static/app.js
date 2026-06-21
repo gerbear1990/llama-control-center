@@ -719,6 +719,19 @@ function renderRuntimes() {
   }).join('') || '<div class="loading">No runtimes detected.</div>';
 }
 
+function serverRunningForMode(mode) {
+  const server = state.servers?.find((s) => s.mode === mode && s.running);
+  return server || null;
+}
+
+function _profileActionButtons(profile) {
+  const runningServer = serverRunningForMode(profile.mode);
+  if (runningServer) {
+    return `<button class="mini-button danger" type="button" data-action="stop" data-mode="${escapeHtml(profile.mode)}">Stop</button>`;
+  }
+  return `<button class="mini-button primary" type="button" data-action="start" data-mode="${escapeHtml(profile.mode)}" ${profile.launchable ? '' : 'disabled'}>Start</button>`;
+}
+
 function statusBadge(profile) {
   if (profile.launchable) return '<span class="badge ok">Launchable</span>';
   return '<span class="badge warn">Needs setup</span>';
@@ -772,7 +785,7 @@ function renderProfiles() {
         <td>
           <div class="row-actions">
             <button class="mini-button" type="button" data-action="prepare" data-mode="${escapeHtml(profile.mode)}">Prepare</button>
-            <button class="mini-button primary" type="button" data-action="start" data-mode="${escapeHtml(profile.mode)}" ${profile.launchable ? '' : 'disabled'}>Start</button>
+            ${_profileActionButtons(profile)}
           </div>
         </td>
       </tr>
@@ -1471,6 +1484,28 @@ async function stopTracked(serverId, trigger) {
   });
 }
 
+async function stopProfileByMode(mode, trigger) {
+  const confirmed = await confirmAction({
+    title: 'Stop profile',
+    message: `Stop the running server for profile "${mode}"?`,
+    confirmLabel: 'Stop',
+    confirmKind: 'danger',
+  });
+  if (!confirmed) return;
+  await withBusy(trigger, async () => {
+    try {
+      await api('/api/servers/stop', {
+        method: 'POST',
+        body: JSON.stringify({ mode }),
+      });
+      toast(`Stopped ${mode}`);
+      await refresh();
+    } catch (error) {
+      toast(`Stop failed: ${error.message}`);
+    }
+  });
+}
+
 async function loadLogs(serverId, trigger) {
   await withBusy(trigger, async () => {
     try {
@@ -1552,7 +1587,10 @@ function wireEvents() {
     if (action === 'prepare') prepareProfile(mode, target);
     else if (action === 'start') startProfile(mode, target);
     else if (action === 'logs') loadLogs(serverId, target);
-    else if (action === 'stop') stopTracked(serverId, target);
+    else if (action === 'stop') {
+      if (serverId) stopTracked(serverId, target);
+      else if (mode) stopProfileByMode(mode, target);
+    }
   });
   $('#open-logs-button').addEventListener('click', () => {
     const serverId = state.selectedServerId || state.servers[0]?.id;
