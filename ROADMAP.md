@@ -45,7 +45,7 @@ passes.
 - Selected-model Hugging Face update check: resolves the model's HF repo,
   compares the remote file against the local copy (size diff primary, repo
   last-modified fallback), and offers a confirm-gated re-download of just that
-  file into the model's directory. Added in `v0.6.1`–`Unreleased`.
+  file into the model's directory. Added in `v0.6.2`.
 
 ## Runtime Management
 
