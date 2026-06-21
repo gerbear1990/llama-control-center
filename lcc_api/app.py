@@ -24,7 +24,7 @@ from lcc_core.profile_resolver import resolved_inventory, resolve_profiles
 from lcc_core.server_manager import list_servers, prepare_launch_command, server_logs, start_profile, stop_server
 
 
-app = FastAPI(title="Llama Control Center API", version="0.1.0")
+app = FastAPI(title="Llama Control Center API", version="0.1.2")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -89,6 +89,11 @@ class HFInfoRequest(BaseModel):
 @app.get("/health")
 def health() -> dict[str, Any]:
     return {"ok": True}
+
+
+@app.get("/api/meta")
+def get_meta() -> dict[str, Any]:
+    return {"version": app.version, "name": app.title}
 
 
 @app.get("/", include_in_schema=False)

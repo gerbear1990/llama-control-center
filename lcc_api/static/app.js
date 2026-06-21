@@ -4,6 +4,7 @@ const state = {
   hardware: null,
   profiles: [],
   servers: [],
+  meta: null,
   selectedProfileMode: null,
   selectedServerId: null,
   paramOverrides: {},
@@ -134,6 +135,90 @@ function toast(message) {
   toast.timer = window.setTimeout(() => el.classList.remove('show'), 2800);
 }
 
+async function withBusy(button, fn) {
+  if (!button) return fn();
+  const wasDisabled = button.disabled;
+  button.disabled = true;
+  button.classList.add('busy');
+  try {
+    return await fn();
+  } finally {
+    button.disabled = wasDisabled;
+    button.classList.remove('busy');
+  }
+}
+
+function setActionsBusy(mode, busy) {
+  $$(`button[data-mode="${CSS.escape(mode || '')}"]`).forEach((button) => {
+    if (busy) {
+      button.disabled = true;
+      button.classList.add('busy');
+    } else {
+      button.disabled = false;
+      button.classList.remove('busy');
+    }
+  });
+}
+
+function confirmAction({ title = 'Confirm', message = '', confirmLabel = 'Confirm', cancelLabel = 'Cancel', confirmKind = 'primary' } = {}) {
+  const modal = $('#confirm-modal');
+  const titleEl = $('#confirm-title');
+  const messageEl = $('#confirm-message');
+  const okButton = $('#confirm-ok');
+  const cancelButton = $('#confirm-cancel');
+  titleEl.textContent = title;
+  messageEl.textContent = message;
+  okButton.textContent = confirmLabel;
+  cancelButton.textContent = cancelLabel;
+  okButton.classList.remove('primary', 'danger');
+  if (confirmKind === 'danger') okButton.classList.add('danger');
+  else okButton.classList.add('primary');
+  modal.hidden = false;
+  okButton.disabled = false;
+  cancelButton.disabled = false;
+  document.body.classList.add('modal-open');
+  const priorFocus = document.activeElement;
+  okButton.focus();
+  return new Promise((resolve) => {
+    function cleanup() {
+      modal.hidden = true;
+      document.body.classList.remove('modal-open');
+      okButton.removeEventListener('click', onOk);
+      cancelButton.removeEventListener('click', onCancel);
+      modal.removeEventListener('click', onBackdrop);
+      document.removeEventListener('keydown', onKey);
+      if (priorFocus && typeof priorFocus.focus === 'function') {
+        priorFocus.focus();
+      }
+    }
+    function onOk() { cleanup(); resolve(true); }
+    function onCancel() { cleanup(); resolve(false); }
+    function onBackdrop(event) { if (event.target === modal) onCancel(); }
+    function onKey(event) {
+      if (event.key === 'Escape') onCancel();
+      else if (event.key === 'Enter' && document.activeElement !== cancelButton) onOk();
+      else if (event.key === 'Tab') {
+        const items = focusableInside($('.confirm-dialog'));
+        if (!items.length) return;
+        const first = items[0];
+        const last = items[items.length - 1];
+        const active = document.activeElement;
+        if (event.shiftKey && active === first) {
+          event.preventDefault();
+          last.focus();
+        } else if (!event.shiftKey && active === last) {
+          event.preventDefault();
+          first.focus();
+        }
+      }
+    }
+    okButton.addEventListener('click', onOk);
+    cancelButton.addEventListener('click', onCancel);
+    modal.addEventListener('click', onBackdrop);
+    document.addEventListener('keydown', onKey);
+  });
+}
+
 function floatingTooltip() {
   let el = $('#floating-tooltip');
   if (!el) {
@@ -211,8 +296,13 @@ function bindHelpDot(help) {
 }
 
 function applyTheme() {
-  document.documentElement.dataset.theme = state.theme === 'dark' ? 'dark' : 'light';
-  $('#theme-button').innerHTML = `<span class="theme-glyph" aria-hidden="true"></span>${state.theme === 'dark' ? 'Light' : 'Theme'}`;
+  const isDark = state.theme === 'dark';
+  document.documentElement.dataset.theme = isDark ? 'dark' : 'light';
+  const button = $('#theme-button');
+  button.innerHTML = `<span class="theme-glyph" aria-hidden="true"></span>${isDark ? 'Light' : 'Dark'}`;
+  button.setAttribute('title', isDark ? 'Switch to light theme' : 'Switch to dark theme');
+  button.setAttribute('aria-label', isDark ? 'Switch to light theme' : 'Switch to dark theme');
+  button.setAttribute('aria-pressed', isDark ? 'true' : 'false');
 }
 
 function enhanceTooltips() {
@@ -261,6 +351,12 @@ function setApiStatus(ok, text) {
   dot.classList.toggle('ok', ok);
   dot.classList.toggle('error', !ok);
   $('#api-status').textContent = text;
+}
+
+function renderVersion() {
+  const el = $('#app-version');
+  if (!el) return;
+  el.textContent = state.meta?.version ? `v${state.meta.version}` : '';
 }
 
 async function loadDashboardResource(label, path, apply) {
@@ -549,6 +645,13 @@ function applyFitResultParams(result) {
 
 function renderRuntimes() {
   const envs = state.inventory?.environments || [];
+  const statusEl = $('#runtime-status');
+  if (statusEl) {
+    const available = envs.filter((env) => env.available).length;
+    statusEl.textContent = envs.length
+      ? `${available} of ${envs.length} runtime${envs.length === 1 ? '' : 's'} available.`
+      : 'No runtimes detected.';
+  }
   $('#runtime-grid').innerHTML = envs.map((env) => {
     const url = runtimeUrl(env);
     const port = runtimePort(env);
@@ -609,7 +712,7 @@ function renderProfiles() {
     const modelName = profile.model?.name || 'Unresolved model';
     const warningText = profile.warnings?.[0] || profile.missing?.join(', ') || '';
     return `
-      <tr class="${selected ? 'selected' : ''}" data-profile-mode="${escapeHtml(profile.mode)}">
+      <tr class="profile-row ${selected ? 'selected' : ''}" data-profile-mode="${escapeHtml(profile.mode)}" tabindex="0" role="button" aria-label="Select profile ${escapeHtml(profile.name || profile.mode)}">
         <td>
           <div class="cell-title">${escapeHtml(profile.name || profile.mode)}</div>
           <div class="cell-subtitle">${escapeHtml(profile.mode)}</div>
@@ -923,13 +1026,33 @@ function renderSettings() {
 
 function openSettings() {
   renderSettings();
-  $('#settings-modal').hidden = false;
+  const modal = $('#settings-modal');
+  modal.hidden = false;
+  modal.dataset.openedBy = document.activeElement?.id || '';
+  document.body.classList.add('modal-open');
   enhanceTooltips();
   $('#settings-model-dirs').focus();
 }
 
 function closeSettings() {
-  $('#settings-modal').hidden = true;
+  const modal = $('#settings-modal');
+  modal.hidden = true;
+  document.body.classList.remove('modal-open');
+  const openerId = modal.dataset.openedBy;
+  if (openerId) {
+    const opener = document.getElementById(openerId);
+    if (opener && typeof opener.focus === 'function') opener.focus();
+  } else {
+    const button = $('#settings-button');
+    if (button) button.focus();
+  }
+}
+
+function focusableInside(container) {
+  if (!container) return [];
+  const selector = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+  return Array.from(container.querySelectorAll(selector))
+    .filter((el) => el.offsetParent !== null || el === document.activeElement);
 }
 
 function detectedRuntimeRoots() {
@@ -983,6 +1106,7 @@ function renderAll() {
   renderIssues();
   renderParameters();
   renderSettings();
+  renderVersion();
 }
 
 async function refresh() {
@@ -995,6 +1119,7 @@ async function refresh() {
       loadDashboardResource('servers', '/api/servers', (data) => { state.servers = data.servers || []; }),
       loadDashboardResource('settings', '/api/config', (data) => { state.config = data; }),
       loadDashboardResource('hardware', '/api/system', (data) => { state.hardware = data; }),
+      loadDashboardResource('meta', '/api/meta', (data) => { state.meta = data; }),
     ])).filter(Boolean);
 
     if (!state.selectedProfileMode && state.profiles.length) {
@@ -1007,7 +1132,7 @@ async function refresh() {
     if (failures.length) {
       const summary = failures.slice(0, 2).join('; ');
       const suffix = failures.length > 2 ? ` and ${failures.length - 2} more` : '';
-      setApiStatus(false, failures.length >= 5 ? 'API error' : 'API partial');
+      setApiStatus(false, failures.length >= 6 ? 'API error' : 'API partial');
       toast(`Refresh partial: ${summary}${suffix}`);
     } else {
       setApiStatus(true, 'API ready');
@@ -1020,64 +1145,80 @@ async function refresh() {
   }
 }
 
-async function prepareProfile(mode) {
+async function prepareProfile(mode, trigger) {
   state.selectedProfileMode = mode || selectedMode();
+  const targetMode = state.selectedProfileMode;
   const overrides = saveCurrentOverrides();
-  try {
-    const result = await api('/api/servers/prepare', {
-      method: 'POST',
-      body: JSON.stringify({ mode: state.selectedProfileMode, overrides }),
-    });
-    $('#log-preview').textContent = result.command?.command_line || 'Prepared command unavailable.';
-    renderProfiles();
-    renderParameters();
-    toast(`Prepared ${mode}`);
-  } catch (error) {
-    toast(`Prepare failed: ${error.message}`);
-  }
+  await withBusy(trigger, async () => {
+    try {
+      const result = await api('/api/servers/prepare', {
+        method: 'POST',
+        body: JSON.stringify({ mode: targetMode, overrides }),
+      });
+      $('#log-preview').textContent = result.command?.command_line || 'Prepared command unavailable.';
+      renderProfiles();
+      renderParameters();
+      toast(`Prepared ${targetMode}`);
+    } catch (error) {
+      toast(`Prepare failed: ${error.message}`);
+    }
+  });
 }
 
-async function startProfile(mode) {
+async function startProfile(mode, trigger) {
   state.selectedProfileMode = mode || selectedMode();
+  const targetMode = state.selectedProfileMode;
+  const confirmed = await confirmAction({
+    title: 'Start profile',
+    message: `Start profile "${targetMode}" with the resolved local model and current parameters?`,
+    confirmLabel: 'Start',
+    confirmKind: 'primary',
+  });
+  if (!confirmed) return;
   const overrides = saveCurrentOverrides();
-  if (!window.confirm(`Start profile "${state.selectedProfileMode}" with the resolved local model and current parameters?`)) return;
+  setActionsBusy(targetMode, true);
   try {
-    await api('/api/servers/start', {
+    await withBusy(trigger, () => api('/api/servers/start', {
       method: 'POST',
-      body: JSON.stringify({ mode: state.selectedProfileMode, overrides, wait_ready: true, ready_timeout_seconds: 45 }),
-    });
-    toast(`Started ${state.selectedProfileMode}`);
+      body: JSON.stringify({ mode: targetMode, overrides, wait_ready: true, ready_timeout_seconds: 45 }),
+    }));
+    toast(`Started ${targetMode}`);
     await refresh();
   } catch (error) {
     toast(`Start failed: ${error.message}`);
+  } finally {
+    setActionsBusy(targetMode, false);
   }
 }
 
 async function runFitTest() {
   const mode = selectedMode();
   if (!mode) return;
+  const trigger = $('#fit-button');
   state.selectedProfileMode = mode;
   const overrides = saveCurrentOverrides();
   const target = Number($('#param-fit-target').value || 1024);
   renderModelInfo('Running fit test. This may take a moment...');
-  try {
-    const result = await api('/api/profiles/fit', {
-      method: 'POST',
-      body: JSON.stringify({ mode, overrides, target_mib: target, timeout_seconds: 180 }),
-    });
-    const applied = applyFitResultParams(result);
-    const suggestions = result.suggestions || {};
-    renderModelInfo(renderFitSummary(result, applied));
-    renderTpsEstimate(result.speed_estimate);
-    scheduleTpsEstimate(80);
-    $('#log-preview').textContent = parsedFitAccepted(suggestions)
-      ? fitSummaryText(applied, suggestions, result.speed_estimate)
-      : (result.command_line || result.stdout || 'Fit test completed.');
-    toast('Fit test complete');
-  } catch (error) {
-    renderModelInfo(`<strong>Fit test failed</strong>\n${escapeHtml(error.message)}`);
-    toast(`Fit test failed: ${error.message}`);
-  }
+  await withBusy(trigger, async () => {
+    try {
+      const result = await api('/api/profiles/fit', {
+        method: 'POST',
+        body: JSON.stringify({ mode, overrides, target_mib: target, timeout_seconds: 180 }),
+      });
+      const applied = applyFitResultParams(result);
+      const suggestions = result.suggestions || {};
+      renderModelInfo(renderFitSummary(result, applied));
+      renderTpsEstimate(result.speed_estimate);
+      scheduleTpsEstimate(80);
+      $('#log-preview').textContent = parsedFitAccepted(suggestions)
+        ? fitSummaryText(applied, suggestions, result.speed_estimate)
+        : (result.command_line || result.stdout || 'Fit test completed.');
+      toast('Fit test complete');
+    } catch (error) {
+      renderModelInfo(`<strong>Fit test failed</strong>\n${escapeHtml(error.message)}`);
+      toast(`Fit test failed: ${error.message}`);
+    }
+  });
 }
 
 function renderBenchmarkSummary(result) {
@@ -1121,88 +1262,104 @@ async function runBenchmark() {
     toast('Choose a launchable profile before benchmarking');
     return;
   }
-  if (!window.confirm(`Benchmark "${mode}" with the current parameters? This may restart the tracked server for this profile.`)) return;
+  const confirmed = await confirmAction({
+    title: 'Run benchmark',
+    message: `Benchmark "${mode}" with the current parameters? This may restart the tracked server for this profile.`,
+    confirmLabel: 'Benchmark',
+    confirmKind: 'primary',
+  });
+  if (!confirmed) return;
+  const trigger = $('#benchmark-button');
   const overrides = saveCurrentOverrides();
   const requested = Number($('#param-predict').value || 128);
   const completionTokens = requested > 0 ? Math.min(requested, 512) : 128;
   renderModelInfo('Running benchmark with the current parameters...');
-  try {
-    const result = await api('/api/benchmarks/run', {
-      method: 'POST',
-      body: JSON.stringify({
-        mode,
-        overrides,
-        completion_tokens: completionTokens,
-        restart: true,
-        stop_after: false,
-        ready_timeout_seconds: 90,
-      }),
-    });
-    renderModelInfo(renderBenchmarkSummary(result));
-    $('#log-preview').textContent = [
-      `Benchmark: ${result.benchmark.tokens_per_second} tok/s`,
-      `Elapsed: ${result.benchmark.elapsed_seconds}s`,
-      `Endpoint: ${result.benchmark.endpoint}`,
-    ].join('\n');
-    toast(`Benchmark: ${result.benchmark.tokens_per_second} tok/s`);
-    await refresh();
-  } catch (error) {
-    renderModelInfo(`<strong>Benchmark failed</strong>\n${escapeHtml(error.message)}`);
-    toast(`Benchmark failed: ${error.message}`);
-  }
+  await withBusy(trigger, async () => {
+    try {
+      const result = await api('/api/benchmarks/run', {
+        method: 'POST',
+        body: JSON.stringify({
+          mode,
+          overrides,
+          completion_tokens: completionTokens,
+          restart: true,
+          stop_after: false,
+          ready_timeout_seconds: 90,
+        }),
+      });
+      renderModelInfo(renderBenchmarkSummary(result));
+      $('#log-preview').textContent = [
+        `Benchmark: ${result.benchmark.tokens_per_second} tok/s`,
+        `Elapsed: ${result.benchmark.elapsed_seconds}s`,
+        `Endpoint: ${result.benchmark.endpoint}`,
+      ].join('\n');
+      toast(`Benchmark: ${result.benchmark.tokens_per_second} tok/s`);
+      await refresh();
+    } catch (error) {
+      renderModelInfo(`<strong>Benchmark failed</strong>\n${escapeHtml(error.message)}`);
+      toast(`Benchmark failed: ${error.message}`);
+    }
+  });
 }
 
 async function fetchHFInfo() {
   const profile = getSelectedProfile();
   if (!profile) return;
+  const trigger = $('#hf-info-button');
   renderModelInfo('Fetching Hugging Face metadata...');
-  try {
-    const result = await api('/api/models/hf-info', {
-      method: 'POST',
-      body: JSON.stringify({
-        name: profile.model?.name || profile.name,
-        path: profile.model?.path || '',
-      }),
-    });
-    const lines = [
-      `<strong>${escapeHtml(result.model_id || 'Hugging Face model')}</strong>`,
-      result.url ? escapeHtml(result.url) : '',
-      result.summary ? escapeHtml(result.summary) : 'No model-card summary found.',
-      '',
-      `Downloads: ${escapeHtml(result.downloads ?? '-')}`,
-      `Likes: ${escapeHtml(result.likes ?? '-')}`,
-      `Tags: ${escapeHtml((result.tags || []).slice(0, 8).join(', ') || '-')}`,
-    ].filter(Boolean).join('\n');
-    renderModelInfo(lines);
-    toast('HF info loaded');
-  } catch (error) {
-    renderModelInfo(`<strong>HF lookup failed</strong>\n${escapeHtml(error.message)}`);
-    toast(`HF lookup failed: ${error.message}`);
-  }
+  await withBusy(trigger, async () => {
+    try {
+      const result = await api('/api/models/hf-info', {
+        method: 'POST',
+        body: JSON.stringify({
+          name: profile.model?.name || profile.name,
+          path: profile.model?.path || '',
+        }),
+      });
+      const lines = [
+        `<strong>${escapeHtml(result.model_id || 'Hugging Face model')}</strong>`,
+        result.url ? escapeHtml(result.url) : '',
+        result.summary ? escapeHtml(result.summary) : 'No model-card summary found.',
+        '',
+        `Downloads: ${escapeHtml(result.downloads ?? '-')}`,
+        `Likes: ${escapeHtml(result.likes ?? '-')}`,
+        `Tags: ${escapeHtml((result.tags || []).slice(0, 8).join(', ') || '-')}`,
+      ].filter(Boolean).join('\n');
+      renderModelInfo(lines);
+      toast('HF info loaded');
+    } catch (error) {
+      renderModelInfo(`<strong>HF lookup failed</strong>\n${escapeHtml(error.message)}`);
+      toast(`HF lookup failed: ${error.message}`);
+    }
+  });
 }
 
-async function stopTracked(serverId) {
-  try {
-    await api('/api/servers/stop', {
-      method: 'POST',
-      body: JSON.stringify({ server_id: serverId }),
-    });
-    toast('Stop requested');
-    await refresh();
-  } catch (error) {
-    toast(`Stop failed: ${error.message}`);
-  }
+async function stopTracked(serverId, trigger) {
+  await withBusy(trigger, async () => {
+    try {
+      await api('/api/servers/stop', {
+        method: 'POST',
+        body: JSON.stringify({ server_id: serverId }),
+      });
+      toast('Stop requested');
+      await refresh();
+    } catch (error) {
+      toast(`Stop failed: ${error.message}`);
+    }
+  });
 }
 
-async function loadLogs(serverId) {
-  try {
-    const result = await api(`/api/servers/${encodeURIComponent(serverId)}/logs?lines=160`);
-    state.selectedServerId = serverId;
-    $('#log-preview').textContent = [result.stderr, result.stdout].filter(Boolean).join('\n\n') || 'No log output yet.';
-    toast('Logs loaded');
-  } catch (error) {
-    toast(`Logs failed: ${error.message}`);
-  }
+async function loadLogs(serverId, trigger) {
+  await withBusy(trigger, async () => {
+    try {
+      const result = await api(`/api/servers/${encodeURIComponent(serverId)}/logs?lines=160`);
+      state.selectedServerId = serverId;
+      $('#log-preview').textContent = [result.stderr, result.stdout].filter(Boolean).join('\n\n') || 'No log output yet.';
+      toast('Logs loaded');
+    } catch (error) {
+      toast(`Logs failed: ${error.message}`);
+    }
+  });
 }
 
 function wireEvents() {
@@ -1240,6 +1397,27 @@ function wireEvents() {
       renderProfiles();
     });
   });
+  $('#profiles-table').addEventListener('click', (event) => {
+    const row = event.target.closest('tr.profile-row');
+    if (!row) return;
+    if (event.target.closest('button')) return;
+    const mode = row.dataset.profileMode;
+    if (!mode || mode === state.selectedProfileMode) return;
+    state.selectedProfileMode = mode;
+    renderParameters();
+    renderProfiles();
+  });
+  $('#profiles-table').addEventListener('keydown', (event) => {
+    const row = event.target.closest('tr.profile-row');
+    if (!row) return;
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    event.preventDefault();
+    const mode = row.dataset.profileMode;
+    if (!mode || mode === state.selectedProfileMode) return;
+    state.selectedProfileMode = mode;
+    renderParameters();
+    renderProfiles();
+  });
   document.body.addEventListener('click', (event) => {
     const target = event.target.closest('button');
     if (!target) return;
@@ -1248,10 +1426,10 @@ function wireEvents() {
       state.selectedProfileMode = mode;
       renderParameters();
     }
-    if (action === 'prepare') prepareProfile(mode);
-    if (action === 'start') startProfile(mode);
-    if (action === 'logs') loadLogs(serverId);
-    if (action === 'stop') stopTracked(serverId);
+    if (action === 'prepare') prepareProfile(mode, target);
+    else if (action === 'start') startProfile(mode, target);
+    else if (action === 'logs') loadLogs(serverId, target);
+    else if (action === 'stop') stopTracked(serverId, target);
   });
   $('#open-logs-button').addEventListener('click', () => {
     const serverId = state.selectedServerId || state.servers[0]?.id;
@@ -1269,7 +1447,7 @@ function wireEvents() {
     renderParameters();
     toast('Parameters reset');
   });
-  $('#prepare-selected-button').addEventListener('click', () => prepareProfile(selectedMode()));
+  $('#prepare-selected-button').addEventListener('click', (event) => prepareProfile(selectedMode(), event.currentTarget));
   $('#fit-button').addEventListener('click', runFitTest);
   $('#benchmark-button').addEventListener('click', runBenchmark);
   $('#hf-info-button').addEventListener('click', fetchHFInfo);
@@ -1282,7 +1460,29 @@ function wireEvents() {
     scheduleTpsEstimate();
   });
   document.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape' && !$('#settings-modal').hidden) closeSettings();
+    if (event.key === 'Escape') {
+      if (!$('#settings-modal').hidden) {
+        closeSettings();
+        return;
+      }
+    }
+    if (event.key === 'Tab' && !$('#settings-modal').hidden) {
+      const dialog = $('.settings-dialog');
+      const items = focusableInside(dialog);
+      if (!items.length) return;
+      const first = items[0];
+      const last = items[items.length - 1];
+      const active = document.activeElement;
+      if (event.shiftKey) {
+        if (active === first || !dialog.contains(active)) {
+          event.preventDefault();
+          last.focus();
+        }
+      } else if (active === last || !dialog.contains(active)) {
+        event.preventDefault();
+        first.focus();
+      }
+    }
   });
   window.addEventListener('resize', hideFloatingTooltip);
   window.addEventListener('scroll', hideFloatingTooltip, true);

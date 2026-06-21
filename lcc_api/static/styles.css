@@ -5,8 +5,8 @@
   --surface-2: #f8fafb;
   --surface-3: #f2f6f7;
   --text: #162124;
-  --muted: #607076;
-  --subtle: #8b9aa0;
+  --muted: #5a6a70;
+  --subtle: #64747a;
   --border: #d8e1e4;
   --border-strong: #bfccd1;
   --accent: #098a96;
@@ -40,8 +40,8 @@
   --surface-2: #202622;
   --surface-3: #27302b;
   --text: #edf3ee;
-  --muted: #a1b0aa;
-  --subtle: #71817a;
+  --muted: #a8b7b1;
+  --subtle: #8e9e97;
   --border: #2d3832;
   --border-strong: #46524c;
   --accent: #12a5a8;
@@ -81,6 +81,10 @@ body {
   min-width: 320px;
 }
 
+body.modal-open {
+  overflow: hidden;
+}
+
 button,
 input,
 select,
@@ -90,6 +94,18 @@ textarea {
 
 [hidden] {
   display: none !important;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 .app-shell {
@@ -274,6 +290,14 @@ textarea {
   color: var(--muted);
   font-size: 12px;
   font-weight: 650;
+}
+
+.sidebar-footer-version {
+  margin-left: auto;
+  color: var(--subtle);
+  font-size: 11px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
 }
 
 .status-dot {
@@ -520,6 +544,49 @@ textarea {
   border-color: var(--border);
 }
 
+.button.busy,
+.mini-button.busy,
+.segment.busy {
+  position: relative;
+  color: transparent;
+}
+
+.button.busy::after,
+.mini-button.busy::after,
+.segment.busy::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 14px;
+  height: 14px;
+  margin: -7px 0 0 -7px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  color: var(--muted);
+  animation: lcc-spin 720ms linear infinite;
+}
+
+.mini-button.busy::after {
+  width: 12px;
+  height: 12px;
+  margin: -6px 0 0 -6px;
+}
+
+@keyframes lcc-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .button.busy::after,
+  .mini-button.busy::after,
+  .segment.busy::after {
+    animation: none;
+    border-right-color: currentColor;
+  }
+}
+
 .status-strip {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -610,7 +677,7 @@ textarea {
 
 .runtime-grid {
   display: grid;
-  grid-template-columns: repeat(5, minmax(128px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
   gap: 1px;
   background: var(--border);
 }
@@ -793,6 +860,19 @@ td {
 
 tr:hover td {
   background: color-mix(in srgb, var(--accent) 5%, var(--surface));
+}
+
+tr.selected td {
+  background: color-mix(in srgb, var(--accent) 10%, var(--surface));
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+tr.selected:hover td {
+  background: color-mix(in srgb, var(--accent) 14%, var(--surface));
+}
+
+tr.profile-row {
+  cursor: pointer;
 }
 
 th:nth-child(1),
@@ -1336,6 +1416,32 @@ td:nth-child(7) {
 
 .modal-actions {
   justify-content: flex-end;
+}
+
+.confirm-dialog {
+  width: min(440px, calc(100vw - 32px));
+  display: grid;
+  grid-template-rows: auto auto;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.28);
+  overflow: hidden;
+}
+
+.confirm-dialog .modal-actions {
+  padding: 0 16px 16px;
+  margin: 0;
+}
+
+.mini-button.danger {
+  color: #ffffff;
+  border-color: var(--red);
+  background: var(--red);
+}
+
+.mini-button.danger:hover {
+  background: color-mix(in srgb, var(--red) 85%, #000 15%);
 }
 
 @media (max-width: 1120px) {
