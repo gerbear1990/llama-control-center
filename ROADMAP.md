@@ -46,6 +46,15 @@ passes.
   compares the remote file against the local copy (size diff primary, repo
   last-modified fallback), and offers a confirm-gated re-download of just that
   file into the model's directory. Added in `v0.6.2`.
+- Smart fit auto-tune: greedy search over the memory estimator (GPU layers →
+  context → KV cache type) that applies the highest safe-utilization config with a
+  before/after fit + speed summary and per-change rationale. Rejects near-limit and
+  unsized-VRAM candidates. Added in `Unreleased`. (Ceiling: only as accurate as the
+  estimator; verify with a fit test or benchmark.)
+- Smart sampling suggestions: task-intent presets (coding / factual / balanced /
+  creative) for temperature, top-k, top-p, min-p, and repeat penalty, each with a
+  one-line rationale, applied to the profile's sampling fields. Added in
+  `Unreleased`. (Ceiling: convention presets, not learned per-model optima.)
 
 ## Running Server Tooling
 
@@ -67,31 +76,6 @@ but goes quiet once a server is running. These close that loop.
   "crashed", show last log lines, offer restart) instead of showing stale running state.
 - Log tail panel: capture detached server stdout/stderr to a file and tail it in the
   UI, so debugging a bad launch doesn't mean leaving the app.
-
-## Smart Parameter Tuning
-
-Both are viable on existing infra: `fit.py` already returns the memory breakdown
-(model/context/compute/projected) plus a `speed_estimate`, and `llama_args.py`
-already exposes every launch and sampling knob. These are logic layers, not new
-subsystems.
-
-- **Smart fit auto-tune.** Take the fit-test output and search the launch-parameter
-  space to maximize use of available memory without overflowing: push `--gpu-layers`
-  as high as the VRAM breakdown allows, then grow `--ctx-size`/`--batch-size` into
-  the remaining headroom, and step down KV cache type (`q8_0`/`q4_0`) when context is
-  the binding constraint. A short guided search over the existing estimate function —
-  not a separate optimizer or model. Surface the suggested args as a one-click apply
-  with a before/after fit verdict.
-  - Ceiling: heuristic hill-climb over the estimator, only as accurate as the
-    estimator; gate "apply" behind the same green/orange/red verdict and let the user
-    override. Real measured benchmarks should correct it over time.
-- **Smart sampling suggestions.** Suggest `--temp`, `--top-k`, `--top-p`, `--min-p`,
-  and the repeat/presence/frequency penalties from a chosen task intent (e.g. coding /
-  deterministic, factual Q&A, balanced chat, creative writing). Curated presets with a
-  one-line rationale per field, applied to the profile's sampling params.
-  - Ceiling: these are community-convention presets, not learned per-model optima;
-    present them as starting points the user tunes, and let the test-prompt box (see
-    Running Server Tooling) validate the feel.
 
 ## Quant Selection
 

@@ -25,7 +25,9 @@ from lcc_core.inventory import build_inventory
 from lcc_core.profile_resolver import resolved_inventory, resolve_profiles
 from lcc_core.hf_metadata import fetch_model_info, check_model_update
 from lcc_core.runtime_updates import check_runtime_updates
+from lcc_core.sampling import list_sampling_intents, suggest_sampling
 from lcc_core.server_manager import list_servers, prepare_launch_command, start_profile, stop_server
+from lcc_core.smart_tune import auto_tune_fit
 
 
 app = FastAPI(title="Llama Control Center API", version="0.6.2")
@@ -241,6 +243,29 @@ def fit_profile(request: FitRequest) -> dict[str, Any]:
     if not result.get("success"):
         raise HTTPException(status_code=400, detail=result)
     return result
+
+
+@app.post("/api/profiles/auto-tune")
+def auto_tune_profile(request: EstimateRequest) -> dict[str, Any]:
+    config = AppConfig.load()
+    model_dirs = [Path(path) for path in request.model_dirs] or [Path(path) for path in config.model_dirs] or None
+    profiles = resolve_profiles(project_root=request.project_root, model_dirs=model_dirs)
+    profile = next((item for item in profiles if item.mode == request.mode), None)
+    if not profile:
+        raise HTTPException(status_code=400, detail=f"Unknown profile mode: {request.mode}")
+    params = dict(profile.params)
+    params.update(request.overrides or {})
+    hardware = detect_system_hardware()
+    target = int(params.get("fit_target_mib") or 1024)
+    result = auto_tune_fit(params, profile.model, hardware, target_mib=target)
+    result["mode"] = request.mode
+    return result
+
+
+@app.get("/api/sampling/presets")
+def sampling_presets() -> dict[str, Any]:
+    return {"intents": list_sampling_intents(),
+            "presets": {item["key"]: suggest_sampling(item["key"]) for item in list_sampling_intents()}}
 
 
 @app.post("/api/estimate/tokens-per-second")

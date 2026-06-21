@@ -994,7 +994,7 @@ function renderIssues() {
 // Model Notes keeps HF info, fit-test, and benchmark results in separate slots
 // so running a benchmark no longer wipes the fit recommendation (and vice
 // versa); each is rendered in its own titled block, clearly separated.
-const MODEL_NOTE_TITLES = { hf: 'Hugging Face', fit: 'Fit test', benchmark: 'Benchmark' };
+const MODEL_NOTE_TITLES = { hf: 'Hugging Face', tune: 'Smart fit', sampling: 'Sampling preset', fit: 'Fit test', benchmark: 'Benchmark' };
 
 function setModelNote(slot, html) {
   state.modelNotes[slot] = html || '';
@@ -1566,6 +1566,141 @@ async function startProfile(mode, trigger) {
   }
 }
 
+function tuneFieldLabel(field) {
+  return {
+    gpu_layers: 'GPU layers',
+    ctx_size: 'Context',
+    cache_type_k: 'KV cache K',
+    cache_type_v: 'KV cache V',
+  }[field] || field;
+}
+
+function tuneValueLabel(field, value) {
+  if (field === 'gpu_layers') return Number(value) >= 999 || value === 'all' ? 'all' : formatNumber(value);
+  return value ?? '-';
+}
+
+function renderTuneSummary(result) {
+  const before = result.before?.fit_status || {};
+  const after = result.after?.fit_status || {};
+  const beforeSpeed = result.before?.speed_estimate || {};
+  const afterSpeed = result.after?.speed_estimate || {};
+  const changeItems = (result.changes || []).map((c) => (
+    `<li><span>${escapeHtml(tuneFieldLabel(c.field))}</span><strong>${escapeHtml(String(tuneValueLabel(c.field, c.from)))} → ${escapeHtml(String(tuneValueLabel(c.field, c.to)))}</strong></li>`
+  )).join('') || '<li><span>No changes</span><strong>already optimal</strong></li>';
+  const reasons = (result.changes || []).map((c) => `<li>${escapeHtml(c.why)}</li>`).join('');
+  return `
+    <div class="fit-summary">
+      <div class="fit-status">
+        <span class="badge ${fitStatusClass(after.status)}">${escapeHtml(fitStatusLabel(after.status))}</span>
+        <strong>Auto-tuned for best fit</strong>
+      </div>
+      <div class="fit-groups">
+        <section>
+          <h4>Changes applied</h4>
+          <ul>${changeItems}</ul>
+        </section>
+        <section>
+          <h4>Fit &amp; speed</h4>
+          <ul>
+            ${fitItem('Fit', `${fitStatusLabel(before.status)} → ${fitStatusLabel(after.status)}`)}
+            ${fitItem('Est. speed', `${beforeSpeed.estimate_tps ?? '-'} → ${afterSpeed.estimate_tps ?? '-'}`, ' tok/s')}
+          </ul>
+        </section>
+      </div>
+      ${reasons ? `<details class="fit-details"><summary>Why these changes</summary><ul>${reasons}</ul></details>` : ''}
+    </div>
+  `;
+}
+
+function applyTunedParams(tuned) {
+  const mode = selectedMode();
+  if (!mode) return {};
+  const applied = { ...collectOverrides(), ...(tuned || {}) };
+  state.paramOverrides[mode] = applied;
+  renderParameters();
+  markAppliedFields(tuned || {});
+  return applied;
+}
+
+async function runAutoTune() {
+  const mode = selectedMode();
+  if (!mode) return;
+  state.selectedProfileMode = mode;
+  const overrides = saveCurrentOverrides();
+  const trigger = $('#smart-fit-button');
+  setModelNote('tune', 'Searching for the best memory fit...');
+  await withBusy(trigger, async () => {
+    try {
+      const result = await api('/api/profiles/auto-tune', {
+        method: 'POST',
+        body: JSON.stringify({ mode, overrides }),
+      });
+      if (!result.success) {
+        setModelNote('tune', `<strong>Could not auto-tune</strong>\n${escapeHtml(result.reason || 'No fitting configuration found.')}`);
+        toast('Smart fit found no safe configuration');
+        return;
+      }
+      applyTunedParams(result.tuned_params);
+      setModelNote('tune', renderTuneSummary(result));
+      renderTpsEstimate(result.after?.speed_estimate);
+      scheduleTpsEstimate(80);
+      toast('Smart fit applied');
+    } catch (error) {
+      setModelNote('tune', `<strong>Smart fit failed</strong>\n${escapeHtml(error.message)}`);
+      toast(`Smart fit failed: ${error.message}`);
+    }
+  });
+}
+
+async function loadSamplingPresets() {
+  const select = $('#sampling-intent');
+  if (!select) return;
+  try {
+    const data = await api('/api/sampling/presets');
+    state.samplingPresets = data.presets || {};
+    select.innerHTML = (data.intents || []).map((intent) => (
+      `<option value="${escapeHtml(intent.key)}" title="${escapeHtml(intent.description)}">${escapeHtml(intent.label)}</option>`
+    )).join('');
+  } catch (error) {
+    select.innerHTML = '<option value="">Presets unavailable</option>';
+  }
+}
+
+function applySamplingPreset() {
+  const mode = selectedMode();
+  if (!mode) return;
+  const intent = $('#sampling-intent')?.value;
+  const preset = state.samplingPresets?.[intent];
+  if (!preset?.success) {
+    toast('Choose a sampling preset first');
+    return;
+  }
+  state.selectedProfileMode = mode;
+  const applied = { ...saveCurrentOverrides(), ...preset.params };
+  state.paramOverrides[mode] = applied;
+  renderParameters();
+  markAppliedFields(preset.params);
+  const rationale = Object.entries(preset.rationale || {})
+    .map(([field, why]) => `<li><strong>${escapeHtml(field)}:</strong> ${escapeHtml(why)}</li>`)
+    .join('');
+  const paramItems = [
+    fitItem('Temperature', preset.params.temperature),
+    fitItem('Top K', preset.params.top_k),
+    fitItem('Top P', preset.params.top_p),
+    fitItem('Min P', preset.params.min_p),
+    fitItem('Repeat penalty', preset.params.repeat_penalty),
+  ].filter(Boolean).join('');
+  setModelNote('sampling', `
+    <div class="fit-summary">
+      <div class="fit-status"><span class="badge ok">Applied</span><strong>${escapeHtml(preset.label)}</strong></div>
+      <p>${escapeHtml(preset.description)}</p>
+      <div class="fit-groups"><section><h4>Sampling</h4><ul>${paramItems}</ul></section></div>
+      ${rationale ? `<details class="fit-details"><summary>Why these values</summary><ul>${rationale}</ul></details>` : ''}
+    </div>`);
+  toast(`Applied ${preset.label} sampling`);
+}
+
 async function runFitTest() {
   const mode = selectedMode();
   if (!mode) return;
@@ -1945,6 +2080,8 @@ function wireEvents() {
     toast('Parameters reset');
   });
   $('#prepare-selected-button').addEventListener('click', (event) => prepareProfile(selectedMode(), event.currentTarget));
+  $('#smart-fit-button').addEventListener('click', runAutoTune);
+  $('#sampling-suggest-button').addEventListener('click', applySamplingPreset);
   $('#fit-button').addEventListener('click', runFitTest);
   $('#benchmark-button').addEventListener('click', runBenchmark);
   $('#hf-info-button').addEventListener('click', fetchHFInfo);
@@ -2096,4 +2233,5 @@ function wireEvents() {
 }
 
 wireEvents();
+loadSamplingPresets();
 refresh();

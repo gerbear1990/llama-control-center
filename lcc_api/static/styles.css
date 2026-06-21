@@ -1202,6 +1202,19 @@ td:nth-child(7) {
   margin-top: 4px;
 }
 
+.sampling-suggest {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.sampling-suggest select {
+  flex: 1 1 160px;
+  min-width: 0;
+}
+
 .draft-suggestion-item {
   display: flex;
   justify-content: space-between;

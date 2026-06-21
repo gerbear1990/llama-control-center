@@ -495,6 +495,53 @@ class HuggingFaceMetadataTests(unittest.TestCase):
             self.assertFalse(same["update_available"])
 
 
+class SmartTuneTests(unittest.TestCase):
+    def _hw(self, vram_gb: float | None) -> dict:
+        gpu = {"name": "RTX 4090", "vram_bandwidth_gbps": 1000}
+        if vram_gb is not None:
+            gpu["vram_total_bytes"] = int(vram_gb * 1024**3)
+            gpu["vram_free_bytes"] = int(vram_gb * 1024**3)
+        return {"primary_gpu": gpu,
+                "memory": {"total_bytes": 64 * 1024**3, "available_bytes": 48 * 1024**3},
+                "cpu": {"logical_cores": 16}}
+
+    def test_roomy_gpu_gets_full_offload_and_never_overflows(self) -> None:
+        from lcc_core.smart_tune import auto_tune_fit
+
+        model = {"name": "test-7B", "params_b": 7, "quant": "Q4_K_M"}
+        out = auto_tune_fit({"gpu_layers": 0, "ctx_size": 2048}, model, self._hw(24))
+        self.assertTrue(out["success"])
+        self.assertNotEqual(out["after"]["fit_status"]["status"], "near_limit")
+        self.assertEqual(str(out["tuned_params"]["gpu_layers"]), "all")
+        self.assertGreaterEqual(out["after"]["fit_status"]["inputs"]["ctx_size"], 2048)
+
+    def test_unknown_vram_does_not_recommend_gpu_offload(self) -> None:
+        from lcc_core.smart_tune import auto_tune_fit
+
+        model = {"name": "test-7B", "params_b": 7, "quant": "Q4_K_M"}
+        out = auto_tune_fit({"gpu_layers": "all", "ctx_size": 131072}, model, self._hw(None))
+        # With no measurable VRAM, any surviving pick must keep layers off the GPU.
+        if out["success"]:
+            self.assertEqual(out["after"]["fit_status"]["inputs"]["gpu_layer_fraction"], 0)
+
+
+class SamplingTests(unittest.TestCase):
+    def test_presets_have_expected_shape(self) -> None:
+        from lcc_core.sampling import list_sampling_intents, suggest_sampling
+
+        intents = list_sampling_intents()
+        self.assertTrue(intents)
+        coding = suggest_sampling("coding")
+        self.assertTrue(coding["success"])
+        self.assertEqual(coding["params"]["temperature"], 0.2)
+        self.assertIn("temperature", coding["rationale"])
+
+    def test_unknown_intent_fails_cleanly(self) -> None:
+        from lcc_core.sampling import suggest_sampling
+
+        self.assertFalse(suggest_sampling("nope")["success"])
+
+
 class RuntimeUpdatesTests(unittest.TestCase):
     def setUp(self) -> None:
         from lcc_core import runtime_updates

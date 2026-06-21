@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Smart fit auto-tune.** A "Smart fit" button searches the launch-parameter space
+  (GPU layers → context size → KV cache type) against the memory estimator and applies
+  the configuration with the highest safe utilization — max GPU offload first, then the
+  largest context that fits, then the highest-fidelity KV cache. Rejects any candidate
+  the estimator flags as near-limit or can't size against real VRAM, and shows a
+  before/after fit + speed summary with per-change rationale.
+  ([smart_tune.py](lcc_core/smart_tune.py), [app.py](lcc_api/app.py),
+  [app.js](lcc_api/static/app.js))
+- **Smart sampling suggestions.** A sampling-preset selector ("Suggest sampling")
+  fills temperature, top-k, top-p, min-p, and repeat penalty from a chosen task intent
+  (coding / factual / balanced / creative), each with a one-line rationale. Presets are
+  starting points, applied to the profile's sampling fields.
+  ([sampling.py](lcc_core/sampling.py), [app.py](lcc_api/app.py),
+  [app.js](lcc_api/static/app.js))
+
 ## [0.6.2] - 2026-06-21
 
 ### Added

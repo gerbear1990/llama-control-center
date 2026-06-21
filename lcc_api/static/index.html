@@ -276,6 +276,10 @@
                 </div>
 
                 <div class="param-section-title">Sampling</div>
+                <div class="sampling-suggest" title="Fill the sampling fields below from a task-tuned preset. These are starting points you can adjust.">
+                  <select id="sampling-intent" aria-label="Sampling preset"></select>
+                  <button class="mini-button" type="button" id="sampling-suggest-button">Suggest sampling</button>
+                </div>
                 <div class="field-grid">
                   <label class="field" title="Controls how adventurous responses feel. Lower is steadier; higher is more varied.">
                     <span>Temperature</span>
@@ -353,6 +357,7 @@
                   <button class="mini-button" type="button" id="reset-params-button">Reset</button>
                   <button class="mini-button" type="button" id="hf-info-button">HF info</button>
                   <button class="mini-button" type="button" id="hf-update-button">HF update</button>
+                  <button class="mini-button" type="button" id="smart-fit-button" title="Auto-tune GPU layers, context, and KV cache to the best fit for your hardware.">Smart fit</button>
                   <button class="mini-button" type="button" id="fit-button">Fit test</button>
                   <button class="mini-button" type="button" id="benchmark-button">Benchmark</button>
                   <button class="mini-button primary" type="button" id="prepare-selected-button">Prepare</button>

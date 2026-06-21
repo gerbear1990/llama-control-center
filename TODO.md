@@ -39,8 +39,8 @@
 - [ ] Add a crash/exit watchdog that flags tracked servers that died unexpectedly and offers restart with last log lines.
 - [ ] Capture detached server stdout/stderr and tail it in a log panel in the UI.
 - [ ] Add a per-repo quant picker that lists every available quant with size and a fit verdict so the user picks the largest that fits.
-- [ ] Smart fit auto-tune: take the fit-test output and search launch params (gpu-layers, ctx-size, batch-size, KV cache type) to maximize memory use without overflow, with one-click apply and a before/after fit verdict.
-- [ ] Smart sampling suggestions: recommend temp, top-k, top-p, min-p, and repeat/presence/frequency penalties from a chosen task intent (coding, factual, balanced, creative) with a one-line rationale per field.
+- [x] Smart fit auto-tune: search launch params (gpu-layers, ctx-size, KV cache type) against the estimator to maximize memory use without overflow, with one-click apply and a before/after fit + speed summary. _Unreleased._
+- [x] Smart sampling suggestions: recommend temp, top-k, top-p, min-p, and repeat penalty from a chosen task intent (coding, factual, balanced, creative) with a one-line rationale per field. _Unreleased._
 - [ ] Add full Ollama support so users can use Ollama as a preferred model/runtime source instead of Hugging Face.
 - [x] Refine and tighten the Model Notes panel after a benchmark runs so the result is laid out cleanly and clearly separated from the fit-test output. _v0.6.0 (HF / fit / benchmark each in their own titled block)._
 - [x] Verify and harden stop-server logic so a tracked server actually transitions from running to stopped after Stop is clicked, with the dashboard reflecting the new state.
