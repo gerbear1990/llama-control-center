@@ -18,7 +18,8 @@ from lcc_core.config import AppConfig
 from lcc_core.estimates import enrich_profiles_with_fit_status, estimate_memory_fit, estimate_tokens_per_second
 from lcc_core.fit import run_fit_test
 from lcc_core.hardware import detect_system_hardware
-from lcc_core.hf_cli import detect_hf_cli, check_for_updates, install_hf_cli
+from lcc_core.hf_cli import detect_hf_cli as hf_cli_detect, check_for_updates, install_hf_cli
+from lcc_core.draft_models import suggest_draft_models, detect_hf_cli as draft_detect_hf_cli, pull_draft_model
 from lcc_core.inventory import build_inventory
 from lcc_core.profile_resolver import resolved_inventory, resolve_profiles
 from lcc_core.runtime_updates import check_runtime_updates
@@ -317,7 +318,26 @@ def stop_server_endpoint(request: StopRequest) -> dict[str, Any]:
 
 @app.get("/api/hf-cli")
 def get_hf_cli_status() -> dict[str, Any]:
-    return detect_hf_cli()
+    return hf_cli_detect()
+
+
+class DraftModelRequest(BaseModel):
+    model_name: str | None = None
+    repo_id: str | None = None
+    quant: str = "Q4_K_M"
+
+
+@app.get("/api/draft-models/suggest")
+def suggest_drafts(model_name: str | None = None) -> dict[str, Any]:
+    suggestions = suggest_draft_models(model_name)
+    return {"suggestions": suggestions}
+
+
+@app.post("/api/draft-models/pull")
+def pull_draft(request: DraftModelRequest) -> dict[str, Any]:
+    if not request.repo_id:
+        return {"success": False, "message": "repo_id is required."}
+    return pull_draft_model(request.repo_id, request.quant)
 
 @app.post("/api/hf-cli/check-updates")
 def check_hf_updates() -> dict[str, Any]:

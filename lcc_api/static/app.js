@@ -1210,6 +1210,69 @@ function updateHfCliUi(hfData) {
   pathEl.textContent = hfData.binary_path || '-';
 }
 
+async function suggestDraftModels() {
+  const trigger = $('#suggest-draft-button');
+  const container = $('#draft-suggestions');
+  const profile = getSelectedProfile();
+  if (!profile) return;
+  await withBusy(trigger, async () => {
+    try {
+      const result = await api('/api/draft-models/suggest', {
+        method: 'GET',
+        params: { model_name: profile.model?.name },
+      });
+      const suggestions = result.suggestions || [];
+      if (suggestions.length === 0) {
+        container.innerHTML = '<div class="empty-state">No draft model suggestions available for this model.</div>';
+        container.hidden = false;
+        return;
+      }
+      container.innerHTML = suggestions.map((s, idx) => `
+        <div class="draft-suggestion-item">
+          <div>
+            <div class="draft-name">${escapeHtml(s.name)}</div>
+            <div class="draft-desc">${escapeHtml(s.description || '')} · ${escapeHtml(s.recommended_quant || 'Q4_K_M')}</div>
+          </div>
+          <button class="mini-button" type="button" data-draft-idx="${idx}" data-draft-repo="${escapeHtml(s.repo_id || '')}">Pull</button>
+        </div>
+      `).join('');
+      container.hidden = false;
+      container.querySelectorAll('[data-draft-idx]').forEach((btn) => {
+        btn.addEventListener('click', async (event) => {
+          const repoId = event.target.dataset.draftRepo;
+          await pullDraftModel(repoId, event.target);
+        });
+      });
+    } catch (error) {
+      toast(`Draft suggestions failed: ${error.message}`);
+    }
+  });
+}
+
+async function pullDraftModel(repoId, trigger) {
+  const container = $('#draft-suggestions');
+  const originalText = trigger.textContent;
+  trigger.textContent = 'Pulling...';
+  trigger.disabled = true;
+  try {
+    const result = await api('/api/draft-models/pull', {
+      method: 'POST',
+      body: JSON.stringify({ repo_id: repoId, quant: 'Q4_K_M' }),
+    });
+    if (result.success) {
+      toast(`Draft model pulled from ${repoId}`);
+      container.innerHTML = `<div class="draft-suggestion-item"><div><div class="draft-name">Pulled!</div><div class="draft-desc">${escapeHtml(result.message)}</div></div></div>`;
+    } else {
+      toast(result.message || 'Pull failed');
+    }
+  } catch (error) {
+    toast(`Pull failed: ${error.message}`);
+  } finally {
+    trigger.textContent = originalText;
+    trigger.disabled = false;
+  }
+}
+
 function renderAll() {
   renderSummary();
   renderHardware();
@@ -1671,6 +1734,7 @@ function wireEvents() {
       }
     });
   });
+  $('#suggest-draft-button').addEventListener('click', suggestDraftModels);
   $('#param-form').addEventListener('change', () => {
     saveCurrentOverrides();
     state.paramPreviewHost = $('#param-host').value.trim() || '127.0.0.1';

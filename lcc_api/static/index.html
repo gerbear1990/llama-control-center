@@ -323,6 +323,10 @@
                   <span>Draft model</span>
                   <input id="param-draft-model" name="draft_model" type="text" autocomplete="off" />
                 </label>
+                <div class="draft-model-actions" id="draft-model-actions">
+                  <button class="mini-button" type="button" id="suggest-draft-button">Suggest draft models</button>
+                  <div id="draft-suggestions" class="draft-suggestions" hidden></div>
+                </div>
                 <div class="check-row">
                   <label title="Usually faster and lighter on memory when your llama.cpp build supports it."><input id="param-flash" name="flash_attn" type="checkbox" /> Flash attention</label>
                   <label title="Turns on the model's thinking mode when the model and template support it."><input id="param-reasoning" name="reasoning" type="checkbox" /> Reasoning</label>

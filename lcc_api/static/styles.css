@@ -1139,6 +1139,45 @@ td:nth-child(7) {
   border-top: 1px solid var(--border);
 }
 
+.draft-model-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.draft-suggestions {
+  display: grid;
+  gap: 6px;
+  width: 100%;
+  margin-top: 4px;
+}
+
+.draft-suggestion-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-2);
+  font-size: 12px;
+}
+
+.draft-suggestion-item .draft-name {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.draft-suggestion-item .draft-desc {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.draft-suggestion-item .mini-button {
+  flex-shrink: 0;
+}
+
 
 .toast.show {
   opacity: 1;
