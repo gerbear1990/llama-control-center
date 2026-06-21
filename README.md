@@ -14,15 +14,21 @@ variables, not in source code.
   runtime cards.
 - Finds GGUF models from configured folders, common model folders, LM Studio,
   and Hugging Face cache locations.
-- Detects CPU model, core count, system memory, GPU, VRAM, RAM bandwidth, and
+- Detects CPU model, core count, system memory, GPU, VRAM, RAM, and
   acceleration options.
+- Displays DDR type, speed (MT/s), and bus width on VRAM and RAM chips
+  (Windows via CIM/PCI revision, macOS via system_profiler, Linux via lspci).
 - Supports NVIDIA/CUDA, AMD and Intel GPU discovery, Apple Metal options on
   macOS, and CPU fallback.
 - Resolves `models.json` profiles against discovered local model files.
 - Shows profile fit badges: Good, Tight, or Near Limit based on estimated
   accelerator memory and host RAM pressure.
-- Groups profiles by matched model in the Profiles table with section headers.
-- Lets you rename profiles to custom names that persist across sessions.
+- Groups profiles by matched model in the Profiles table with collapsible
+  section headers; group state persists across refreshes.
+- Lets you rename profiles to custom names that persist across sessions via
+  a styled dialog.
+- Saves current parameters as a new profile entry (or updates an existing one)
+  in `models.json` via a styled dialog.
 - Provides a parameter editor for context length, threads, batch sizes, GPU
   layers, KV cache quantization, offload toggles, temperature, sampling, and
   more.
@@ -33,12 +39,14 @@ variables, not in source code.
 - Runs a benchmark against the local OpenAI-compatible chat endpoint to capture
   measured tokens/sec.
 - Starts and stops only servers tracked by this app.
-- Hugging Face CLI widget: detect, version display, update check, and install
-  guidance.
-- Draft model suggestions: auto-suggest compatible draft models for speculative
-  decoding based on base model size, with one-click pull from Hugging Face.
+- Tracked server history is configurable (default 5) via Settings.
+- Hugging Face CLI widget: detect, version display, update check against PyPI,
+  and automatic install via pip.
+- Draft model suggestions: queries Hugging Face API to verify compatible draft
+  models for speculative decoding based on base model size, with one-click pull.
 - Server management scripts: `start-lcc.py` and `stop-lcc.py` for easy
-  cross-platform start/stop/status with PID tracking and port conflict checks.
+  cross-platform start/stop/status with PID tracking, port conflict detection,
+  and auto-reload support.
 
 ## Requirements
 
@@ -102,7 +110,8 @@ python start-lcc.py status                                 # check if server is 
 2. Click **Settings**.
 3. Add one or more model folders if autodiscovery does not find your GGUF files.
 4. Add runtime folders if `llama-server` or `llama-fit-params` are not on PATH.
-5. Save settings and click **Refresh**.
+5. Optionally adjust the server history limit (default 5) and other defaults.
+6. Save settings and click **Refresh**.
 
 Settings are stored in the operating system's user config directory. Cache data,
 tracked server state, logs, and benchmark results are stored in the operating
@@ -115,23 +124,26 @@ with matching light and dark themes. The theme toggle in the top bar persists
 your choice in browser storage.
 
 - The sidebar shows navigation, API status, and the running app version.
-- The top bar shows the detected CPU, GPU, VRAM, and RAM, plus a search field
-  that filters both profiles and models.
+- The top bar shows the detected CPU, GPU, VRAM, and RAM (with DDR type, speed,
+  and bus width where available), plus a search field that filters both profiles
+  and models.
 - The status strip summarizes runtime count, launchable profile count, total
   model count, and how many items need setup.
 - The **Runtimes** panel shows each detected runtime's binary/module location,
   API or probe URL, and port.
-- The **Profiles** table groups profiles by matched model, shows fit badges,
-  context size, port, and Prepare/Rename/Start actions for each profile.
+- The **Profiles** table groups profiles by matched model with collapsible
+  section headers, shows fit badges, context size, port, and Prepare/Rename/
+  Start actions for each profile.
 - The **Models** panel lists local GGUF files with quant, size, source, and
   path.
 - The right-side inspector holds the **Parameters** editor (with draft model
-  suggestions), **Model Notes** (Hugging Face summary and fit-test output),
-  tracked **Servers**, **Logs**, **Portability**, and a new **HF Tools** panel
-  for Hugging Face CLI management.
+  suggestions and Save Profile), **Model Notes** (Hugging Face summary and
+  fit-test output), tracked **Servers**, **Logs**, **Portability**, and a new
+  **HF Tools** panel for Hugging Face CLI management.
 
-Start, Benchmark, and similar destructive actions ask for confirmation through
-an in-page modal that supports Escape, Enter, and Tab focus trapping.
+All interactive dialogs (confirmations, rename, save profile) are styled
+in-page modals that support Escape, Enter, Tab focus trapping, and backdrop
+dismiss.
 
 ## Environment Variables
 
