@@ -788,7 +788,23 @@ function filteredProfiles() {
     .filter(profileMatches);
 }
 
-const collapsedGroups = new Set();
+function loadCollapsedGroups() {
+  try {
+    const stored = localStorage.getItem('lcc-collapsed-groups');
+    if (stored) {
+      return new Set(JSON.parse(stored));
+    }
+  } catch { /* ignore */ }
+  return new Set();
+}
+
+function saveCollapsedGroups(groups) {
+  try {
+    localStorage.setItem('lcc-collapsed-groups', JSON.stringify([...groups]));
+  } catch { /* ignore */ }
+}
+
+const collapsedGroups = loadCollapsedGroups();
 
 function groupProfilesByModel(profiles) {
   const groups = {};
@@ -808,6 +824,7 @@ function toggleGroup(modelName) {
   } else {
     collapsedGroups.add(modelName);
   }
+  saveCollapsedGroups(collapsedGroups);
   renderProfiles();
 }
 
