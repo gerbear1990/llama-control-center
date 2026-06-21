@@ -13,6 +13,8 @@ const state = {
   lastBenchmarkKey: '',
   measuredTps: null,
   measuredElapsed: null,
+  paramPreviewHost: '127.0.0.1',
+  paramPreviewPort: 8080,
   profileFilter: 'all',
   query: '',
   theme: localStorage.getItem('lcc-theme') || 'light',
@@ -696,6 +698,15 @@ function renderRuntimes() {
     const port = runtimePort(env);
     const warning = env.warnings?.[0] || env.details?.probe_error || '';
     const update = runtimeUpdateFor(env.id || env.kind);
+    const isLlamaCpp = env.id === 'llama.cpp' || env.kind === 'local_binary';
+    const previewHost = state.paramPreviewHost || '127.0.0.1';
+    const previewPort = state.paramPreviewPort || 8080;
+    const dynamicUrl = isLlamaCpp ? `http://${previewHost}:${previewPort}` : url;
+    const dynamicPort = isLlamaCpp ? String(previewPort) : port;
+    const urlDisplay = isLlamaCpp && (url !== `http://${previewHost}:${previewPort}`) ? dynamicUrl : (url || 'Not configured');
+    const portDisplay = isLlamaCpp && (port !== String(previewPort)) ? dynamicPort : (port || 'Not configured');
+    const urlClass = isLlamaCpp && (url !== `http://${previewHost}:${previewPort}`) ? '' : (url ? '' : 'muted');
+    const portClass = isLlamaCpp && (port !== String(previewPort)) ? '' : (port ? '' : 'muted');
     const updateBadge = update?.update_available
       ? `<a class="badge update-badge" href="${escapeHtml(update.release_url || '#')}" target="_blank" rel="noopener noreferrer" title="Update available: ${escapeHtml(update.latest_version || '')} (you have ${escapeHtml(update.current_version || 'unknown')})">Update: v${escapeHtml(update.latest_version || '?')}</a>`
       : '';
@@ -709,8 +720,8 @@ function renderRuntimes() {
         ${env.version ? `<small>${escapeHtml(env.version)}</small>` : ''}
         <div class="runtime-facts">
           ${runtimeLine('Location', runtimeLocation(env), env.binary_path ? '' : 'muted')}
-          ${runtimeLine(env.api_url ? 'URL' : 'Probe URL', url || 'Not configured', url ? '' : 'muted')}
-          ${runtimeLine('Port', port || 'Not configured', port ? '' : 'muted')}
+          ${runtimeLine('URL', urlDisplay, urlClass)}
+          ${runtimeLine('Port', portDisplay, portClass)}
         </div>
         ${updateBadge}
         ${warning ? `<p class="runtime-warning">${escapeHtml(warning)}</p>` : ''}
@@ -1192,6 +1203,8 @@ function renderAll() {
   renderServers();
   renderIssues();
   renderParameters();
+  state.paramPreviewHost = $('#param-host')?.value.trim() || '127.0.0.1';
+  state.paramPreviewPort = $('#param-port') ? (Number($('#param-port').value) || 8080) : 8080;
   renderSettings();
   renderVersion();
 }
@@ -1614,10 +1627,14 @@ function wireEvents() {
   $('#hf-info-button').addEventListener('click', fetchHFInfo);
   $('#param-form').addEventListener('change', () => {
     saveCurrentOverrides();
+    state.paramPreviewHost = $('#param-host').value.trim() || '127.0.0.1';
+    state.paramPreviewPort = numericValue('#param-port') || 8080;
     scheduleTpsEstimate();
   });
   $('#param-form').addEventListener('input', () => {
     saveCurrentOverrides();
+    state.paramPreviewHost = $('#param-host').value.trim() || '127.0.0.1';
+    state.paramPreviewPort = numericValue('#param-port') || 8080;
     scheduleTpsEstimate();
   });
   document.addEventListener('keydown', (event) => {
