@@ -117,6 +117,28 @@ def build_fit_args(fit_binary: str, model_path: str, params: dict[str, Any], tar
         args.extend(["-fa", "on"])
     args.append("-kvo" if params.get("kv_offload", True) else "-nkvo")
     args.append("--op-offload" if params.get("op_offload", True) else "--no-op-offload")
+    if "temperature" in params:
+        args.extend(["--temp", str(params["temperature"])])
+    if "top_k" in params:
+        args.extend(["--top-k", str(params["top_k"])])
+    if "top_p" in params:
+        args.extend(["--top-p", str(params["top_p"])])
+    if "min_p" in params:
+        args.extend(["--min-p", str(params["min_p"])])
+    if "repeat_penalty" in params:
+        args.extend(["--repeat-penalty", str(params["repeat_penalty"])])
+    if "repeat_last_n" in params:
+        args.extend(["--repeat-last-n", str(params["repeat_last_n"])])
+    if "presence_penalty" in params:
+        args.extend(["--presence-penalty", str(params["presence_penalty"])])
+    if "frequency_penalty" in params:
+        args.extend(["--frequency-penalty", str(params["frequency_penalty"])])
+    if "seed" in params:
+        args.extend(["-s", str(params["seed"])])
+    if "n_predict" in params:
+        args.extend(["--predict", str(params["n_predict"])])
+    if "reasoning" in params and params["reasoning"]:
+        args.append("--reasoning")
     return args
 
 
