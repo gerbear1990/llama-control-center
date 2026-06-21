@@ -347,11 +347,16 @@ async function api(path, options = {}) {
   return data;
 }
 
-function setApiStatus(ok, text) {
+function setApiStatus(ok, text, details) {
   const dot = $('#api-dot');
   dot.classList.toggle('ok', ok);
   dot.classList.toggle('error', !ok);
   $('#api-status').textContent = text;
+  $('#api-dot').dataset.tooltip = details || '';
+  $('#api-status').dataset.tooltip = details || '';
+  if (details) {
+    bindHelpDot($('#api-dot'));
+  }
 }
 
 function renderVersion() {
@@ -1131,15 +1136,28 @@ async function refresh() {
   $('#refresh-button').disabled = true;
   setApiStatus(false, 'Refreshing');
   try {
-    const failures = (await Promise.all([
-      loadDashboardResource('inventory', '/api/inventory', (data) => { state.inventory = data; }),
-      loadDashboardResource('profiles', '/api/profiles', (data) => { state.profiles = data.profiles || []; }),
-      loadDashboardResource('servers', '/api/servers', (data) => { state.servers = data.servers || []; }),
-      loadDashboardResource('settings', '/api/config', (data) => { state.config = data; }),
-      loadDashboardResource('hardware', '/api/system', (data) => { state.hardware = data; }),
-      loadDashboardResource('meta', '/api/meta', (data) => { state.meta = data; }),
-      loadDashboardResource('runtime-updates', '/api/runtime-updates', (data) => { state.runtimeUpdates = data; }),
-    ])).filter(Boolean);
+    const labels = ['inventory', 'profiles', 'servers', 'settings', 'hardware', 'meta', 'runtime-updates'];
+    const paths = ['/api/inventory', '/api/profiles', '/api/servers', '/api/config', '/api/system', '/api/meta', '/api/runtime-updates'];
+    const applyFns = [
+      (data) => { state.inventory = data; },
+      (data) => { state.profiles = data.profiles || []; },
+      (data) => { state.servers = data.servers || []; },
+      (data) => { state.config = data; },
+      (data) => { state.hardware = data; },
+      (data) => { state.meta = data; },
+      (data) => { state.runtimeUpdates = data; },
+    ];
+
+    const failures = [];
+    const successes = [];
+    for (let i = 0; i < labels.length; i++) {
+      const error = await loadDashboardResource(labels[i], paths[i], applyFns[i]);
+      if (error) {
+        failures.push(error);
+      } else {
+        successes.push(labels[i]);
+      }
+    }
 
     if (!state.selectedProfileMode && state.profiles.length) {
       state.selectedProfileMode = state.profiles[0].mode;
@@ -1151,13 +1169,14 @@ async function refresh() {
     if (failures.length) {
       const summary = failures.slice(0, 2).join('; ');
       const suffix = failures.length > 2 ? ` and ${failures.length - 2} more` : '';
-      setApiStatus(false, failures.length >= 7 ? 'API error' : 'API partial');
+      const detailText = failures.join('\n');
+      setApiStatus(false, failures.length >= paths.length ? 'API error' : 'API partial', detailText);
       toast(`Refresh partial: ${summary}${suffix}`);
     } else {
       setApiStatus(true, 'API ready');
     }
   } catch (error) {
-    setApiStatus(false, 'API error');
+    setApiStatus(false, 'API error', `API error: ${error.message}`);
     toast(`Refresh failed: ${error.message}`);
   } finally {
     $('#refresh-button').disabled = false;
