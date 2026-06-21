@@ -18,6 +18,7 @@ streamlit-err*.log
 logs/
 chat_history/
 metrics.json
+lcc-api.pid
 
 # Local backups and scratch space
 backups/

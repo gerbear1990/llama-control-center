@@ -37,6 +37,8 @@ variables, not in source code.
   guidance.
 - Draft model suggestions: auto-suggest compatible draft models for speculative
   decoding based on base model size, with one-click pull from Hugging Face.
+- Server management scripts: `start-lcc.py` and `stop-lcc.py` for easy
+  cross-platform start/stop/status with PID tracking and port conflict checks.
 
 ## Requirements
 
@@ -55,10 +57,22 @@ python -m pip install -r requirements.txt
 
 ## Run
 
-Start the local API and dashboard:
+Start the local API and dashboard using the convenience script:
+
+```powershell
+python start-lcc.py start
+```
+
+Or run directly:
 
 ```powershell
 python -m lcc_api --host 127.0.0.1 --port 8716
+```
+
+Stop the server:
+
+```powershell
+python stop-lcc.py
 ```
 
 Open:
@@ -71,6 +85,15 @@ API docs are available at:
 
 ```text
 http://127.0.0.1:8716/docs
+```
+
+Server management:
+
+```powershell
+python start-lcc.py start --host 127.0.0.1 --port 8716   # start with custom options
+python start-lcc.py start --reload                        # enable auto-reload for development
+python stop-lcc.py                                         # stop the running server
+python start-lcc.py status                                 # check if server is running
 ```
 
 ## First-Time Setup
