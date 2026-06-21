@@ -20,10 +20,10 @@ from lcc_core.estimates import enrich_profiles_with_fit_status, estimate_memory_
 from lcc_core.fit import run_fit_test
 from lcc_core.hardware import detect_system_hardware
 from lcc_core.hf_cli import detect_hf_cli as hf_cli_detect, check_for_updates, install_hf_cli
-from lcc_core.draft_models import suggest_draft_models, pull_draft_model
+from lcc_core.draft_models import suggest_draft_models, pull_draft_model, download_model_file
 from lcc_core.inventory import build_inventory
 from lcc_core.profile_resolver import resolved_inventory, resolve_profiles
-from lcc_core.hf_metadata import fetch_model_info
+from lcc_core.hf_metadata import fetch_model_info, check_model_update
 from lcc_core.runtime_updates import check_runtime_updates
 from lcc_core.server_manager import list_servers, prepare_launch_command, start_profile, stop_server
 
@@ -317,6 +317,28 @@ def hf_model_info(request: HFInfoRequest) -> dict[str, Any]:
     result = fetch_model_info(repo_id=request.repo_id, name=request.name, path=request.path)
     if not result.get("success"):
         raise HTTPException(status_code=404, detail=result)
+    return result
+
+
+@app.post("/api/models/hf-update-check")
+def hf_model_update_check(request: HFInfoRequest) -> dict[str, Any]:
+    result = check_model_update(repo_id=request.repo_id, name=request.name, path=request.path)
+    if not result.get("success"):
+        raise HTTPException(status_code=404, detail=result)
+    return result
+
+
+class ModelDownloadRequest(BaseModel):
+    repo_id: str
+    filename: str
+    dest_dir: str
+
+
+@app.post("/api/models/hf-download")
+def hf_model_download(request: ModelDownloadRequest) -> dict[str, Any]:
+    result = download_model_file(request.repo_id, request.filename, request.dest_dir)
+    if not result.get("success"):
+        raise HTTPException(status_code=400, detail=result)
     return result
 
 

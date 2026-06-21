@@ -92,6 +92,26 @@ def suggest_draft_models(base_model_name: str | None) -> list[dict[str, Any]]:
     return results
 
 
+def download_model_file(repo_id: str, filename: str, dest_dir: str) -> dict[str, Any]:
+    """Re-download one file from a repo into dest_dir, overwriting in place.
+
+    Used by the selected-model HF update flow: caller passes the exact repo and
+    filename from a prior update check, so this is a targeted refresh, not a guess.
+    """
+    hf_cli = shutil.which("huggingface-cli")
+    if not hf_cli:
+        return {"success": False, "message": "Hugging Face CLI not found. Install with 'pip install huggingface_hub'."}
+    if not (repo_id and filename and dest_dir):
+        return {"success": False, "message": "repo_id, filename, and dest_dir are all required."}
+    result = _run(
+        [hf_cli, "download", repo_id, "--include", filename, "--local-dir", dest_dir],
+        timeout=1800.0,
+    )
+    if result and result.returncode == 0:
+        return {"success": True, "message": f"Downloaded {filename} from {repo_id} into {dest_dir}."}
+    return {"success": False, "message": result.stderr.strip() if result else "Download failed."}
+
+
 def pull_draft_model(repo_id: str, quant: str = "Q4_K_M") -> dict[str, Any]:
     hf_cli = shutil.which("huggingface-cli")
     if not hf_cli:

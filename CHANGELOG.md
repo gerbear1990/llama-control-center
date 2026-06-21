@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Selected-model Hugging Face update check + targeted re-download.** An "HF update"
+  button on the model panel resolves the selected profile's model to its HF repo and
+  compares the remote file against the local copy (size diff is the primary signal;
+  repo last-modified is a low-confidence fallback). When a newer copy exists and the
+  exact remote file is known, a confirm-gated "Download latest" button re-pulls just
+  that file into the model's own directory via `huggingface-cli`. Search-matched repos
+  are flagged as needing verification before download.
+  ([app.js](lcc_api/static/app.js), [app.py](lcc_api/app.py),
+  [hf_metadata.py](lcc_core/hf_metadata.py), [draft_models.py](lcc_core/draft_models.py))
+
 ## [0.6.1] - 2026-06-21
 
 ### Added

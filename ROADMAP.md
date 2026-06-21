@@ -42,6 +42,10 @@ passes.
 - Per-runtime "Recheck" button on each runtime card, and a Model Notes panel
   that keeps HF info, fit-test, and benchmark results in separate titled
   blocks. Added in `v0.6.0`.
+- Selected-model Hugging Face update check: resolves the model's HF repo,
+  compares the remote file against the local copy (size diff primary, repo
+  last-modified fallback), and offers a confirm-gated re-download of just that
+  file into the model's directory. Added in `v0.6.1`–`Unreleased`.
 
 ## Runtime Management
 
@@ -61,9 +65,8 @@ live host/port preview are all shipped — see Completed.)
 
 ## Hugging Face Tooling
 
-- Add a selected-model update check against Hugging Face.
-
-(The HF CLI widget and draft-model suggestions/pulls are shipped — see Completed.)
+(The HF CLI widget, draft-model suggestions/pulls, and the selected-model update
+check + targeted re-download are all shipped — see Completed.)
 
 ## Estimates And Hardware Detail
 

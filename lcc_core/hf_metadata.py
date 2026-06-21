@@ -79,6 +79,86 @@ def search_models(query: str, limit: int = 5) -> list[dict[str, Any]]:
     return payload
 
 
+def _find_remote_file(model_id: str, filename: str) -> dict[str, Any] | None:
+    url = f"{HF_API}/models/{urllib.parse.quote(model_id, safe='/')}/tree/main?recursive=true"
+    try:
+        tree = _get_json(url)
+    except Exception:
+        return None
+    for entry in tree if isinstance(tree, list) else []:
+        if entry.get("type") == "file" and Path(entry.get("path", "")).name == filename:
+            lfs = entry.get("lfs") or {}
+            return {"rfilename": entry.get("path"), "size": lfs.get("size") or entry.get("size"), "oid": lfs.get("oid") or entry.get("oid")}
+    return None
+
+
+def _modified_after(last_modified: str | None, local_mtime: float | None) -> bool:
+    if not last_modified or local_mtime is None:
+        return False
+    try:
+        from datetime import datetime
+        return datetime.fromisoformat(last_modified.replace("Z", "+00:00")).timestamp() > local_mtime
+    except Exception:
+        return False
+
+
+def check_model_update(repo_id: str | None = None, name: str | None = None, path: str | None = None) -> dict[str, Any]:
+    """Check whether the HF repo for a local model has a newer copy of its file.
+
+    Honest signal, strongest first: remote file size != local size -> differs.
+    Fallback when no file match: repo lastModified after the local file's mtime
+    (a low-confidence hint; a README edit also bumps lastModified).
+    ponytail: size+mtime heuristic, not a blob-sha compare — we don't record the
+    original oid at download time. Add oid tracking if false positives bite.
+    """
+    info = fetch_model_info(repo_id=repo_id, name=name, path=path)
+    if not info.get("success"):
+        return {"success": False, "query": info.get("query"), "error": info.get("error", "No matching HF model.")}
+
+    model_id = info["model_id"]
+    filename = local_size = local_mtime = None
+    if path:
+        local = Path(path)
+        filename = local.name
+        if local.exists():
+            stat = local.stat()
+            local_size, local_mtime = stat.st_size, stat.st_mtime
+
+    try:
+        meta = _get_json(f"{HF_API}/models/{urllib.parse.quote(model_id, safe='/')}")
+    except Exception as exc:
+        return {"success": False, "model_id": model_id, "error": str(exc)}
+
+    last_modified = meta.get("lastModified") if isinstance(meta, dict) else None
+    remote = _find_remote_file(model_id, filename) if filename else None
+
+    file_differs: bool | None = None
+    if remote and local_size is not None and remote.get("size") is not None:
+        file_differs = remote["size"] != local_size
+
+    if file_differs is not None:
+        update_available = file_differs
+        reason = "remote file size differs from local copy" if file_differs else "remote file matches your local copy"
+    else:
+        update_available = _modified_after(last_modified, local_mtime)
+        reason = "repo changed after your local file (may be a card/metadata edit)" if update_available else "no newer changes detected"
+
+    return {
+        "success": True,
+        "model_id": model_id,
+        "url": info.get("url"),
+        "confident": bool(repo_id),
+        "filename": filename,
+        "remote_file": remote,
+        "local_size": local_size,
+        "local_mtime": local_mtime,
+        "last_modified": last_modified,
+        "file_differs": file_differs,
+        "update_available": update_available,
+        "reason": reason,
+    }
+
+
 def fetch_model_info(repo_id: str | None = None, name: str | None = None, path: str | None = None) -> dict[str, Any]:
     query = repo_id or infer_query(name, path)
     try:

@@ -476,6 +476,24 @@ class HuggingFaceMetadataTests(unittest.TestCase):
         self.assertIn("26B", query)
         self.assertNotIn("Q6_K_XL", query)
 
+    def test_check_model_update_flags_size_difference(self) -> None:
+        from lcc_core import hf_metadata
+        with tempfile.TemporaryDirectory() as tmp:
+            local = Path(tmp) / "model-Q4_K_M.gguf"
+            local.write_bytes(b"x" * 100)
+            hf_metadata.fetch_model_info = lambda **_: {"success": True, "model_id": "org/repo", "url": "https://hf.co/org/repo"}
+            hf_metadata._get_json = lambda url, timeout=10.0: {"lastModified": "2026-01-01T00:00:00.000Z"}
+            # Remote copy is a different size -> update available, exact file known.
+            hf_metadata._find_remote_file = lambda mid, fn: {"rfilename": fn, "size": 200, "oid": "abc"}
+            result = hf_metadata.check_model_update(name="model", path=str(local))
+            self.assertTrue(result["update_available"])
+            self.assertTrue(result["file_differs"])
+            self.assertEqual(result["remote_file"]["rfilename"], "model-Q4_K_M.gguf")
+            # Same size -> no update.
+            hf_metadata._find_remote_file = lambda mid, fn: {"rfilename": fn, "size": 100, "oid": "abc"}
+            same = hf_metadata.check_model_update(name="model", path=str(local))
+            self.assertFalse(same["update_available"])
+
 
 class RuntimeUpdatesTests(unittest.TestCase):
     def setUp(self) -> None:

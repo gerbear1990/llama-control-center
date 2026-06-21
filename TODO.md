@@ -32,7 +32,7 @@
 - [x] RAM detection should include DDR generation, speed, and estimated bandwidth where the OS exposes it.
 - [x] VRAM detection should include memory generation, speed, and bandwidth where the GPU tooling exposes it.
 - [x] RAM/VRAM speed and bandwidth should feed into tokens/sec estimates and fit scoring when useful. _v0.6.0 (bandwidth applied as a decode ceiling)._
-- [ ] Add a button to check Hugging Face for updates to the selected model.
+- [x] Add a button to check Hugging Face for updates to the selected model. _Unreleased — resolves the model's HF repo, compares remote vs local file (size diff primary, repo last-modified fallback), and offers a confirm-gated re-download of just that file._
 - [ ] Add full Ollama support so users can use Ollama as a preferred model/runtime source instead of Hugging Face.
 - [x] Refine and tighten the Model Notes panel after a benchmark runs so the result is laid out cleanly and clearly separated from the fit-test output. _v0.6.0 (HF / fit / benchmark each in their own titled block)._
 - [x] Verify and harden stop-server logic so a tracked server actually transitions from running to stopped after Stop is clicked, with the dashboard reflecting the new state.

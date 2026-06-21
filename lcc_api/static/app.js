@@ -1714,6 +1714,70 @@ async function fetchHFInfo() {
   });
 }
 
+function dirname(path) {
+  const idx = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
+  return idx > 0 ? path.slice(0, idx) : '';
+}
+
+async function checkModelUpdate() {
+  const profile = getSelectedProfile();
+  if (!profile) return;
+  const path = profile.model?.path || '';
+  const trigger = $('#hf-update-button');
+  setModelNote('hf', 'Checking Hugging Face for a newer copy...');
+  await withBusy(trigger, async () => {
+    try {
+      const result = await api('/api/models/hf-update-check', {
+        method: 'POST',
+        body: JSON.stringify({ name: profile.model?.name || profile.name, path }),
+      });
+      const lines = [
+        `<strong>${escapeHtml(result.model_id || 'Hugging Face model')}</strong>`,
+        result.url ? escapeHtml(result.url) : '',
+        result.confident ? '' : 'Matched by search — verify this is the right repo before downloading.',
+        result.update_available ? `⚠ Update available — ${escapeHtml(result.reason)}` : `✓ ${escapeHtml(result.reason)}`,
+        result.last_modified ? `Repo last modified: ${escapeHtml(result.last_modified)}` : '',
+      ];
+      // Offer a targeted re-download only when we found the exact file remotely
+      // and know where the local copy lives.
+      const dest = dirname(path);
+      if (result.update_available && result.remote_file?.rfilename && dest) {
+        lines.push(
+          `<button class="mini-button" type="button" data-action="download-model"`
+          + ` data-repo="${escapeHtml(result.model_id)}"`
+          + ` data-file="${escapeHtml(result.remote_file.rfilename)}"`
+          + ` data-dest="${escapeHtml(dest)}">Download latest into ${escapeHtml(dest)}</button>`,
+        );
+      }
+      setModelNote('hf', lines.filter(Boolean).join('\n'));
+      toast(result.update_available ? 'HF update available' : 'Model is up to date');
+    } catch (error) {
+      setModelNote('hf', `<strong>HF update check failed</strong>\n${escapeHtml(error.message)}`);
+      toast(`HF update check failed: ${error.message}`);
+    }
+  });
+}
+
+async function downloadModelUpdate(repo, file, dest, trigger) {
+  const confirmed = await confirmAction({
+    title: 'Download model file',
+    message: `Download ${file} from ${repo} into ${dest}? This overwrites the existing file.`,
+    confirmLabel: 'Download',
+  });
+  if (!confirmed) return;
+  await withBusy(trigger, async () => {
+    try {
+      const result = await api('/api/models/hf-download', {
+        method: 'POST',
+        body: JSON.stringify({ repo_id: repo, filename: file, dest_dir: dest }),
+      });
+      toast(result.message || 'Download complete');
+    } catch (error) {
+      toast(`Download failed: ${error.message}`);
+    }
+  });
+}
+
 async function stopTracked(serverId, trigger) {
   const confirmed = await confirmAction({
     title: 'Stop server',
@@ -1845,12 +1909,13 @@ function wireEvents() {
   document.body.addEventListener('click', (event) => {
     const target = event.target.closest('button');
     if (!target) return;
-    const { action, mode, serverId, runtime } = target.dataset;
+    const { action, mode, serverId, runtime, repo, file, dest } = target.dataset;
     if (mode && state.profiles.some((profile) => profile.mode === mode)) {
       state.selectedProfileMode = mode;
       renderParameters();
     }
-    if (action === 'recheck-runtime') recheckRuntime(runtime, target);
+    if (action === 'download-model') downloadModelUpdate(repo, file, dest, target);
+    else if (action === 'recheck-runtime') recheckRuntime(runtime, target);
     else if (action === 'prepare') prepareProfile(mode, target);
     else if (action === 'start') startProfile(mode, target);
     else if (action === 'logs') loadLogs(serverId, target);
@@ -1883,6 +1948,7 @@ function wireEvents() {
   $('#fit-button').addEventListener('click', runFitTest);
   $('#benchmark-button').addEventListener('click', runBenchmark);
   $('#hf-info-button').addEventListener('click', fetchHFInfo);
+  $('#hf-update-button').addEventListener('click', checkModelUpdate);
   $('#hf-check-updates-button').addEventListener('click', (event) => {
     event.preventDefault();
     event.stopPropagation();
