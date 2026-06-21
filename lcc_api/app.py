@@ -18,7 +18,7 @@ from lcc_core.config import AppConfig
 from lcc_core.estimates import enrich_profiles_with_fit_status, estimate_memory_fit, estimate_tokens_per_second
 from lcc_core.fit import run_fit_test
 from lcc_core.hardware import detect_system_hardware
-from lcc_core.hf_metadata import fetch_model_info
+from lcc_core.hf_cli import detect_hf_cli, check_for_updates, install_hf_cli
 from lcc_core.inventory import build_inventory
 from lcc_core.profile_resolver import resolved_inventory, resolve_profiles
 from lcc_core.runtime_updates import check_runtime_updates
@@ -315,9 +315,14 @@ def stop_server_endpoint(request: StopRequest) -> dict[str, Any]:
     return result
 
 
-@app.get("/api/servers/{server_id}/logs")
-def get_server_logs(server_id: str, lines: int = 200) -> dict[str, Any]:
-    result = server_logs(server_id, lines)
-    if not result.get("success"):
-        raise HTTPException(status_code=404, detail=result)
-    return result
+@app.get("/api/hf-cli")
+def get_hf_cli_status() -> dict[str, Any]:
+    return detect_hf_cli()
+
+@app.post("/api/hf-cli/check-updates")
+def check_hf_updates() -> dict[str, Any]:
+    return check_for_updates()
+
+@app.post("/api/hf-cli/install")
+def install_hf_cli_endpoint() -> dict[str, Any]:
+    return install_hf_cli()

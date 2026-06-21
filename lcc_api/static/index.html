@@ -38,11 +38,15 @@
             <span class="nav-icon icon-logs" aria-hidden="true"></span>
             <span>Logs</span>
           </a>
-          <a class="nav-item" href="#portability" data-section="portability">
-            <span class="nav-icon icon-portability" aria-hidden="true"></span>
-            <span>Portability</span>
-          </a>
-        </nav>
+           <a class="nav-item" href="#portability" data-section="portability">
+             <span class="nav-icon icon-portability" aria-hidden="true"></span>
+             <span>Portability</span>
+           </a>
+           <a class="nav-item" href="#hf-tools" data-section="hf-tools">
+             <span class="nav-icon icon-hf" aria-hidden="true"></span>
+             <span>HF Tools</span>
+           </a>
+         </nav>
         <div class="sidebar-footer">
           <span class="status-dot" id="api-dot" aria-hidden="true"></span>
           <span id="api-status">Connecting</span>
@@ -381,15 +385,47 @@
               <pre class="log-preview" id="log-preview">No tracked server selected.</pre>
             </section>
 
-            <section class="panel" id="portability">
-              <div class="panel-heading compact">
-                <div>
-                  <h3>Portability</h3>
-                  <p>Setup issues before public release.</p>
-                </div>
-              </div>
-              <div class="issue-list" id="issue-list"></div>
-            </section>
+         <section class="panel" id="portability">
+               <div class="panel-heading">
+                 <div>
+                   <h3>Portability</h3>
+                   <p>Setup issues before public release.</p>
+                 </div>
+                 <button class="mini-button" type="button" id="open-logs-button">Open logs</button>
+               </div>
+               <div class="issue-list" id="issue-list"></div>
+             </section>
+
+             <section class="panel" id="hf-tools">
+               <div class="panel-heading">
+                 <div>
+                   <h3>Hugging Face Tools</h3>
+                   <p>Manage your Hugging Face CLI installation.</p>
+                 </div>
+               </div>
+               <div class="hf-widget">
+                 <div class="hf-status-card">
+                   <div class="hf-status-row">
+                     <span class="hf-label">CLI Status</span>
+                     <span id="hf-cli-status" class="badge">Checking...</span>
+                   </div>
+                   <div class="hf-status-row">
+                     <span class="hf-label">Version</span>
+                     <span id="hf-cli-version">-</span>
+                   </div>
+                   <div class="hf-status-row">
+                     <span class="hf-label">Path</span>
+                     <code id="hf-cli-path">-</code>
+                   </div>
+                   <div class="hf-actions">
+                     <button class="mini-button" id="hf-check-updates-button">Check for Updates</button>
+                     <button class="mini-button primary" id="hf-install-button">Install CLI</button>
+                   </div>
+                 </div>
+               </div>
+             </section>
+           </section>
+
           </aside>
         </div>
       </main>

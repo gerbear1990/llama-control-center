@@ -1194,6 +1194,22 @@ async function saveSettings(event) {
   }
 }
 
+function updateHfCliUi(hfData) {
+  const statusBadge = $('#hf-cli-status');
+  const versionEl = $('#hf-cli-version');
+  const pathEl = $('#hf-cli-path');
+  if (!hfData) return;
+  if (hfData.installed) {
+    statusBadge.textContent = 'Installed';
+    statusBadge.className = 'badge ok';
+  } else {
+    statusBadge.textContent = 'Not installed';
+    statusBadge.className = 'badge warn';
+  }
+  versionEl.textContent = hfData.version || '-';
+  pathEl.textContent = hfData.binary_path || '-';
+}
+
 function renderAll() {
   renderSummary();
   renderHardware();
@@ -1213,8 +1229,8 @@ async function refresh() {
   $('#refresh-button').disabled = true;
   setApiStatus(false, 'Refreshing');
   try {
-    const labels = ['inventory', 'profiles', 'servers', 'settings', 'hardware', 'meta', 'runtime-updates'];
-    const paths = ['/api/inventory', '/api/profiles', '/api/servers', '/api/config', '/api/system', '/api/meta', '/api/runtime-updates'];
+    const labels = ['inventory', 'profiles', 'servers', 'settings', 'hardware', 'meta', 'runtime-updates', 'hf-cli'];
+    const paths = ['/api/inventory', '/api/profiles', '/api/servers', '/api/config', '/api/system', '/api/meta', '/api/runtime-updates', '/api/hf-cli'];
     const applyFns = [
       (data) => { state.inventory = data; },
       (data) => { state.profiles = data.profiles || []; },
@@ -1223,8 +1239,8 @@ async function refresh() {
       (data) => { state.hardware = data; },
       (data) => { state.meta = data; },
       (data) => { state.runtimeUpdates = data; },
+      (data) => { updateHfCliUi(data); },
     ];
-
     const failures = [];
     const successes = [];
     for (let i = 0; i < labels.length; i++) {
@@ -1235,7 +1251,6 @@ async function refresh() {
         successes.push(labels[i]);
       }
     }
-
     if (!state.selectedProfileMode && state.profiles.length) {
       state.selectedProfileMode = state.profiles[0].mode;
     } else if (state.selectedProfileMode && !state.profiles.some((profile) => profile.mode === state.selectedProfileMode)) {
@@ -1625,6 +1640,37 @@ function wireEvents() {
   $('#fit-button').addEventListener('click', runFitTest);
   $('#benchmark-button').addEventListener('click', runBenchmark);
   $('#hf-info-button').addEventListener('click', fetchHFInfo);
+  $('#hf-check-updates-button').addEventListener('click', async () => {
+    const trigger = $('#hf-check-updates-button');
+    await withBusy(trigger, async () => {
+      try {
+        const result = await api('/api/hf-cli/check-updates', { method: 'POST' });
+        if (result.needs_update) {
+          toast('Hugging Face CLI update available');
+        } else {
+          toast('Hugging Face CLI is up to date');
+        }
+      } catch (error) {
+        toast(`Update check failed: ${error.message}`);
+      }
+    });
+  });
+  $('#hf-install-button').addEventListener('click', async () => {
+    const trigger = $('#hf-install-button');
+    await withBusy(trigger, async () => {
+      try {
+        const result = await api('/api/hf-cli/install', { method: 'POST' });
+        if (result.success) {
+          toast('Hugging Face CLI installed');
+          await refresh();
+        } else {
+          toast(result.message || 'Installation failed');
+        }
+      } catch (error) {
+        toast(`Install failed: ${error.message}`);
+      }
+    });
+  });
   $('#param-form').addEventListener('change', () => {
     saveCurrentOverrides();
     state.paramPreviewHost = $('#param-host').value.trim() || '127.0.0.1';
