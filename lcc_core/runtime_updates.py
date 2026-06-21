@@ -293,6 +293,7 @@ def check_runtime_updates(
     channel: str = "stable",
     *,
     force_refresh: bool = False,
+    force_runtime: str | None = None,
     ttl_seconds: int = DEFAULT_CACHE_TTL_SECONDS,
     timeout_seconds: float = REQUEST_TIMEOUT_SECONDS,
 ) -> dict[str, Any]:
@@ -323,7 +324,10 @@ def check_runtime_updates(
                 cached_entry = entry
 
         fetched: dict[str, Any]
-        if cached_entry and _cache_fresh(cached_entry, ttl_seconds):
+        # force_runtime bypasses the cache for just one runtime (per-card recheck)
+        # while the rest still serve from cache, so a single recheck makes one
+        # GitHub call instead of N.
+        if runtime_id != force_runtime and cached_entry and _cache_fresh(cached_entry, ttl_seconds):
             fetched = {
                 "ok": True,
                 "tag": cached_entry.get("latest_version"),

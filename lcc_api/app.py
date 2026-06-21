@@ -145,13 +145,15 @@ def get_runtime_updates() -> dict[str, Any]:
 
 
 @app.post("/api/runtime-updates/refresh")
-def refresh_runtime_updates() -> dict[str, Any]:
+def refresh_runtime_updates(runtime: str | None = None) -> dict[str, Any]:
     config = AppConfig.load()
     inventory = build_inventory(model_dirs=[Path(path) for path in config.model_dirs] or None)
+    # No runtime -> recheck all; a single runtime -> bypass cache for just that one.
     return check_runtime_updates(
         inventory.get("environments") or [],
         channel=config.update_channel or "stable",
-        force_refresh=True,
+        force_refresh=runtime is None,
+        force_runtime=runtime,
     )
 
 

@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Per-runtime "Recheck" button** on each runtime card. It bypasses the update
+  cache for just that one runtime (one GitHub call) while the others continue to
+  serve from cache. ([app.js](lcc_api/static/app.js),
+  [app.py](lcc_api/app.py), [runtime_updates.py](lcc_core/runtime_updates.py))
+
+### Changed
+
+- **Model Notes panel keeps HF info, fit-test, and benchmark results in separate
+  titled blocks** instead of overwriting one another, so running a benchmark no
+  longer wipes the fit recommendation. ([app.js](lcc_api/static/app.js),
+  [styles.css](lcc_api/static/styles.css))
+
+### Docs
+
+- Synced `ROADMAP.md` and `TODO.md` to reality — most listed items (runtime update
+  checks, update channel, HF CLI widget, draft models, RAM/VRAM bandwidth, live
+  host/port preview, profile Stop button) were already shipped but still marked open.
+
 ## [0.6.0] - 2026-06-21
 
 ### Fixed

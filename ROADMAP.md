@@ -27,74 +27,54 @@ passes.
   card shows the measured tokens/sec (with "(measured)" suffix) instead of
   the heuristic estimate, persisting until parameters change. Added in
   `v0.3.0`.
+- Runtime update checks: automatic on load plus a manual "Check for updates"
+  button, an update channel selector (stable/prerelease) in Settings, update
+  badges on runtime cards, and clear feedback when no runtime supports checks
+  (no version detected / not tracked). Added in `v0.5.x`.
+- Draft model suggestions, HF pulls, and the Hugging Face CLI widget
+  (detect/version/update/install). Added in `v0.4.x`.
+- RAM/VRAM DDR generation, speed, and bandwidth detection feeding into
+  tokens/sec estimates. Added in `v0.4.x`–`v0.6.0`.
+- Reliable server lifecycle: SIGKILL escalation when SIGTERM is ignored,
+  zombie detection, and detached (`start_new_session`) servers that survive
+  control-center shutdown. Speed estimates now treat detected memory bandwidth
+  as a decode ceiling with confidence gated on it. Added in `v0.6.0`.
+- Per-runtime "Recheck" button on each runtime card, and a Model Notes panel
+  that keeps HF info, fit-test, and benchmark results in separate titled
+  blocks. Added in `v0.6.0`.
 
 ## Runtime Management
 
-- Add automatic runtime update checks.
-- Let users choose an update channel in settings, such as stable or another
-  release stream when the runtime supports it.
-- Check for updates gives clear feedback when no runtimes support update
-  checks (no version detected, unsupported runtime) instead of failing
-  silently or with cryptic errors. Ollama version detection added.
 - Add a small apply-update button on runtime cards when an update is available.
-- Verify and harden stop-server logic so a tracked server actually
-  transitions from running to stopped after Stop is clicked, with the
-  dashboard reflecting the new state. **Completed in `v0.3.0`** with
-  post-kill polling to verify process exit.
-- Profiles table now shows a Stop button for profiles with a running
-  server, wired to the same stop logic as the Servers panel.
+  (Open: there is no safe universal updater — llama.cpp is typically built from
+  source; the card currently links to the release page and offers a Recheck.)
 
 ## UI Polish
 
 - Continue iterating on spacing, alignment, and visual hierarchy as new
   panels are added.
 - Keep the style clean, modern, and utilitarian rather than decorative.
-- Refine the Model Notes panel after a benchmark runs so the result is
-  laid out cleanly and clearly separated from the fit-test output.
-- When the API status indicator shows a partial state, surface a hover
-  tooltip listing which endpoints succeeded and which failed (and why).
-  **Completed in `v0.3.0`** with a copy-to-clipboard button.
-- Runtimes panel shows a live preview of the host/port from the Parameters
-  panel for llama.cpp, letting users see what endpoint their current
-  settings would use without starting a server.
+- Keep the style clean, modern, and utilitarian rather than decorative.
 
-## Draft Models
-
-- Suggest compatible draft models for the selected profile and base model.
-- Offer optional Hugging Face pulls for compatible draft models.
-- Detect the Hugging Face CLI and use it when available for model downloads.
+(Model Notes separation, the partial-state status tooltip, and the llama.cpp
+live host/port preview are all shipped — see Completed.)
 
 ## Hugging Face Tooling
 
-- Add a main-page Hugging Face CLI widget that can:
-  - detect whether the CLI is installed,
-  - show the installed version,
-  - offer install guidance or an install action when missing,
-  - check for CLI updates,
-  - apply a CLI update when the user chooses it.
 - Add a selected-model update check against Hugging Face.
+
+(The HF CLI widget and draft-model suggestions/pulls are shipped — see Completed.)
 
 ## Estimates And Hardware Detail
 
-- Push speed estimates toward high confidence when model metadata, runtime
-  backend, GPU, VRAM, RAM, and benchmark calibration data are available.
-- Fall back clearly to medium or low confidence when inputs are incomplete.
-- Detect RAM DDR generation, speed, and estimated bandwidth where available.
-- Detect VRAM memory generation, speed, and estimated bandwidth where available.
-- Feed RAM and VRAM speed/bandwidth into tokens/sec estimates and fit scoring
-  when the signal is reliable enough to help.
 - Tighten the tokens-per-second estimation logic so it tracks real
   measured performance more closely across model sizes, quantizations,
-  and runtimes. The current heuristic can drift wildly from real
-  benchmarks and must be recalibrated.
-- After a benchmark completes for a profile, let the user pin the
-  measured tokens/sec over the heuristic estimate on the live
-  Estimated Speed card. **Completed in `v0.3.0`** - measured TPS is
-  shown automatically after benchmark and persists until parameters
-  change.
-- Fit test now passes all user-configurable parameters to llama-fit-params
-  (temperature, top_k, top_p, min_p, penalties, seed, n_predict, reasoning)
-  so the fitted output covers the complete parameter set.
+  and runtimes. `v0.6.0` added a memory-bandwidth ceiling and fixed the unit
+  math; full calibration against real benchmarks is still ongoing.
+
+(High/medium/low confidence gating, RAM/VRAM bandwidth detection feeding the
+estimate, measured-TPS pinning, and full-parameter fit tests are shipped — see
+Completed.)
 
 ## Downstream Integration
 

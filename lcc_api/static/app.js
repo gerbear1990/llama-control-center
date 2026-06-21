@@ -15,6 +15,7 @@ const state = {
   measuredElapsed: null,
   paramPreviewHost: '127.0.0.1',
   paramPreviewPort: 8080,
+  modelNotes: { hf: '', fit: '', benchmark: '' },
   profileFilter: 'all',
   query: '',
   theme: localStorage.getItem('lcc-theme') || 'light',
@@ -726,6 +727,11 @@ function renderRuntimes() {
     const updateBadge = update?.update_available
       ? `<a class="badge update-badge" href="${escapeHtml(update.release_url || '#')}" target="_blank" rel="noopener noreferrer" title="Update available: ${escapeHtml(update.latest_version || '')} (you have ${escapeHtml(update.current_version || 'unknown')})">Update: v${escapeHtml(update.latest_version || '?')}</a>`
       : '';
+    // Recheck button only for runtimes that actually support update checks
+    // (i.e. were checked and produced an update entry).
+    const recheckButton = update
+      ? `<button class="mini-button" type="button" data-action="recheck-runtime" data-runtime="${escapeHtml(update.runtime_id)}" title="Recheck this runtime for updates">Recheck</button>`
+      : '';
     return `
       <article class="runtime-card">
         <div class="runtime-card-top">
@@ -739,7 +745,7 @@ function renderRuntimes() {
           ${runtimeLine('URL', urlDisplay, urlClass)}
           ${runtimeLine('Port', portDisplay, portClass)}
         </div>
-        ${updateBadge}
+        ${updateBadge || recheckButton ? `<div class="runtime-actions">${updateBadge}${recheckButton}</div>` : ''}
         ${warning ? `<p class="runtime-warning">${escapeHtml(warning)}</p>` : ''}
       </article>
     `;
@@ -985,8 +991,17 @@ function renderIssues() {
   `).join('') || '<div class="empty-state">No setup issues detected.</div>';
 }
 
-function renderModelInfo(content) {
-  $('#model-info-box').innerHTML = content;
+// Model Notes keeps HF info, fit-test, and benchmark results in separate slots
+// so running a benchmark no longer wipes the fit recommendation (and vice
+// versa); each is rendered in its own titled block, clearly separated.
+const MODEL_NOTE_TITLES = { hf: 'Hugging Face', fit: 'Fit test', benchmark: 'Benchmark' };
+
+function setModelNote(slot, html) {
+  state.modelNotes[slot] = html || '';
+  const present = Object.keys(MODEL_NOTE_TITLES).filter((key) => state.modelNotes[key]);
+  $('#model-info-box').innerHTML = present.length
+    ? present.map((key) => `<div class="note-block"><h3 class="note-block-title">${MODEL_NOTE_TITLES[key]}</h3>${state.modelNotes[key]}</div>`).join('')
+    : 'Select a profile, then run HF info or Fit test.';
 }
 
 function renderTpsEstimate(estimate) {
@@ -1475,6 +1490,22 @@ async function refreshRuntimeUpdates(trigger) {
   });
 }
 
+async function recheckRuntime(runtimeId, trigger) {
+  await withBusy(trigger, async () => {
+    try {
+      const data = await api(`/api/runtime-updates/refresh?runtime=${encodeURIComponent(runtimeId)}`, { method: 'POST' });
+      state.runtimeUpdates = data;
+      renderRuntimes();
+      const update = (data.updates || []).find((item) => item.runtime_id === runtimeId);
+      if (update?.update_available) toast(`${runtimeId}: update v${update.latest_version} available`);
+      else if (update) toast(`${runtimeId} is up to date`);
+      else toast(`${runtimeId}: no update info`);
+    } catch (error) {
+      toast(`Recheck failed: ${error.message}`);
+    }
+  });
+}
+
 async function prepareProfile(mode, trigger) {
   const targetMode = mode || selectedMode();
   if (!targetMode) {
@@ -1542,7 +1573,7 @@ async function runFitTest() {
   state.selectedProfileMode = mode;
   const overrides = saveCurrentOverrides();
   const target = Number($('#param-fit-target').value || 1024);
-  renderModelInfo('Running fit test. This may take a moment...');
+  setModelNote('fit', 'Running fit test. This may take a moment...');
   await withBusy(trigger, async () => {
     try {
       const result = await api('/api/profiles/fit', {
@@ -1551,7 +1582,7 @@ async function runFitTest() {
       });
       const applied = applyFitResultParams(result);
       const suggestions = result.suggestions || {};
-      renderModelInfo(renderFitSummary(result, applied));
+      setModelNote('fit', renderFitSummary(result, applied));
       renderTpsEstimate(result.speed_estimate);
       scheduleTpsEstimate(80);
       $('#log-preview').textContent = parsedFitAccepted(suggestions)
@@ -1559,7 +1590,7 @@ async function runFitTest() {
         : (result.command_line || result.stdout || 'Fit test completed.');
       toast('Fit test complete');
     } catch (error) {
-      renderModelInfo(`<strong>Fit test failed</strong>\n${escapeHtml(error.message)}`);
+      setModelNote('fit', `<strong>Fit test failed</strong>\n${escapeHtml(error.message)}`);
       toast(`Fit test failed: ${error.message}`);
     }
   });
@@ -1617,7 +1648,7 @@ async function runBenchmark() {
   const overrides = saveCurrentOverrides();
   const requested = Number($('#param-predict').value || 128);
   const completionTokens = requested > 0 ? Math.min(requested, 512) : 128;
-  renderModelInfo('Running benchmark with the current parameters...');
+  setModelNote('benchmark', 'Running benchmark with the current parameters...');
   await withBusy(trigger, async () => {
     try {
       const result = await api('/api/benchmarks/run', {
@@ -1631,7 +1662,7 @@ async function runBenchmark() {
           ready_timeout_seconds: 90,
         }),
       });
-      renderModelInfo(renderBenchmarkSummary(result));
+      setModelNote('benchmark', renderBenchmarkSummary(result));
       renderMeasuredTps(result.benchmark.tokens_per_second, result.benchmark.elapsed_seconds);
       $('#log-preview').textContent = [
         `Benchmark: ${result.benchmark.tokens_per_second} tok/s`,
@@ -1645,7 +1676,7 @@ async function runBenchmark() {
         renderMeasuredTps(state.measuredTps, state.measuredElapsed);
       }
     } catch (error) {
-      renderModelInfo(`<strong>Benchmark failed</strong>\n${escapeHtml(error.message)}`);
+      setModelNote('benchmark', `<strong>Benchmark failed</strong>\n${escapeHtml(error.message)}`);
       toast(`Benchmark failed: ${error.message}`);
     }
   });
@@ -1655,7 +1686,7 @@ async function fetchHFInfo() {
   const profile = getSelectedProfile();
   if (!profile) return;
   const trigger = $('#hf-info-button');
-  renderModelInfo('Fetching Hugging Face metadata...');
+  setModelNote('hf', 'Fetching Hugging Face metadata...');
   await withBusy(trigger, async () => {
     try {
       const result = await api('/api/models/hf-info', {
@@ -1674,10 +1705,10 @@ async function fetchHFInfo() {
         `Likes: ${escapeHtml(result.likes ?? '-')}`,
         `Tags: ${escapeHtml((result.tags || []).slice(0, 8).join(', ') || '-')}`,
       ].filter(Boolean).join('\n');
-      renderModelInfo(lines);
+      setModelNote('hf', lines);
       toast('HF info loaded');
     } catch (error) {
-      renderModelInfo(`<strong>HF lookup failed</strong>\n${escapeHtml(error.message)}`);
+      setModelNote('hf', `<strong>HF lookup failed</strong>\n${escapeHtml(error.message)}`);
       toast(`HF lookup failed: ${error.message}`);
     }
   });
@@ -1814,12 +1845,13 @@ function wireEvents() {
   document.body.addEventListener('click', (event) => {
     const target = event.target.closest('button');
     if (!target) return;
-    const { action, mode, serverId } = target.dataset;
+    const { action, mode, serverId, runtime } = target.dataset;
     if (mode && state.profiles.some((profile) => profile.mode === mode)) {
       state.selectedProfileMode = mode;
       renderParameters();
     }
-    if (action === 'prepare') prepareProfile(mode, target);
+    if (action === 'recheck-runtime') recheckRuntime(runtime, target);
+    else if (action === 'prepare') prepareProfile(mode, target);
     else if (action === 'start') startProfile(mode, target);
     else if (action === 'logs') loadLogs(serverId, target);
     else if (action === 'stop') {

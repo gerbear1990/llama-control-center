@@ -612,6 +612,27 @@ class RuntimeUpdatesTests(unittest.TestCase):
         self.assertEqual(info["latest_version"], "b4600")
         self.assertTrue(info["update_available"])
 
+    def test_force_runtime_rechecks_only_that_runtime(self) -> None:
+        from lcc_core.runtime_updates import check_runtime_updates
+
+        fetched: list[str] = []
+
+        def fake_fetch(repo: str, channel: str, timeout: float = 1.0) -> dict:
+            fetched.append(repo)
+            return {"ok": True, "tag": "b4600", "release_url": "https://example.com", "error": None}
+
+        self.runtime_updates.fetch_latest_release = fake_fetch  # type: ignore[assignment]
+        envs = [{"id": "llama.cpp", "version": "b4500"}, {"id": "ollama", "version": "0.3.0"}]
+        check_runtime_updates(envs, force_refresh=True)
+        self.assertEqual(len(fetched), 2)  # cold cache: both fetched
+
+        fetched.clear()
+        result = check_runtime_updates(envs, force_runtime="ollama")
+        # Only ollama bypasses the warm cache; llama.cpp is served from it.
+        self.assertEqual(len(fetched), 1)
+        self.assertIn("ollama", fetched[0])
+        self.assertEqual(len(result["updates"]), 2)
+
 
 class ServerStopTests(unittest.TestCase):
     def test_stop_escalates_to_sigkill_when_sigterm_ignored(self) -> None:
