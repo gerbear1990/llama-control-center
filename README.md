@@ -1,8 +1,11 @@
 # Llama Control Center
 
-A lightweight local dashboard for discovering GGUF models, detecting local LLM
-runtimes, preparing `llama.cpp` launch commands, running fit tests, and managing
-tracked local inference servers.
+> A lightweight local dashboard for discovering GGUF models, detecting local LLM
+> runtimes, preparing `llama.cpp` launch commands, running fit tests, and managing
+> tracked local inference servers.
+
+**v0.5.0** — Fixed GPU/VRAM detection (Windows CIM, nvidia-smi), added GGUF layer-aware
+memory fit, and expanded GPU support tables. See [CHANGELOG.md](./CHANGELOG.md) for details.
 
 The app is designed to be portable: paths live in user settings or environment
 variables, not in source code.
@@ -20,6 +23,12 @@ variables, not in source code.
   (Windows via CIM/PCI revision, macOS via system_profiler, Linux via lspci).
 - Supports NVIDIA/CUDA, AMD and Intel GPU discovery, Apple Metal options on
   macOS, and CPU fallback.
+- Memory fit estimates use the actual layer count from GGUF files
+  (`<arch>.block_count`), producing accurate VRAM/RAM pressure badges
+  for models of any architecture.
+- Expanded GPU support tables cover NVIDIA RTX 50-series (Blackwell),
+  RTX 40-series, RTX 30/20-series, GTX 16/10-series, Tesla/A/L-series,
+  and AMD RX 9000/8000/7000/6000 series.
 - Resolves `models.json` profiles against discovered local model files.
 - Shows profile fit badges: Good, Tight, or Near Limit based on estimated
   accelerator memory and host RAM pressure.
@@ -221,6 +230,10 @@ Uvicorn.
 The product direction was inspired in part by Alex Jones' `llama-panel`,
 `llmfit`, and `llmserve` projects. No source code from those repositories has
 been copied or vendored into this repository at this stage.
+
+## Changelog
+
+See [CHANGELOG.md](./CHANGELOG.md) for the full release history.
 
 ## License
 
