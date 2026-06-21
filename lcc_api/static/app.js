@@ -511,8 +511,22 @@ function renderHardware() {
   const cores = cpu.physical_cores ? `${cpu.physical_cores} cores` : (cpu.logical_cores ? `${cpu.logical_cores} threads` : '');
   $('#hardware-cpu').textContent = [cpu.name, cores].filter(Boolean).join(' · ') || '-';
   $('#hardware-gpu').textContent = gpu?.name || 'Not detected';
-  $('#hardware-vram').textContent = formatBytes(gpu?.vram_total_bytes);
-  $('#hardware-ram').textContent = formatBytes(state.hardware?.memory?.total_bytes);
+  const vramParts = [formatBytes(gpu?.vram_total_bytes)];
+  if (gpu?.vram_data_rate_mts) {
+    vramParts.push(`${gpu.vram_data_rate_mts} MT/s`);
+  }
+  if (gpu?.vram_bus_width_bits) {
+    vramParts.push(`${gpu.vram_bus_width_bits}-bit`);
+  }
+  $('#hardware-vram').textContent = vramParts.join(' · ');
+  const ramParts = [formatBytes(state.hardware?.memory?.total_bytes)];
+  if (state.hardware?.memory?.ram_type) {
+    ramParts.push(state.hardware.memory.ram_type);
+  }
+  if (state.hardware?.memory?.ram_speed_mts) {
+    ramParts.push(`${state.hardware.memory.ram_speed_mts} MT/s`);
+  }
+  $('#hardware-ram').textContent = ramParts.join(' · ');
 }
 
 function getSelectedProfile() {
@@ -774,6 +788,8 @@ function filteredProfiles() {
     .filter(profileMatches);
 }
 
+const collapsedGroups = new Set();
+
 function groupProfilesByModel(profiles) {
   const groups = {};
   profiles.forEach((profile) => {
@@ -784,6 +800,15 @@ function groupProfilesByModel(profiles) {
     groups[modelName].profiles.push(profile);
   });
   return Object.values(groups).sort((a, b) => a.model.localeCompare(b.model));
+}
+
+function toggleGroup(modelName) {
+  if (collapsedGroups.has(modelName)) {
+    collapsedGroups.delete(modelName);
+  } else {
+    collapsedGroups.add(modelName);
+  }
+  renderProfiles();
 }
 
 async function saveProfileName(mode, currentName) {
@@ -805,43 +830,46 @@ function renderProfiles() {
   const groupedProfiles = groupProfilesByModel(filteredProfiles());
   let html = '';
   groupedProfiles.forEach((group) => {
+    const isCollapsed = collapsedGroups.has(group.model);
     html += `
       <thead class="profile-group-header">
         <tr>
           <td colspan="7">
-            <span class="profile-group-title">${escapeHtml(group.model)}</span>
+            <span class="group-toggle" data-model="${escapeHtml(group.model)}" role="button" tabindex="0" aria-label="${isCollapsed ? 'Expand' : 'Collapse'} ${escapeHtml(group.model)}">${isCollapsed ? '▸' : '▾'} ${escapeHtml(group.model)}</span>
           </td>
         </tr>
       </thead>
     `;
-    group.profiles.forEach((profile) => {
-      const selected = profile.mode === state.selectedProfileMode;
-      const modelName = profile.model?.name || 'Unresolved model';
-      const warningText = profile.warnings?.[0] || profile.missing?.join(', ') || '';
-      html += `
-        <tr class="profile-row ${selected ? 'selected' : ''}" data-profile-mode="${escapeHtml(profile.mode)}" tabindex="0" role="button" aria-label="Select profile ${escapeHtml(profile.name || profile.mode)}">
-          <td>
-            <div class="cell-title">${escapeHtml(profile.name || profile.mode)}</div>
-            <div class="cell-subtitle">${escapeHtml(profile.mode)}</div>
-          </td>
-          <td>
-            <div class="cell-title">${escapeHtml(modelName)}</div>
-            <div class="cell-subtitle">${escapeHtml(warningText || `${Math.round((profile.confidence || 0) * 100)}% match`)}</div>
-          </td>
-          <td>${statusBadge(profile)}</td>
-          <td>${fitBadge(profile)}</td>
-          <td>${escapeHtml(profile.params?.ctx_size || '-')}</td>
-          <td>${escapeHtml(profile.params?.port || '-')}</td>
-          <td>
-            <div class="row-actions">
-              <button class="mini-button" type="button" data-action="prepare" data-mode="${escapeHtml(profile.mode)}">Prepare</button>
-              <button class="mini-button" type="button" data-action="rename" data-mode="${escapeHtml(profile.mode)}" title="Rename profile">Rename</button>
-              ${_profileActionButtons(profile)}
-            </div>
-          </td>
-        </tr>
-      `;
-    });
+    if (!isCollapsed) {
+      group.profiles.forEach((profile) => {
+        const selected = profile.mode === state.selectedProfileMode;
+        const modelName = profile.model?.name || 'Unresolved model';
+        const warningText = profile.warnings?.[0] || profile.missing?.join(', ') || '';
+        html += `
+          <tr class="profile-row ${selected ? 'selected' : ''}" data-profile-mode="${escapeHtml(profile.mode)}" tabindex="0" role="button" aria-label="Select profile ${escapeHtml(profile.name || profile.mode)}">
+            <td>
+              <div class="cell-title">${escapeHtml(profile.name || profile.mode)}</div>
+              <div class="cell-subtitle">${escapeHtml(profile.mode)}</div>
+            </td>
+            <td>
+              <div class="cell-title">${escapeHtml(modelName)}</div>
+              <div class="cell-subtitle">${escapeHtml(warningText || `${Math.round((profile.confidence || 0) * 100)}% match`)}</div>
+            </td>
+            <td>${statusBadge(profile)}</td>
+            <td>${fitBadge(profile)}</td>
+            <td>${escapeHtml(profile.params?.ctx_size || '-')}</td>
+            <td>${escapeHtml(profile.params?.port || '-')}</td>
+            <td>
+              <div class="row-actions">
+                <button class="mini-button" type="button" data-action="prepare" data-mode="${escapeHtml(profile.mode)}">Prepare</button>
+                <button class="mini-button" type="button" data-action="rename" data-mode="${escapeHtml(profile.mode)}" title="Rename profile">Rename</button>
+                ${_profileActionButtons(profile)}
+              </div>
+            </td>
+          </tr>
+        `;
+      });
+    }
   });
   $('#profiles-table').innerHTML = html || '<tr><td colspan="7"><div class="empty-state">No profiles match the current filter.</div></td></tr>';
 }
@@ -1159,6 +1187,7 @@ function renderSettings() {
   $('#settings-default-port').value = config.default_port || 8080;
   $('#settings-default-backend').value = config.default_backend || 'llama.cpp';
   $('#settings-update-channel').value = config.update_channel || 'stable';
+  $('#settings-server-history-limit').value = config.server_history_limit || 5;
   $('#settings-extra-args').value = listToLines(config.extra_llama_args);
 }
 
@@ -1215,6 +1244,7 @@ function collectSettings() {
     default_port: Number($('#settings-default-port').value || 8080),
     default_backend: $('#settings-default-backend').value || 'llama.cpp',
     update_channel: $('#settings-update-channel').value || 'stable',
+    server_history_limit: Number($('#settings-server-history-limit').value) || 5,
     extra_llama_args: linesToList($('#settings-extra-args').value),
   };
 }
@@ -1654,6 +1684,10 @@ async function stopTracked(serverId, trigger) {
 }
 
 async function stopProfileByMode(mode, trigger) {
+  if (!mode) {
+    toast('No profile mode specified');
+    return;
+  }
   const confirmed = await confirmAction({
     title: 'Stop profile',
     message: `Stop the running server for profile "${mode}"?`,
@@ -1663,11 +1697,11 @@ async function stopProfileByMode(mode, trigger) {
   if (!confirmed) return;
   await withBusy(trigger, async () => {
     try {
-      await api('/api/servers/stop', {
+      const result = await api('/api/servers/stop', {
         method: 'POST',
         body: JSON.stringify({ mode }),
       });
-      toast(`Stopped ${mode}`);
+      toast(result.message || `Stopped ${mode}`);
       await refresh();
       renderProfiles();
     } catch (error) {
@@ -1746,6 +1780,14 @@ function wireEvents() {
     renderParameters();
     renderProfiles();
   });
+  $('#profiles-table').addEventListener('click', (event) => {
+    const toggle = event.target.closest('.group-toggle');
+    if (toggle) {
+      event.stopPropagation();
+      toggleGroup(toggle.dataset.model);
+      return;
+    }
+  });
   document.body.addEventListener('click', (event) => {
     const target = event.target.closest('button');
     if (!target) return;
@@ -1787,6 +1829,7 @@ function wireEvents() {
   $('#benchmark-button').addEventListener('click', runBenchmark);
   $('#hf-info-button').addEventListener('click', fetchHFInfo);
   $('#hf-check-updates-button').addEventListener('click', (event) => {
+    event.preventDefault();
     event.stopPropagation();
     const trigger = $('#hf-check-updates-button');
     withBusy(trigger, async () => {
@@ -1803,6 +1846,7 @@ function wireEvents() {
     });
   });
   $('#hf-install-button').addEventListener('click', (event) => {
+    event.preventDefault();
     event.stopPropagation();
     const trigger = $('#hf-install-button');
     withBusy(trigger, async () => {
@@ -1820,6 +1864,36 @@ function wireEvents() {
     });
   });
   $('#suggest-draft-button').addEventListener('click', suggestDraftModels);
+  $('#save-profile-button').addEventListener('click', () => {
+    const mode = selectedMode();
+    if (!mode) {
+      toast('No profile selected');
+      return;
+    }
+    const profile = state.profiles.find((p) => p.mode === mode);
+    const currentName = profile?.name || mode;
+    const name = prompt('Profile name:', currentName);
+    if (!name) return;
+    const description = prompt('Description (optional):', profile?.description || '') || '';
+    const overrides = collectOverrides();
+    const modelPath = profile?.model?.path || '';
+    withBusy($('#save-profile-button'), async () => {
+      try {
+        const result = await api('/api/profiles/save', {
+          method: 'POST',
+          body: JSON.stringify({ mode, name, description, model_path: modelPath, params: overrides }),
+        });
+        if (result.success) {
+          toast(result.message || 'Profile saved');
+          await refresh();
+        } else {
+          toast(result.message || 'Save failed');
+        }
+      } catch (error) {
+        toast(`Save failed: ${error.message}`);
+      }
+    });
+  });
   $('#param-form').addEventListener('change', () => {
     saveCurrentOverrides();
     state.paramPreviewHost = $('#param-host').value.trim() || '127.0.0.1';

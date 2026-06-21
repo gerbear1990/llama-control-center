@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -66,6 +67,7 @@ class ConfigRequest(BaseModel):
     llama_fit_params_path: str = ""
     extra_llama_args: list[str] = Field(default_factory=list)
     update_channel: str = "stable"
+    server_history_limit: int = 5
 
 
 class EstimateRequest(BaseModel):
@@ -357,6 +359,14 @@ class ProfileNameRequest(BaseModel):
     name: str
 
 
+class SaveProfileRequest(BaseModel):
+    mode: str
+    name: str
+    description: str = ""
+    model_path: str = ""
+    params: dict[str, Any] = Field(default_factory=dict)
+
+
 @app.post("/api/profiles/name")
 def save_profile_name(request: ProfileNameRequest) -> dict[str, Any]:
     config = AppConfig.load()
@@ -369,3 +379,46 @@ def save_profile_name(request: ProfileNameRequest) -> dict[str, Any]:
 def get_profile_names() -> dict[str, Any]:
     config = AppConfig.load()
     return {"profile_names": config.profile_names}
+
+
+@app.post("/api/profiles/save")
+def save_profile(request: SaveProfileRequest) -> dict[str, Any]:
+    from lcc_core.paths import find_project_root
+
+    root = find_project_root()
+    if not root:
+        return {"success": False, "message": "Could not find project root. Create a models.json file first."}
+    manifest_path = root / "models.json"
+    if not manifest_path.is_file():
+        manifest = {"models": []}
+    else:
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            manifest = {"models": []}
+    models = manifest.get("models", [])
+    existing_modes = [m.get("mode") for m in models]
+    if request.mode in existing_modes:
+        for m in models:
+            if m.get("mode") == request.mode:
+                m["name"] = request.name
+                m["description"] = request.description
+                m["recommended_params"] = request.params
+                manifest["models"] = models
+                tmp_path = manifest_path.with_suffix(".json.tmp")
+                tmp_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+                tmp_path.replace(manifest_path)
+                return {"success": True, "message": f"Updated profile '{request.name}'."}
+    else:
+        models.append({
+            "mode": request.mode,
+            "name": request.name,
+            "description": request.description,
+            "recommended_params": request.params,
+        })
+        manifest["models"] = models
+        tmp_path = manifest_path.with_suffix(".json.tmp")
+        tmp_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+        tmp_path.replace(manifest_path)
+        return {"success": True, "message": f"Saved profile '{request.name}'."}
+    return {"success": False, "message": "Failed to save profile."}

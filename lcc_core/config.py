@@ -25,6 +25,7 @@ class AppConfig:
     extra_llama_args: list[str] = field(default_factory=list)
     update_channel: str = "stable"
     profile_names: dict[str, str] = field(default_factory=dict)
+    server_history_limit: int = 5
 
     @classmethod
     def load(cls, path: str | Path | None = None) -> "AppConfig":

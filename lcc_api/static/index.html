@@ -349,6 +349,7 @@
                   <small id="tps-detail">Waiting for model and hardware details.</small>
                 </div>
                 <div class="row-actions">
+                  <button class="mini-button" type="button" id="save-profile-button">Save Profile</button>
                   <button class="mini-button" type="button" id="reset-params-button">Reset</button>
                   <button class="mini-button" type="button" id="hf-info-button">HF info</button>
                   <button class="mini-button" type="button" id="fit-button">Fit test</button>
@@ -492,6 +493,10 @@
                 <option value="stable">Stable</option>
                 <option value="prerelease">Pre-release</option>
               </select>
+            </label>
+            <label class="field" title="Maximum number of tracked servers to keep in history. Older entries are pruned automatically.">
+              <span>Server history limit</span>
+              <input id="settings-server-history-limit" type="number" min="1" max="50" />
             </label>
           </div>
           <label class="field wide" title="Extra llama.cpp arguments appended to every prepared launch. One argument per line.">

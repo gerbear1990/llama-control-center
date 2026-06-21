@@ -73,15 +73,40 @@ def suggest_draft_models(base_model_name: str | None) -> list[dict[str, Any]]:
     if not size or size not in DRAFT_MODEL_SUGGESTIONS:
         return []
     suggestions = DRAFT_MODEL_SUGGESTIONS[size]
-    return [
-        {
-            "repo_id": f"Qwen/{name}-GGUF",
-            "name": name,
-            "description": f"{name} is a compatible draft model for speculative decoding with {size} base models.",
-            "recommended_quant": "Q4_K_M",
-        }
-        for name in suggestions
-    ]
+    results = []
+    for name in suggestions:
+        repo_id = f"Qwen/{name}-GGUF"
+        try:
+            import urllib.request
+            search_url = f"https://huggingface.co/api/models/{repo_id}?limit=1"
+            req = urllib.request.Request(search_url, headers={"User-Agent": "llama-control-center"})
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                if resp.status == 200:
+                    data = json.loads(resp.read().decode())
+                    results.append({
+                        "repo_id": repo_id,
+                        "name": name,
+                        "description": f"{name} is a compatible draft model for speculative decoding with {size} base models.",
+                        "recommended_quant": "Q4_K_M",
+                        "verified": True,
+                    })
+                else:
+                    results.append({
+                        "repo_id": repo_id,
+                        "name": name,
+                        "description": f"{name} is a compatible draft model for speculative decoding with {size} base models.",
+                        "recommended_quant": "Q4_K_M",
+                        "verified": False,
+                    })
+        except Exception:
+            results.append({
+                "repo_id": repo_id,
+                "name": name,
+                "description": f"{name} is a compatible draft model for speculative decoding with {size} base models.",
+                "recommended_quant": "Q4_K_M",
+                "verified": False,
+            })
+    return results
 
 
 def detect_hf_cli() -> dict[str, Any]:

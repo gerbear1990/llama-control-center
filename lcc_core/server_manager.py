@@ -99,6 +99,16 @@ def list_servers() -> list[dict[str, Any]]:
     return servers
 
 
+def trim_server_history(limit: int = 5) -> None:
+    state = read_state()
+    servers = state.get("servers", [])
+    if len(servers) <= limit:
+        return
+    kept = servers[:limit]
+    state["servers"] = kept
+    write_state(state)
+
+
 def _find_server(server_id: str | None = None, mode: str | None = None) -> dict[str, Any] | None:
     for server in list_servers():
         if server_id and server.get("id") == server_id:
@@ -360,6 +370,8 @@ def start_profile(
         "warnings": prepared.get("warnings", []),
     }
     _upsert_server(server)
+    app_config = AppConfig.load()
+    trim_server_history(app_config.server_history_limit)
 
     if wait_ready:
         ready = wait_until_ready(server["host"], server["port"], proc.pid, ready_timeout_seconds)
