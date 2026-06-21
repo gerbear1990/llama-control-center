@@ -14,8 +14,8 @@ variables, not in source code.
   runtime cards.
 - Finds GGUF models from configured folders, common model folders, LM Studio,
   and Hugging Face cache locations.
-- Detects CPU model, core count, system memory, GPU, VRAM, and acceleration
-  options.
+- Detects CPU model, core count, system memory, GPU, VRAM, RAM bandwidth, and
+  acceleration options.
 - Supports NVIDIA/CUDA, AMD and Intel GPU discovery, Apple Metal options on
   macOS, and CPU fallback.
 - Resolves `models.json` profiles against discovered local model files.
@@ -26,10 +26,15 @@ variables, not in source code.
   more.
 - Runs `llama-fit-params` when available and applies parsed recommendations to
   the parameter editor.
-- Estimates tokens/sec from the selected model, hardware, and parameters.
+- Estimates tokens/sec from the selected model, hardware, and parameters with
+  confidence levels based on detected bandwidth data.
 - Runs a benchmark against the local OpenAI-compatible chat endpoint to capture
   measured tokens/sec.
 - Starts and stops only servers tracked by this app.
+- Hugging Face CLI widget: detect, version display, update check, and install
+  guidance.
+- Draft model suggestions: auto-suggest compatible draft models for speculative
+  decoding based on base model size, with one-click pull from Hugging Face.
 
 ## Requirements
 
@@ -37,6 +42,7 @@ variables, not in source code.
 - `pip`.
 - Optional but recommended: a recent `llama.cpp` build with `llama-server`.
 - Optional: `llama-fit-params` for automated fit recommendations.
+- Optional: `huggingface-cli` for pulling draft models and HF CLI management.
 - Optional runtimes: Ollama, LM Studio, vLLM, or MLX.
 
 Install Python dependencies:
@@ -94,9 +100,10 @@ your choice in browser storage.
   size, port, and Prepare/Start actions for each profile.
 - The **Models** panel lists local GGUF files with quant, size, source, and
   path.
-- The right-side inspector holds the **Parameters** editor, **Model Notes**
-  (Hugging Face summary and fit-test output), tracked **Servers**, **Logs**,
-  and **Portability**.
+- The right-side inspector holds the **Parameters** editor (with draft model
+  suggestions), **Model Notes** (Hugging Face summary and fit-test output),
+  tracked **Servers**, **Logs**, **Portability**, and a new **HF Tools** panel
+  for Hugging Face CLI management.
 
 Start, Benchmark, and similar destructive actions ask for confirmation through
 an in-page modal that supports Escape, Enter, and Tab focus trapping.
