@@ -828,9 +828,42 @@ function toggleGroup(modelName) {
   renderProfiles();
 }
 
+function openRenameDialog(mode, currentName) {
+  const modal = $('#rename-modal');
+  const input = $('#rename-input');
+  const okBtn = $('#rename-ok');
+  const cancelBtn = $('#rename-cancel');
+  input.value = currentName || mode;
+  modal.hidden = false;
+  document.body.classList.add('modal-open');
+  input.focus();
+  input.select();
+  return new Promise((resolve) => {
+    function cleanup() {
+      modal.hidden = true;
+      document.body.classList.remove('modal-open');
+      okBtn.removeEventListener('click', onOk);
+      cancelBtn.removeEventListener('click', onCancel);
+      modal.removeEventListener('click', onBackdrop);
+      document.removeEventListener('keydown', onKey);
+    }
+    function onOk() { cleanup(); resolve(input.value.trim()); }
+    function onCancel() { cleanup(); resolve(null); }
+    function onBackdrop(event) { if (event.target === modal) onCancel(); }
+    function onKey(event) {
+      if (event.key === 'Escape') onCancel();
+      else if (event.key === 'Enter') { event.preventDefault(); onOk(); }
+    }
+    okBtn.addEventListener('click', onOk);
+    cancelBtn.addEventListener('click', onCancel);
+    modal.addEventListener('click', onBackdrop);
+    document.addEventListener('keydown', onKey);
+  });
+}
+
 async function saveProfileName(mode, currentName) {
-  const newName = prompt('Enter profile name:', currentName || '');
-  if (newName === null) return;
+  const newName = await openRenameDialog(mode, currentName);
+  if (!newName) return;
   try {
     await api('/api/profiles/name', {
       method: 'POST',
@@ -1881,35 +1914,68 @@ function wireEvents() {
     });
   });
   $('#suggest-draft-button').addEventListener('click', suggestDraftModels);
-  $('#save-profile-button').addEventListener('click', () => {
+  $('#save-profile-button').addEventListener('click', async () => {
     const mode = selectedMode();
     if (!mode) {
       toast('No profile selected');
       return;
     }
     const profile = state.profiles.find((p) => p.mode === mode);
-    const currentName = profile?.name || mode;
-    const name = prompt('Profile name:', currentName);
-    if (!name) return;
-    const description = prompt('Description (optional):', profile?.description || '') || '';
-    const overrides = collectOverrides();
-    const modelPath = profile?.model?.path || '';
-    withBusy($('#save-profile-button'), async () => {
-      try {
-        const result = await api('/api/profiles/save', {
-          method: 'POST',
-          body: JSON.stringify({ mode, name, description, model_path: modelPath, params: overrides }),
-        });
-        if (result.success) {
-          toast(result.message || 'Profile saved');
-          await refresh();
-        } else {
-          toast(result.message || 'Save failed');
+    const modal = $('#save-profile-modal');
+    const nameInput = $('#save-profile-name');
+    const descInput = $('#save-profile-desc');
+    const okBtn = $('#save-profile-ok');
+    const cancelBtn = $('#save-profile-cancel');
+    nameInput.value = profile?.name || mode;
+    descInput.value = profile?.description || '';
+    modal.hidden = false;
+    document.body.classList.add('modal-open');
+    nameInput.focus();
+    nameInput.select();
+    try {
+      const result = await new Promise((resolve) => {
+        function cleanup() {
+          modal.hidden = true;
+          document.body.classList.remove('modal-open');
+          okBtn.removeEventListener('click', onOk);
+          cancelBtn.removeEventListener('click', onCancel);
+          modal.removeEventListener('click', onBackdrop);
+          document.removeEventListener('keydown', onKey);
         }
-      } catch (error) {
-        toast(`Save failed: ${error.message}`);
-      }
-    });
+        function onOk() { cleanup(); resolve({ name: nameInput.value.trim(), description: descInput.value.trim() }); }
+        function onCancel() { cleanup(); resolve(null); }
+        function onBackdrop(event) { if (event.target === modal) onCancel(); }
+        function onKey(event) {
+          if (event.key === 'Escape') onCancel();
+          else if (event.key === 'Enter') { event.preventDefault(); onOk(); }
+        }
+        okBtn.addEventListener('click', onOk);
+        cancelBtn.addEventListener('click', onCancel);
+        modal.addEventListener('click', onBackdrop);
+        document.addEventListener('keydown', onKey);
+      });
+      if (!result) return;
+      const overrides = collectOverrides();
+      const modelPath = profile?.model?.path || '';
+      await withBusy($('#save-profile-button'), async () => {
+        try {
+          const saveResult = await api('/api/profiles/save', {
+            method: 'POST',
+            body: JSON.stringify({ mode, name: result.name, description: result.description, model_path: modelPath, params: overrides }),
+          });
+          if (saveResult.success) {
+            toast(saveResult.message || 'Profile saved');
+            await refresh();
+          } else {
+            toast(saveResult.message || 'Save failed');
+          }
+        } catch (error) {
+          toast(`Save failed: ${error.message}`);
+        }
+      });
+    } catch (error) {
+      toast(`Save failed: ${error.message}`);
+    }
   });
   $('#param-form').addEventListener('change', () => {
     saveCurrentOverrides();

@@ -526,6 +526,46 @@
       </section>
     </div>
 
+    <div class="modal-backdrop" id="rename-modal" hidden>
+      <section class="rename-dialog" role="dialog" aria-modal="true" aria-labelledby="rename-title">
+        <div class="modal-heading">
+          <div>
+            <h3 id="rename-title">Rename Profile</h3>
+          </div>
+        </div>
+        <label class="field wide" title="Enter a custom name for this profile.">
+          <span>Profile name</span>
+          <input id="rename-input" type="text" autocomplete="off" />
+        </label>
+        <div class="row-actions modal-actions">
+          <button class="mini-button" type="button" id="rename-cancel">Cancel</button>
+          <button class="mini-button primary" type="button" id="rename-ok">Save</button>
+        </div>
+      </section>
+    </div>
+
+    <div class="modal-backdrop" id="save-profile-modal" hidden>
+      <section class="rename-dialog" role="dialog" aria-modal="true" aria-labelledby="save-profile-title">
+        <div class="modal-heading">
+          <div>
+            <h3 id="save-profile-title">Save Profile</h3>
+          </div>
+        </div>
+        <label class="field wide" title="Enter a name for this profile.">
+          <span>Profile name</span>
+          <input id="save-profile-name" type="text" autocomplete="off" />
+        </label>
+        <label class="field wide" title="Optional description for this profile.">
+          <span>Description</span>
+          <input id="save-profile-desc" type="text" autocomplete="off" />
+        </label>
+        <div class="row-actions modal-actions">
+          <button class="mini-button" type="button" id="save-profile-cancel">Cancel</button>
+          <button class="mini-button primary" type="button" id="save-profile-ok">Save</button>
+        </div>
+      </section>
+    </div>
+
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
     <script src="/static/app.js" defer></script>
   </body>

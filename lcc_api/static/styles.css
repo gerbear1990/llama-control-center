@@ -1601,6 +1601,30 @@ td:nth-child(7) {
   margin: 0;
 }
 
+.rename-dialog {
+  width: min(440px, calc(100vw - 32px));
+  display: grid;
+  grid-template-rows: auto auto;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.28);
+  overflow: hidden;
+}
+
+.rename-dialog .modal-actions {
+  padding: 0 16px 16px;
+  margin: 0;
+}
+
+.rename-dialog .field {
+  padding: 16px;
+}
+
+.rename-dialog input[type="text"] {
+  width: 100%;
+}
+
 .mini-button.danger {
   color: #ffffff;
   border-color: var(--red);
