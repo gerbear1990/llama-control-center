@@ -125,22 +125,74 @@ def stop_server(server_id: str | None = None, mode: str | None = None, timeout: 
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=False)
     except (OSError, subprocess.SubprocessError) as exc:
-        return {"success": False, "message": str(exc), "server": server}
+        still_running = pid_is_running(pid)
+        _update_server(
+            server["id"],
+            {
+                "status": "stop_failed",
+                "running": still_running,
+                "stopped_at": _now(),
+                "stop_stdout": "",
+                "stop_stderr": str(exc),
+            },
+        )
+        return {
+            "success": False,
+            "message": str(exc),
+            "server": _find_server(server["id"]),
+        }
 
-    success = result.returncode == 0
+    if result.returncode != 0:
+        still_running = pid_is_running(pid)
+        _update_server(
+            server["id"],
+            {
+                "status": "stop_failed",
+                "running": still_running,
+                "stopped_at": _now(),
+                "stop_stdout": result.stdout.strip(),
+                "stop_stderr": result.stderr.strip(),
+            },
+        )
+        return {
+            "success": False,
+            "message": result.stdout.strip() or result.stderr.strip() or f"taskkill returned {result.returncode} for PID {pid}.",
+            "server": _find_server(server["id"]),
+        }
+
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        if not pid_is_running(pid):
+            _update_server(
+                server["id"],
+                {
+                    "status": "stopped",
+                    "running": False,
+                    "stopped_at": _now(),
+                    "stop_stdout": result.stdout.strip(),
+                    "stop_stderr": result.stderr.strip(),
+                },
+            )
+            return {
+                "success": True,
+                "message": result.stdout.strip() or result.stderr.strip() or f"Stopped PID {pid}.",
+                "server": _find_server(server["id"]),
+            }
+        time.sleep(0.25)
+
     _update_server(
         server["id"],
         {
-            "status": "stopped" if success else "stop_failed",
-            "running": False if success else pid_is_running(pid),
+            "status": "stop_failed",
+            "running": True,
             "stopped_at": _now(),
             "stop_stdout": result.stdout.strip(),
             "stop_stderr": result.stderr.strip(),
         },
     )
     return {
-        "success": success,
-        "message": result.stdout.strip() or result.stderr.strip() or f"Stopped PID {pid}.",
+        "success": False,
+        "message": f"PID {pid} did not exit within 5 seconds after kill signal.",
         "server": _find_server(server["id"]),
     }
 
