@@ -12,24 +12,11 @@ from .paths import find_project_root
 from .schema import ModelFile, ModelProfile
 
 
-STOPWORDS = {
-    "a",
-    "agent",
-    "and",
-    "coder",
-    "gguf",
-    "instruct",
-    "it",
-    "large",
-    "mode",
-    "no",
-    "on",
-    "reasoning",
-    "refactors",
-    "server",
-    "the",
+# Configuration for tokenization
+DEFAULT_STOPWORDS = {
+    "a", "agent", "and", "coder", "gguf", "instruct", "it", "large", 
+    "mode", "no", "on", "reasoning", "server", "the"
 }
-
 
 @dataclass
 class ResolvedProfile:
@@ -48,13 +35,13 @@ class ResolvedProfile:
         return asdict(self)
 
 
-def _tokens(value: str) -> set[str]:
+def _tokens(value: str, stopwords: set[str] = DEFAULT_STOPWORDS) -> set[str]:
     normalized = re.sub(r"(?i)(qwen)3[._-]?6", r"\g<1>36", value)
     normalized = re.sub(r"(?i)(qwen)3[._-]?5", r"\g<1>35", normalized)
     raw = re.findall(r"[a-zA-Z0-9]+", normalized.lower())
     tokens: set[str] = set()
     for token in raw:
-        if token in STOPWORDS or len(token) < 2:
+        if token in stopwords or len(token) < 2:
             continue
         tokens.add(token)
         split = re.match(r"([a-z]+)(\d+)(b)?$", token)

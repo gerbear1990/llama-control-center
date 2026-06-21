@@ -23,6 +23,7 @@ from lcc_core.hf_cli import detect_hf_cli as hf_cli_detect, check_for_updates, i
 from lcc_core.draft_models import suggest_draft_models, detect_hf_cli as draft_detect_hf_cli, pull_draft_model
 from lcc_core.inventory import build_inventory
 from lcc_core.profile_resolver import resolved_inventory, resolve_profiles
+from lcc_core.hf_metadata import fetch_model_info
 from lcc_core.runtime_updates import check_runtime_updates
 from lcc_core.server_manager import list_servers, prepare_launch_command, server_logs, start_profile, stop_server
 
@@ -350,9 +351,11 @@ def pull_draft(request: DraftModelRequest) -> dict[str, Any]:
         return {"success": False, "message": "repo_id is required."}
     return pull_draft_model(request.repo_id, request.quant)
 
+
 @app.post("/api/hf-cli/check-updates")
 def check_hf_updates() -> dict[str, Any]:
     return check_for_updates()
+
 
 @app.post("/api/hf-cli/install")
 def install_hf_cli_endpoint() -> dict[str, Any]:
