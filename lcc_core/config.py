@@ -26,6 +26,8 @@ class AppConfig:
     update_channel: str = "stable"
     profile_names: dict[str, str] = field(default_factory=dict)
     server_history_limit: int = 5
+    auto_generate_launch_scripts: bool = True
+    auto_scan_on_startup: bool = True
 
     @classmethod
     def load(cls, path: str | Path | None = None) -> "AppConfig":

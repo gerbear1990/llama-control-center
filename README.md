@@ -4,11 +4,13 @@
 > runtimes, preparing `llama.cpp` launch commands, running fit tests, and managing
 > tracked local inference servers.
 
-**v0.6.3** — Smart fit auto-tune (a "Smart fit" button that searches GPU layers,
-context, and KV cache for the best safe memory fit and applies it with a before/after
-summary) and task-intent sampling suggestions (coding / factual / balanced / creative
-presets for temperature, top-k, top-p, min-p, and repeat penalty). Built on v0.6.2's
-selected-model Hugging Face update check. See [CHANGELOG.md](./CHANGELOG.md) for details.
+**v0.7.0** — Auto-generated launch scripts for every discovered model. The app now
+writes portable PowerShell launch scripts into the project's `scripts/` folder (with a
+POSIX `.sh` companion off-Windows), registers newly found models as launchable
+`models.json` profiles, and repairs broken script references so profiles resolve to an
+exact model path. Runs automatically at startup and is exposed via `/api/launch-scripts`.
+Builds on v0.6.3's smart fit auto-tune and task-intent sampling suggestions.
+See [CHANGELOG.md](./CHANGELOG.md) for details.
 
 The app is designed to be portable: paths live in user settings or environment
 variables, not in source code.
@@ -33,6 +35,10 @@ variables, not in source code.
   RTX 40-series, RTX 30/20-series, GTX 16/10-series, Tesla/A/L-series,
   and AMD RX 9000/8000/7000/6000 series.
 - Resolves `models.json` profiles against discovered local model files.
+- Auto-generates portable `llama.cpp` launch scripts for every discovered model
+  (into the project `scripts/` folder), registers brand-new models as launchable
+  profiles, and repairs broken `models.json` script references so matching is exact.
+  Hand-written scripts in the same folder are never overwritten.
 - Shows profile fit badges: Good, Tight, or Near Limit based on estimated
   accelerator memory and host RAM pressure.
 - Groups profiles by matched model in the Profiles table with collapsible

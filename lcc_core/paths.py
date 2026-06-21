@@ -74,6 +74,15 @@ def cache_dir() -> Path:
     return Path.home() / ".cache" / APP_NAME
 
 
+def launch_scripts_dir() -> Path:
+    """Directory where auto-generated launch scripts are stored locally."""
+
+    override = os.environ.get("LCC_LAUNCH_SCRIPTS_DIR")
+    if override:
+        return Path(override).expanduser()
+    return cache_dir() / "launch-scripts"
+
+
 def huggingface_hub_dir() -> Path:
     hf_home = os.environ.get("HF_HOME")
     if hf_home:

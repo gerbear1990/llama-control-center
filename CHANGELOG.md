@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-06-22
+
+### Added
+
+- **Auto-generated launch scripts.** A new module scans the configured model folders
+  and generates a portable PowerShell launch script for every discovered model, written
+  into the project's `scripts/` folder so the existing manifest parser picks them up. A
+  POSIX `.sh` companion is generated on non-Windows hosts. The scan runs automatically at
+  API startup (gated by the `auto_scan_on_startup` / `auto_generate_launch_scripts`
+  config flags) and is exposed via `GET /api/launch-scripts`, `POST /api/launch-scripts/scan`,
+  `POST /api/launch-scripts/generate`, and `POST /api/launch-scripts/delete`.
+  ([launch_scripts.py](lcc_core/launch_scripts.py), [app.py](lcc_api/app.py))
+- **New models become launchable profiles.** Models discovered on disk with no
+  `models.json` entry are registered as new profiles (with autotuned starter parameters)
+  so they appear in the dashboard immediately.
+- **Broken script references repaired.** When a profile's referenced launch script is
+  missing, the scan repoints it at the generated script, letting resolution pin an exact
+  model path (confidence 1.0) instead of falling back to fuzzy name matching.
+
+### Changed
+
+- Generated scripts are written to `<project_root>/scripts/`; `list_launch_scripts` is
+  state-driven so co-located hand-written scripts (e.g. `switch-model.ps1`) are never
+  reported or overwritten.
+- The FastAPI startup autoscan hook was migrated from the deprecated `@app.on_event`
+  to a `lifespan` context manager.
+
+### Fixed
+
+- Speculative/draft companion models (e.g. `*-MTP` files) are no longer handed a
+  standalone server script.
+- The `.sh` companion is skipped on Windows, where its drive-letter-absolute paths could
+  never run.
+- Test isolation: the launch-scripts test suite now sandboxes the working directory so a
+  startup-autoscan path can never touch a real `models.json`.
+
 ## [0.6.3] - 2026-06-21
 
 ### Added
