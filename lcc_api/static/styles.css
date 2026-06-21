@@ -677,9 +677,11 @@ textarea {
 
 .runtime-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   gap: 1px;
   background: var(--border);
+  min-width: 0;
+  overflow: hidden;
 }
 
 .runtime-card {
@@ -690,6 +692,7 @@ textarea {
   flex-direction: column;
   gap: 9px;
   min-width: 0;
+  overflow: hidden;
 }
 
 .runtime-card-top {
@@ -697,10 +700,13 @@ textarea {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+  min-width: 0;
 }
 
 .runtime-card strong {
   font-size: 13px;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .runtime-card small {
@@ -718,6 +724,8 @@ textarea {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  min-width: 0;
+  max-width: 60%;
 }
 
 .runtime-facts {
@@ -1115,8 +1123,9 @@ td:nth-child(7) {
 
 .help-dot {
   position: relative;
-  display: inline-grid;
-  place-items: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   width: 14px;
   height: 14px;
   margin-left: 5px;
@@ -1125,10 +1134,14 @@ td:nth-child(7) {
   background: color-mix(in srgb, var(--accent) 10%, var(--surface));
   color: var(--accent);
   cursor: help;
-  font-size: 10px;
-  font-weight: 800;
-  line-height: 1;
   outline: 0;
+  flex-shrink: 0;
+}
+
+.help-dot svg {
+  display: block;
+  width: 9px;
+  height: 9px;
 }
 
 .floating-tooltip {

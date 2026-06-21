@@ -327,7 +327,7 @@ function enhanceTooltips() {
     help.tabIndex = 0;
     help.setAttribute('role', 'button');
     help.setAttribute('aria-label', text);
-    help.textContent = 'i';
+    help.innerHTML = '<svg viewBox="0 0 16 16" width="10" height="10" aria-hidden="true" focusable="false"><circle cx="8" cy="3.6" r="1.6" fill="currentColor"/><rect x="6.6" y="6.2" width="2.8" height="6.8" rx="0.6" fill="currentColor"/></svg>';
     target.appendChild(help);
     bindHelpDot(help);
   });
