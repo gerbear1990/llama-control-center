@@ -201,6 +201,11 @@ def prepare_server(request: StartRequest) -> dict[str, Any]:
 
 @app.get("/api/servers")
 def get_servers() -> dict[str, Any]:
+    from lcc_core.server_manager import prune_stale_servers, trim_server_history
+    from lcc_core.config import AppConfig
+    prune_stale_servers()
+    config = AppConfig.load()
+    trim_server_history(config.server_history_limit)
     return {"servers": list_servers()}
 
 

@@ -90,6 +90,7 @@ def tail_file(path: str | Path | None, lines: int = 120) -> str:
 
 
 def list_servers() -> list[dict[str, Any]]:
+    prune_stale_servers()
     state = read_state()
     servers = []
     for server in state.get("servers", []):
@@ -97,6 +98,16 @@ def list_servers() -> list[dict[str, Any]]:
         item["running"] = pid_is_running(item.get("pid"))
         servers.append(item)
     return servers
+
+
+def prune_stale_servers() -> None:
+    """Remove entries for PIDs that are no longer running."""
+    state = read_state()
+    servers = state.get("servers", [])
+    kept = [s for s in servers if pid_is_running(s.get("pid")) or not s.get("pid")]
+    if len(kept) != len(servers):
+        state["servers"] = kept
+        write_state(state)
 
 
 def trim_server_history(limit: int = 5) -> None:
