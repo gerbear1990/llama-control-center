@@ -4,9 +4,10 @@
 > runtimes, preparing `llama.cpp` launch commands, running fit tests, and managing
 > tracked local inference servers.
 
-**v0.6.0** — Reliable server stop (SIGKILL escalation, zombie detection), started
-servers survive control-center shutdown, bandwidth-capped tokens/sec estimates, and a
-parallel/progressive dashboard load. See [CHANGELOG.md](./CHANGELOG.md) for details.
+**v0.6.1** — Per-runtime "Recheck" button (one GitHub call, others stay cached) and a
+Model Notes panel that keeps HF info, fit-test, and benchmark results in separate titled
+blocks. Built on v0.6.0's reliable server stop, detached servers, and bandwidth-capped
+tokens/sec estimates. See [CHANGELOG.md](./CHANGELOG.md) for details.
 
 The app is designed to be portable: paths live in user settings or environment
 variables, not in source code.

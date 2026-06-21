@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-06-21
+
 ### Added
 
 - **Per-runtime "Recheck" button** on each runtime card. It bypasses the update
