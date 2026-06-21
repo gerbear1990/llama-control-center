@@ -109,6 +109,8 @@ Useful endpoints:
 - `GET /api/config`
 - `POST /api/config`
 - `GET /api/system`
+- `GET /api/runtime-updates`
+- `POST /api/runtime-updates/refresh`
 - `POST /api/estimate/tokens-per-second`
 - `POST /api/estimate/launch`
 - `GET /api/benchmarks`

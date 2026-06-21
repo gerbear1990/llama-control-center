@@ -122,7 +122,10 @@
                   <h3>Runtimes</h3>
                   <p>Detected environments and API endpoints.</p>
                 </div>
-                <span class="sr-only" role="status" aria-live="polite" id="runtime-status"></span>
+                <div class="panel-heading-actions">
+                  <span class="sr-only" role="status" aria-live="polite" id="runtime-status"></span>
+                  <button class="mini-button" type="button" id="check-updates-button" title="Refresh update availability from upstream release sources">Check for updates</button>
+                </div>
               </div>
               <div class="runtime-grid" id="runtime-grid"></div>
             </section>
@@ -441,6 +444,13 @@
                 <option value="lm-studio">LM Studio</option>
                 <option value="vllm">vLLM</option>
                 <option value="mlx">MLX</option>
+              </select>
+            </label>
+            <label class="field" title="Which upstream release channel to check for runtime updates. Stable checks the latest stable release; prerelease includes release candidates.">
+              <span>Update channel</span>
+              <select id="settings-update-channel">
+                <option value="stable">Stable</option>
+                <option value="prerelease">Pre-release</option>
               </select>
             </label>
           </div>

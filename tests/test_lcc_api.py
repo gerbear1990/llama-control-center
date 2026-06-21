@@ -33,6 +33,7 @@ class ApiSmokeTests(unittest.TestCase):
         config = self.client.get("/api/config")
         self.assertEqual(config.status_code, 200)
         self.assertEqual(config.json()["default_backend"], "llama.cpp")
+        self.assertEqual(config.json()["update_channel"], "stable")
         self.assertIn("runtime_dirs", config.json())
         servers = self.client.get("/api/servers")
         self.assertEqual(servers.status_code, 200)
@@ -40,6 +41,25 @@ class ApiSmokeTests(unittest.TestCase):
         system = self.client.get("/api/system")
         self.assertEqual(system.status_code, 200)
         self.assertIn("cpu", system.json())
+
+    def test_runtime_updates_endpoint_shape(self) -> None:
+        response = self.client.get("/api/runtime-updates")
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertIn("channel", payload)
+        self.assertIn("checked_at", payload)
+        self.assertIn("updates", payload)
+        self.assertIn("supported_channels", payload)
+        for entry in payload["updates"]:
+            self.assertIn("runtime_id", entry)
+            self.assertIn("current_version", entry)
+            self.assertIn("latest_version", entry)
+            self.assertIn("update_available", entry)
+            self.assertIsInstance(entry["update_available"], bool)
+
+        refresh = self.client.post("/api/runtime-updates/refresh")
+        self.assertEqual(refresh.status_code, 200)
+        self.assertEqual(refresh.json()["channel"], payload["channel"])
 
     def test_profiles_can_use_explicit_project_root_and_model_dir(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
