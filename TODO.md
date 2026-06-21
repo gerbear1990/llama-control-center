@@ -33,6 +33,12 @@
 - [x] VRAM detection should include memory generation, speed, and bandwidth where the GPU tooling exposes it.
 - [x] RAM/VRAM speed and bandwidth should feed into tokens/sec estimates and fit scoring when useful. _v0.6.0 (bandwidth applied as a decode ceiling)._
 - [x] Add a button to check Hugging Face for updates to the selected model. _v0.6.2 — resolves the model's HF repo, compares remote vs local file (size diff primary, repo last-modified fallback), and offers a confirm-gated re-download of just that file._
+- [ ] Add a test-prompt box that sends a chat completion to a running server and shows the reply plus measured tokens/sec.
+- [ ] Show live server metrics from llama.cpp (`/metrics`, `/health`, `/props`): KV-cache usage, slots in use, decode tokens/sec, context fill %.
+- [ ] Show live process memory (resident RAM + GPU memory) for a running tracked server to confirm the fit estimate and catch OOMs.
+- [ ] Add a crash/exit watchdog that flags tracked servers that died unexpectedly and offers restart with last log lines.
+- [ ] Capture detached server stdout/stderr and tail it in a log panel in the UI.
+- [ ] Add a per-repo quant picker that lists every available quant with size and a fit verdict so the user picks the largest that fits.
 - [ ] Add full Ollama support so users can use Ollama as a preferred model/runtime source instead of Hugging Face.
 - [x] Refine and tighten the Model Notes panel after a benchmark runs so the result is laid out cleanly and clearly separated from the fit-test output. _v0.6.0 (HF / fit / benchmark each in their own titled block)._
 - [x] Verify and harden stop-server logic so a tracked server actually transitions from running to stopped after Stop is clicked, with the dashboard reflecting the new state.

@@ -47,6 +47,34 @@ passes.
   last-modified fallback), and offers a confirm-gated re-download of just that
   file into the model's directory. Added in `v0.6.2`.
 
+## Running Server Tooling
+
+The dashboard is strong pre-launch (discover → fit → estimate → prepare → start)
+but goes quiet once a server is running. These close that loop.
+
+- Test-prompt box against a running server: a textbox + Send that proxies to the
+  server's `/v1/chat/completions` and shows the reply plus measured tokens/sec.
+  Proves the launched server actually answers, from the dashboard. (Smallest, highest
+  UX payoff.)
+- Live server metrics from llama.cpp: poll the running server's `/metrics`
+  (Prometheus), `/health`, and `/props` for real KV-cache usage, slots in use,
+  prompt/decode tokens/sec, and context fill %. Turns the estimate into ground truth
+  and feeds the ongoing TPS calibration.
+- Live process memory gauge: show the tracked PID's actual resident memory (and GPU
+  memory via existing tooling) while it runs, to confirm the pre-launch fit estimate
+  and catch surprise OOMs.
+- Crash/exit watchdog: surface when a tracked server has died unexpectedly (badge it
+  "crashed", show last log lines, offer restart) instead of showing stale running state.
+- Log tail panel: capture detached server stdout/stderr to a file and tail it in the
+  UI, so debugging a bad launch doesn't mean leaving the app.
+
+## Quant Selection
+
+- Quant picker for a repo: combine the repo file-tree listing (from the HF update
+  check) with `fit.py` to show every available quant with its size and a
+  green/orange/red fit verdict, so the user picks the largest quant that fits at a
+  glance.
+
 ## Runtime Management
 
 - Add a small apply-update button on runtime cards when an update is available.
