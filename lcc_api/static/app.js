@@ -10,6 +10,9 @@ const state = {
   selectedServerId: null,
   paramOverrides: {},
   lastEstimateKey: '',
+  lastBenchmarkKey: '',
+  measuredTps: null,
+  measuredElapsed: null,
   profileFilter: 'all',
   query: '',
   theme: localStorage.getItem('lcc-theme') || 'light',
@@ -833,6 +836,27 @@ function renderTpsEstimate(estimate) {
   detail.textContent = `${estimate.low_tps}-${estimate.high_tps} tok/s range, ${estimate.confidence} confidence`;
 }
 
+function renderMeasuredTps(tokensPerSecond, elapsed) {
+  const value = $('#tps-estimate');
+  const detail = $('#tps-detail');
+  if (tokensPerSecond === undefined || tokensPerSecond === null || tokensPerSecond === 0) {
+    value.textContent = '-';
+    detail.textContent = 'Waiting for model and hardware details.';
+    return;
+  }
+  value.textContent = `${tokensPerSecond} tok/s (measured)`;
+  detail.textContent = `Benchmark result: ${elapsed}s elapsed`;
+  state.measuredTps = tokensPerSecond;
+  state.measuredElapsed = elapsed;
+  state.lastBenchmarkKey = estimateKey(selectedMode() || '', collectOverrides());
+}
+
+function shouldShowMeasuredTps() {
+  if (!state.measuredTps || !state.lastBenchmarkKey) return false;
+  const currentKey = estimateKey(selectedMode() || '', collectOverrides());
+  return currentKey === state.lastBenchmarkKey;
+}
+
 function renderFitEstimate(fit) {
   const value = $('#fit-estimate');
   const detail = $('#fit-detail');
@@ -859,11 +883,18 @@ function renderFitEstimate(fit) {
   detail.textContent = details.join(' · ');
 }
 
+function clearMeasuredTps() {
+  state.measuredTps = null;
+  state.measuredElapsed = null;
+  state.lastBenchmarkKey = '';
+}
+
 function renderEstimatePending(message = 'Estimating launch...') {
   $('#fit-estimate').textContent = '-';
   $('#fit-detail').textContent = message;
   $('#tps-estimate').textContent = '-';
   $('#tps-detail').textContent = message;
+  clearMeasuredTps();
 }
 
 function estimateKey(mode, overrides) {
@@ -1345,6 +1376,7 @@ async function runBenchmark() {
         }),
       });
       renderModelInfo(renderBenchmarkSummary(result));
+      renderMeasuredTps(result.benchmark.tokens_per_second, result.benchmark.elapsed_seconds);
       $('#log-preview').textContent = [
         `Benchmark: ${result.benchmark.tokens_per_second} tok/s`,
         `Elapsed: ${result.benchmark.elapsed_seconds}s`,
@@ -1352,6 +1384,10 @@ async function runBenchmark() {
       ].join('\n');
       toast(`Benchmark: ${result.benchmark.tokens_per_second} tok/s`);
       await refresh();
+      const currentKey = estimateKey(selectedMode() || '', collectOverrides());
+      if (currentKey === state.lastBenchmarkKey && state.measuredTps) {
+        renderMeasuredTps(state.measuredTps, state.measuredElapsed);
+      }
     } catch (error) {
       renderModelInfo(`<strong>Benchmark failed</strong>\n${escapeHtml(error.message)}`);
       toast(`Benchmark failed: ${error.message}`);
