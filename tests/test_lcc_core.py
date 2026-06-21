@@ -280,6 +280,16 @@ class LaunchArgsTests(unittest.TestCase):
         self.assertIn("--no-kv-offload", cmd.argv)
         self.assertIn("--no-op-offload", cmd.argv)
 
+    def test_string_gpu_layers_do_not_crash(self) -> None:
+        # 'all'/'auto' and float-ish strings are valid manifest values elsewhere
+        # in the app; the arg builders must not raise on them.
+        for value, expected in [("all", "all"), ("auto", "all"), ("32.0", "32"), (24, "24")]:
+            cmd = build_llama_server_args("llama-server", "m.gguf", {"gpu_layers": value})
+            self.assertIn("--gpu-layers", cmd.argv)
+            self.assertEqual(cmd.argv[cmd.argv.index("--gpu-layers") + 1], expected)
+        fit = build_fit_args("llama-fit-params", "m.gguf", {"gpu_layers": "all"})
+        self.assertEqual(fit[fit.index("-ngl") + 1], "-2")
+
     def test_fit_args_and_output_parser(self) -> None:
         args = build_fit_args(
             "llama-fit-params.exe",
@@ -310,6 +320,12 @@ class LaunchArgsTests(unittest.TestCase):
         self.assertEqual(parsed["suggestions"]["ctx_size"], 262144)
         self.assertEqual(parsed["suggestions"]["gpu_layers"], 999)
         self.assertEqual(parsed["suggestions"]["cuda_memory_mib"]["context"], 2879)
+
+    def test_fit_parser_keeps_ngl_when_it_precedes_ctx(self) -> None:
+        # -ngl before -c must not be dropped (the layer count is the key output).
+        parsed = parse_fit_output("suggested: -ngl 49 -c 32768 -fa on\n")
+        self.assertEqual(parsed["suggestions"]["gpu_layers"], 49)
+        self.assertEqual(parsed["suggestions"]["ctx_size"], 32768)
 
     def test_fit_output_parses_and_applies_full_parameter_set(self) -> None:
         output = """
@@ -379,6 +395,20 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(loaded.llama_server_path, "runtime/llama-server")
         self.assertEqual(loaded.llama_fit_params_path, "runtime/llama-fit-params")
         self.assertEqual(loaded.default_port, 9000)
+
+    def test_bandwidth_caps_estimate_and_drives_confidence(self) -> None:
+        params = {"gpu_layers": 999, "ctx_size": 4096, "flash_attn": True}
+        model = {"name": "Tiny 7B", "params_b": 7, "quant": "Q4_K_M"}
+        no_bw = {"cpu": {"logical_cores": 16}, "primary_gpu": {"name": "RTX 4090"}}
+        low_bw = {"cpu": {"logical_cores": 16},
+                  "primary_gpu": {"name": "RTX 4090", "vram_bandwidth_gbps": 200.0}}
+        base = estimate_tokens_per_second(params, model, no_bw)
+        capped = estimate_tokens_per_second(params, model, low_bw)
+        # A low measured bandwidth must pull the estimate DOWN, never boost it.
+        self.assertLess(capped["estimate_tps"], base["estimate_tps"])
+        self.assertEqual(base["confidence"], "medium")        # fields absent -> not inflated
+        self.assertEqual(capped["confidence"], "high")        # ceiling actually bound it
+        self.assertTrue(any("bandwidth-bound" in a for a in capped["assumptions"]))
 
     def test_speed_estimate_returns_range(self) -> None:
         estimate = estimate_tokens_per_second(
@@ -581,6 +611,41 @@ class RuntimeUpdatesTests(unittest.TestCase):
         info = cached_result["updates"][0]
         self.assertEqual(info["latest_version"], "b4600")
         self.assertTrue(info["update_available"])
+
+
+class ServerStopTests(unittest.TestCase):
+    def test_stop_escalates_to_sigkill_when_sigterm_ignored(self) -> None:
+        import subprocess
+        import sys
+        from unittest import mock
+
+        from lcc_core import server_manager
+
+        if server_manager.is_windows():
+            self.skipTest("POSIX SIGKILL escalation")
+
+        # A child that ignores SIGTERM, so a plain `kill` can never stop it.
+        proc = subprocess.Popen(
+            [sys.executable, "-c", "import signal,time;signal.signal(signal.SIGTERM,signal.SIG_IGN);print('ready',flush=True);time.sleep(60)"],
+            stdout=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
+        )
+        try:
+            proc.stdout.readline()  # wait until the SIGTERM handler is installed
+            with tempfile.TemporaryDirectory() as tmp:
+                with mock.patch.object(server_manager, "cache_dir", return_value=Path(tmp)):
+                    server_manager.write_state(
+                        {"servers": [{"id": "test-server", "mode": "test", "pid": proc.pid}]}
+                    )
+                    result = server_manager.stop_server(server_id="test-server")
+            self.assertTrue(result["success"], result)
+            self.assertFalse(server_manager.pid_is_running(proc.pid))
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+            proc.wait(timeout=5)
+            proc.stdout.close()
 
 
 if __name__ == "__main__":

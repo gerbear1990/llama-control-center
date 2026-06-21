@@ -1,12 +1,9 @@
 from __future__ import annotations
 
-import json
 import re
 import shutil
 import subprocess
 from typing import Any
-
-from .paths import is_windows
 
 
 def _run(args: list[str], timeout: float = 10.0) -> subprocess.CompletedProcess[str] | None:
@@ -76,62 +73,23 @@ def suggest_draft_models(base_model_name: str | None) -> list[dict[str, Any]]:
     results = []
     for name in suggestions:
         repo_id = f"Qwen/{name}-GGUF"
+        verified = False
         try:
             import urllib.request
             search_url = f"https://huggingface.co/api/models/{repo_id}?limit=1"
             req = urllib.request.Request(search_url, headers={"User-Agent": "llama-control-center"})
             with urllib.request.urlopen(req, timeout=5) as resp:
-                if resp.status == 200:
-                    data = json.loads(resp.read().decode())
-                    results.append({
-                        "repo_id": repo_id,
-                        "name": name,
-                        "description": f"{name} is a compatible draft model for speculative decoding with {size} base models.",
-                        "recommended_quant": "Q4_K_M",
-                        "verified": True,
-                    })
-                else:
-                    results.append({
-                        "repo_id": repo_id,
-                        "name": name,
-                        "description": f"{name} is a compatible draft model for speculative decoding with {size} base models.",
-                        "recommended_quant": "Q4_K_M",
-                        "verified": False,
-                    })
+                verified = resp.status == 200
         except Exception:
-            results.append({
-                "repo_id": repo_id,
-                "name": name,
-                "description": f"{name} is a compatible draft model for speculative decoding with {size} base models.",
-                "recommended_quant": "Q4_K_M",
-                "verified": False,
-            })
+            verified = False
+        results.append({
+            "repo_id": repo_id,
+            "name": name,
+            "description": f"{name} is a compatible draft model for speculative decoding with {size} base models.",
+            "recommended_quant": "Q4_K_M",
+            "verified": verified,
+        })
     return results
-
-
-def detect_hf_cli() -> dict[str, Any]:
-    binary = shutil.which("huggingface-cli")
-    if not binary:
-        return {
-            "installed": False,
-            "version": None,
-            "binary_path": None,
-            "install_guidance": "Install Hugging Face CLI using 'pip install huggingface_hub'.",
-        }
-    result = _run([binary, "--version"], timeout=3.0)
-    if not result or result.returncode != 0:
-        return {
-            "installed": True,
-            "version": "Unknown (error running --version)",
-            "binary_path": binary,
-            "error": result.stderr.strip() if result else "Command not found",
-        }
-    return {
-        "installed": True,
-        "version": result.stdout.strip(),
-        "binary_path": binary,
-        "install_guidance": None,
-    }
 
 
 def pull_draft_model(repo_id: str, quant: str = "Q4_K_M") -> dict[str, Any]:

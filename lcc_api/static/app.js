@@ -603,6 +603,8 @@ function renderParameters() {
   setFieldValue('#param-kv-offload', params.kv_offload);
   setFieldValue('#param-op-offload', params.op_offload);
   setFieldValue('#param-mmap', params.mmap);
+  state.paramPreviewHost = $('#param-host')?.value.trim() || '127.0.0.1';
+  state.paramPreviewPort = $('#param-port') ? (Number($('#param-port').value) || 8080) : 8080;
   scheduleTpsEstimate(80);
 }
 
@@ -1394,74 +1396,45 @@ async function pullDraftModel(repoId, trigger) {
   }
 }
 
-function renderAll() {
-  renderSummary();
-  renderHardware();
-  renderRuntimes();
-  renderProfiles();
-  renderModels();
-  renderServers();
-  renderIssues();
-  renderParameters();
-  state.paramPreviewHost = $('#param-host')?.value.trim() || '127.0.0.1';
-  state.paramPreviewPort = $('#param-port') ? (Number($('#param-port').value) || 8080) : 8080;
-  renderSettings();
-  renderVersion();
+// Each resource fetches independently and repaints only its own sections as it
+// resolves, so the dashboard paints progressively instead of blocking on the
+// slowest endpoint (runtime-updates hits GitHub on a cold cache). Cross-cutting
+// renders (e.g. renderSummary needs inventory+profiles) are listed on every
+// input they read — idempotent, so running them more than once is harmless.
+function reconcileSelectedMode() {
+  if (!state.selectedProfileMode && state.profiles.length) {
+    state.selectedProfileMode = state.profiles[0].mode;
+  } else if (state.selectedProfileMode && !state.profiles.some((profile) => profile.mode === state.selectedProfileMode)) {
+    state.selectedProfileMode = state.profiles[0]?.mode || null;
+  }
 }
 
-function refreshUI() {
-  renderSummary();
-  renderHardware();
-  renderRuntimes();
-  renderProfiles();
-  renderModels();
-  renderServers();
-  renderIssues();
-  renderParameters();
-  state.paramPreviewHost = $('#param-host')?.value.trim() || '127.0.0.1';
-  state.paramPreviewPort = $('#param-port') ? (Number($('#param-port').value) || 8080) : 8080;
-  renderSettings();
-  renderVersion();
-}
+const DASHBOARD_RESOURCES = [
+  { label: 'profiles', path: '/api/profiles', apply: (d) => { state.profiles = d.profiles || []; }, render: () => { reconcileSelectedMode(); renderProfiles(); renderParameters(); renderSummary(); } },
+  { label: 'servers', path: '/api/servers', apply: (d) => { state.servers = d.servers || []; }, render: renderServers },
+  { label: 'inventory', path: '/api/inventory', apply: (d) => { state.inventory = d; }, render: () => { renderSummary(); renderModels(); renderIssues(); } },
+  { label: 'settings', path: '/api/config', apply: (d) => { state.config = d; }, render: () => { renderSettings(); renderParameters(); } },
+  { label: 'hardware', path: '/api/system', apply: (d) => { state.hardware = d; }, render: () => { renderHardware(); renderParameters(); } },
+  { label: 'meta', path: '/api/meta', apply: (d) => { state.meta = d; }, render: renderVersion },
+  { label: 'runtime-updates', path: '/api/runtime-updates', apply: (d) => { state.runtimeUpdates = d; }, render: renderRuntimes },
+  { label: 'hf-cli', path: '/api/hf-cli', apply: (d) => { updateHfCliUi(d); }, render: () => {} },
+];
 
 async function refresh() {
   $('#refresh-button').disabled = true;
   setApiStatus(false, 'Refreshing');
+  state.lastEstimateKey = '';
   try {
-    const labels = ['inventory', 'profiles', 'servers', 'settings', 'hardware', 'meta', 'runtime-updates', 'hf-cli'];
-    const paths = ['/api/inventory', '/api/profiles', '/api/servers', '/api/config', '/api/system', '/api/meta', '/api/runtime-updates', '/api/hf-cli'];
-    const applyFns = [
-      (data) => { state.inventory = data; },
-      (data) => { state.profiles = data.profiles || []; },
-      (data) => { state.servers = data.servers || []; },
-      (data) => { state.config = data; },
-      (data) => { state.hardware = data; },
-      (data) => { state.meta = data; },
-      (data) => { state.runtimeUpdates = data; },
-      (data) => { updateHfCliUi(data); },
-    ];
-    const failures = [];
-    const successes = [];
-    for (let i = 0; i < labels.length; i++) {
-      const error = await loadDashboardResource(labels[i], paths[i], applyFns[i]);
-      if (error) {
-        failures.push(error);
-      } else {
-        successes.push(labels[i]);
-      }
-    }
-    if (!state.selectedProfileMode && state.profiles.length) {
-      state.selectedProfileMode = state.profiles[0].mode;
-    } else if (state.selectedProfileMode && !state.profiles.some((profile) => profile.mode === state.selectedProfileMode)) {
-      state.selectedProfileMode = state.profiles[0]?.mode || null;
-    }
-    state.lastEstimateKey = '';
-    renderAll();
+    const failures = (await Promise.all(DASHBOARD_RESOURCES.map(async (resource) => {
+      const error = await loadDashboardResource(resource.label, resource.path, resource.apply);
+      if (!error) resource.render();
+      return error;
+    }))).filter(Boolean);
     if (failures.length) {
       const summary = failures.slice(0, 2).join('; ');
       const suffix = failures.length > 2 ? ` and ${failures.length - 2} more` : '';
       const detailText = failures.join('\n');
-      setApiStatus(false, failures.length >= paths.length ? 'API error' : 'API partial', detailText);
+      setApiStatus(false, failures.length >= DASHBOARD_RESOURCES.length ? 'API error' : 'API partial', detailText);
       toast(`Refresh partial: ${summary}${suffix}`);
     } else {
       setApiStatus(true, 'API ready');

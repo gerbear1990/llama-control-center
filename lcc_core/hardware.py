@@ -297,7 +297,8 @@ def _nvidia_smi_gpus() -> list[dict[str, Any]]:
         bus_width = _nvidia_bus_width_from_name(gpu_name)
         vram_bandwidth_gbps = None
         if bus_width and data_rate and data_rate > 0:
-            vram_bandwidth_gbps = round(bus_width * data_rate / 1000, 1)
+            # bus_width is in bits, data_rate in MT/s; /8 converts to bytes -> GB/s
+            vram_bandwidth_gbps = round(bus_width * data_rate / 8 / 1000, 1)
         gpus.append(
             {
                 "index": _int_or_none(parts[0]),
@@ -405,7 +406,8 @@ def _guess_vram_specs(name: str, vendor: str | None, revision: str, device_id: s
     if bus_width and data_rate:
         result["bus_width_bits"] = bus_width
         result["data_rate_mts"] = data_rate
-        result["bandwidth_gbps"] = round(bus_width * data_rate / 1000, 1)
+        # bus_width bits * data_rate MT/s, /8 for bits->bytes -> GB/s
+        result["bandwidth_gbps"] = round(bus_width * data_rate / 8 / 1000, 1)
     elif bus_width:
         result["bus_width_bits"] = bus_width
     elif data_rate:
@@ -424,11 +426,6 @@ def _nvidia_bus_width(device_id: str, rev: int | None) -> int | None:
         0x2792: 256, 0x2793: 256, 0x2794: 256, 0x2795: 256, 0x2796: 256,
         0x2797: 128, 0x2798: 128, 0x2799: 128, 0x279A: 128,
         # RTX 40-series (Ada Lovelace)
-        0x2204: 256, 0x2206: 256, 0x2208: 256, 0x2209: 128, 0x220E: 256,
-        0x2210: 256, 0x2211: 256, 0x2212: 128, 0x2213: 128, 0x2214: 128,
-        0x2215: 128, 0x2216: 128, 0x2304: 128, 0x2306: 128, 0x2308: 128,
-        0x2309: 128, 0x230A: 128, 0x230B: 128,
-        # RTX 30-series (Ampere)
         0x2204: 256, 0x2206: 256, 0x2208: 256, 0x2209: 128, 0x220E: 256,
         0x2210: 256, 0x2211: 256, 0x2212: 128, 0x2213: 128, 0x2214: 128,
         0x2215: 128, 0x2216: 128, 0x2304: 128, 0x2306: 128, 0x2308: 128,
@@ -760,7 +757,7 @@ def _linux_lspci_gpus() -> list[dict[str, Any]]:
         vram_info["bus_width_bits"] = _linux_lspci_bus_width(pci_bus, name, vendor)
         vram_info["data_rate_mts"] = _linux_lspci_data_rate(vendor, vram_info.get("bus_width_bits"))
         if vram_info["bus_width_bits"] and vram_info["data_rate_mts"]:
-            vram_info["bandwidth_gbps"] = round(vram_info["bus_width_bits"] * vram_info["data_rate_mts"] / 1000, 1)
+            vram_info["bandwidth_gbps"] = round(vram_info["bus_width_bits"] * vram_info["data_rate_mts"] / 8 / 1000, 1)
         gpus.append(
             {
                 "index": len(gpus),

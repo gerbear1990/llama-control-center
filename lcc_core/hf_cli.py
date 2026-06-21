@@ -1,10 +1,10 @@
 from __future__ import annotations
 
+import json
+import re
 import shutil
 import subprocess
-import platform
 import sys
-import os
 from typing import Any, Dict
 
 
@@ -61,7 +61,7 @@ def check_for_updates() -> Dict[str, Any]:
             headers={"User-Agent": "llama-control-center"},
         )
         with urllib.request.urlopen(req, timeout=5) as resp:
-            data = __import__("json").loads(resp.read().decode())
+            data = json.loads(resp.read().decode())
             latest = data.get("info", {}).get("version", "")
     except Exception:
         return {"needs_update": False, "message": "Could not check PyPI."}
@@ -82,12 +82,7 @@ def check_for_updates() -> Dict[str, Any]:
 def install_hf_cli() -> Dict[str, Any]:
     """Attempts to install or upgrade huggingface_hub via pip."""
     try:
-        pip = sys.executable
-        if platform.system() == "Windows":
-            pip_cmd = [pip, "-m", "pip", "install", "--upgrade", "huggingface_hub"]
-        else:
-            pip_cmd = [pip, "-m", "pip", "install", "--upgrade", "huggingface_hub"]
-
+        pip_cmd = [sys.executable, "-m", "pip", "install", "--upgrade", "huggingface_hub"]
         result = subprocess.run(
             pip_cmd,
             capture_output=True,
@@ -118,7 +113,6 @@ def install_hf_cli() -> Dict[str, Any]:
 
 def _extract_version(version_str: str) -> str | None:
     """Extract version number from a version string like 'huggingface-cli 0.30.0'."""
-    import re
     match = re.search(r"(\d+\.\d+(?:\.\d+)?)", version_str)
     return match.group(1) if match else None
 

@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-06-21
+
+### Fixed
+
+- **Server stop is now reliable.** `stop_server` escalates to `SIGKILL` on POSIX
+  when a server ignores `SIGTERM`, so the Stop button can't be defeated by a hung
+  process. `pid_is_running` now treats unreaped zombie children (Linux `/proc`) as
+  dead, so a stopped server no longer lingers as "running", and a tracked entry with
+  no PID stops cleanly instead of raising. ([server_manager.py](lcc_core/server_manager.py))
+
+- **Started servers survive control-center shutdown.** `start_profile` launches with
+  `start_new_session=True` so a terminal/process-group signal (Ctrl-C, `systemd stop`)
+  to the app no longer takes down the inference servers it tracks.
+  ([server_manager.py](lcc_core/server_manager.py))
+
+- **Tokens/sec estimate honors memory bandwidth as a ceiling.** Detected VRAM/RAM
+  bandwidth now caps decode speed (a token can't be produced faster than its weights
+  stream) instead of being used as a speed boost, and "high" confidence is reported
+  only when that cap actually binds. Fixed bits→bytes (`/8`) errors in the GPU, RAM-
+  spill, and VRAM-bandwidth math, and added an `F32` quant case.
+  ([estimates.py](lcc_core/estimates.py), [hardware.py](lcc_core/hardware.py))
+
+- **GPU layer arguments are normalized consistently.** A shared `normalize_gpu_layers`
+  helper accepts `all`/`auto`/`max` and float-ish strings everywhere launch args are
+  built, removing inconsistent ad-hoc coercion. ([llama_args.py](lcc_core/llama_args.py))
+
+- **Save Profile no longer has divergent create/update paths** that could silently fail
+  to persist; both paths now share one atomic write. ([app.py](lcc_api/app.py))
+
+### Changed
+
+- **Dashboard startup and refresh are parallel and progressive.** The eight dashboard
+  endpoints are now fetched concurrently and each section paints as its own data
+  arrives, instead of awaiting all eight sequentially behind the slow GitHub-backed
+  runtime-update check. Refresh re-renders only the section whose data changed rather
+  than rebuilding the entire UI. ([app.js](lcc_api/static/app.js))
+
+### Removed
+
+- Dead full-rebuild functions (`renderAll`, `refreshUI`) and a duplicate
+  `detect_hf_cli` in `draft_models.py`; deduplicated path-key logic in `paths.py` and
+  cleaned up unused imports. Dropped unused `streamlit`, `urllib3`, and `pandas` from
+  `requirements.txt` (added `pydantic`). ([app.js](lcc_api/static/app.js),
+  [draft_models.py](lcc_core/draft_models.py), [paths.py](lcc_core/paths.py),
+  [requirements.txt](requirements.txt))
+
 ## [0.5.0] - 2026-06-21
 
 ### Fixed

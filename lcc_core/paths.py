@@ -21,14 +21,20 @@ def split_env_paths(value: str | None) -> list[Path]:
     return [Path(part).expanduser() for part in value.split(os.pathsep) if part.strip()]
 
 
+def _path_key(path: Path) -> str:
+    """A comparable identity for a path (resolved, case-folded on Windows)."""
+    try:
+        resolved = str(path.expanduser().resolve())
+    except OSError:
+        resolved = str(path.expanduser())
+    return resolved.lower() if is_windows() else resolved
+
+
 def dedupe_paths(paths: Iterable[Path]) -> list[Path]:
     seen: set[str] = set()
     result: list[Path] = []
     for path in paths:
-        try:
-            key = str(path.expanduser().resolve()).lower() if is_windows() else str(path.expanduser().resolve())
-        except OSError:
-            key = str(path.expanduser()).lower() if is_windows() else str(path.expanduser())
+        key = _path_key(path)
         if key in seen:
             continue
         seen.add(key)
@@ -135,10 +141,7 @@ def default_model_dirs(project_root: Path | None = None) -> list[tuple[str, Path
     result: list[tuple[str, Path]] = []
     seen: set[str] = set()
     for source, path in pairs:
-        try:
-            key = str(path.expanduser().resolve()).lower() if is_windows() else str(path.expanduser().resolve())
-        except OSError:
-            key = str(path.expanduser()).lower() if is_windows() else str(path.expanduser())
+        key = _path_key(path)
         if key not in seen and path.expanduser().is_dir():
             result.append((source, path.expanduser()))
             seen.add(key)

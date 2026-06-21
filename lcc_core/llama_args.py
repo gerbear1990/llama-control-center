@@ -26,6 +26,26 @@ def _bool_on(value: Any) -> str:
     return "on" if bool(value) else "off"
 
 
+def normalize_gpu_layers(value: Any) -> int | None:
+    """Coerce a gpu_layers param to an int. None/absent -> None (omit flag).
+
+    Accepts the "offload everything" words other parts of the app already use
+    ('all'/'auto'/'max', see estimates._layer_fraction and fit.parse_fitted_args)
+    and float-ish strings like '32.0'. Unknown non-numeric -> 999 (all).
+    """
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    if not text:
+        return None
+    if text in {"all", "auto", "max"}:
+        return 999
+    try:
+        return int(float(text))
+    except ValueError:
+        return 999
+
+
 def _add_optional(args: list[str], flag: str, value: Any) -> None:
     if value is None:
         return
@@ -81,9 +101,9 @@ def build_llama_server_args(
     for key, flag in mapping:
         _add_optional(args, flag, params.get(key))
 
-    gpu_layers = 0 if str(params.get("acceleration_backend", "")).lower() == "cpu" else params.get("gpu_layers")
+    gpu_layers = 0 if str(params.get("acceleration_backend", "")).lower() == "cpu" else normalize_gpu_layers(params.get("gpu_layers"))
     if gpu_layers is not None:
-        args.extend(["--gpu-layers", "all" if int(gpu_layers) >= 999 else str(int(gpu_layers))])
+        args.extend(["--gpu-layers", "all" if gpu_layers >= 999 else str(gpu_layers)])
 
     args.extend(["--flash-attn", _bool_on(params.get("flash_attn", True))])
     args.extend(["--reasoning", _bool_on(params.get("reasoning", False))])

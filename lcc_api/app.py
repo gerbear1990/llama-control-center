@@ -20,15 +20,15 @@ from lcc_core.estimates import enrich_profiles_with_fit_status, estimate_memory_
 from lcc_core.fit import run_fit_test
 from lcc_core.hardware import detect_system_hardware
 from lcc_core.hf_cli import detect_hf_cli as hf_cli_detect, check_for_updates, install_hf_cli
-from lcc_core.draft_models import suggest_draft_models, detect_hf_cli as draft_detect_hf_cli, pull_draft_model
+from lcc_core.draft_models import suggest_draft_models, pull_draft_model
 from lcc_core.inventory import build_inventory
 from lcc_core.profile_resolver import resolved_inventory, resolve_profiles
 from lcc_core.hf_metadata import fetch_model_info
 from lcc_core.runtime_updates import check_runtime_updates
-from lcc_core.server_manager import list_servers, prepare_launch_command, server_logs, start_profile, stop_server
+from lcc_core.server_manager import list_servers, prepare_launch_command, start_profile, stop_server
 
 
-app = FastAPI(title="Llama Control Center API", version="0.5.0")
+app = FastAPI(title="Llama Control Center API", version="0.6.0")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -405,18 +405,12 @@ def save_profile(request: SaveProfileRequest) -> dict[str, Any]:
         except (OSError, json.JSONDecodeError):
             manifest = {"models": []}
     models = manifest.get("models", [])
-    existing_modes = [m.get("mode") for m in models]
-    if request.mode in existing_modes:
-        for m in models:
-            if m.get("mode") == request.mode:
-                m["name"] = request.name
-                m["description"] = request.description
-                m["recommended_params"] = request.params
-                manifest["models"] = models
-                tmp_path = manifest_path.with_suffix(".json.tmp")
-                tmp_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
-                tmp_path.replace(manifest_path)
-                return {"success": True, "message": f"Updated profile '{request.name}'."}
+    existing = next((m for m in models if m.get("mode") == request.mode), None)
+    if existing is not None:
+        existing["name"] = request.name
+        existing["description"] = request.description
+        existing["recommended_params"] = request.params
+        message = f"Updated profile '{request.name}'."
     else:
         models.append({
             "mode": request.mode,
@@ -424,9 +418,10 @@ def save_profile(request: SaveProfileRequest) -> dict[str, Any]:
             "description": request.description,
             "recommended_params": request.params,
         })
-        manifest["models"] = models
-        tmp_path = manifest_path.with_suffix(".json.tmp")
-        tmp_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
-        tmp_path.replace(manifest_path)
-        return {"success": True, "message": f"Saved profile '{request.name}'."}
-    return {"success": False, "message": "Failed to save profile."}
+        message = f"Saved profile '{request.name}'."
+
+    manifest["models"] = models
+    tmp_path = manifest_path.with_suffix(".json.tmp")
+    tmp_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    tmp_path.replace(manifest_path)
+    return {"success": True, "message": message}

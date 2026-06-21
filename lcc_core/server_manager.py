@@ -71,9 +71,27 @@ def pid_is_running(pid: int | None) -> bool:
         return str(int(pid)) in result.stdout
     try:
         os.kill(int(pid), 0)
-        return True
     except OSError:
         return False
+    # A killed-but-unreaped child becomes a zombie; os.kill(pid, 0) still
+    # succeeds for it. Treat zombies as dead so Stop reports success and the
+    # server list doesn't show a corpse as running. Linux /proc only; elsewhere
+    # we keep the os.kill result.
+    # ponytail: /proc check, fine until this needs to run on macOS.
+    try:
+        with open(f"/proc/{int(pid)}/stat", encoding="ascii") as f:
+            return f.read().rpartition(")")[2].split()[0] != "Z"
+    except (OSError, IndexError):
+        return True
+
+
+def _wait_gone(pid: int, seconds: float) -> bool:
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        if not pid_is_running(pid):
+            return True
+        time.sleep(0.25)
+    return False
 
 
 def tail_file(path: str | Path | None, lines: int = 120) -> str:
@@ -134,7 +152,10 @@ def stop_server(server_id: str | None = None, mode: str | None = None, timeout: 
     if not server:
         return {"success": True, "message": "No tracked server matched the request."}
 
-    pid = int(server.get("pid"))
+    raw_pid = server.get("pid")
+    if not raw_pid:
+        return {"success": True, "message": "Tracked server has no PID to stop."}
+    pid = int(raw_pid)
     if not pid_is_running(pid):
         _update_server(server["id"], {"status": "stopped", "running": False, "stopped_at": _now()})
         return {"success": True, "message": f"Tracked PID {pid} is no longer running."}
@@ -181,25 +202,28 @@ def stop_server(server_id: str | None = None, mode: str | None = None, timeout: 
             "server": _find_server(server["id"]),
         }
 
-    deadline = time.time() + 5
-    while time.time() < deadline:
-        if not pid_is_running(pid):
-            _update_server(
-                server["id"],
-                {
-                    "status": "stopped",
-                    "running": False,
-                    "stopped_at": _now(),
-                    "stop_stdout": result.stdout.strip(),
-                    "stop_stderr": result.stderr.strip(),
-                },
-            )
-            return {
-                "success": True,
-                "message": result.stdout.strip() or result.stderr.strip() or f"Stopped PID {pid}.",
-                "server": _find_server(server["id"]),
-            }
-        time.sleep(0.25)
+    def _stopped_ok(message: str) -> dict[str, Any]:
+        _update_server(
+            server["id"],
+            {
+                "status": "stopped",
+                "running": False,
+                "stopped_at": _now(),
+                "stop_stdout": result.stdout.strip(),
+                "stop_stderr": result.stderr.strip(),
+            },
+        )
+        return {"success": True, "message": message, "server": _find_server(server["id"])}
+
+    if _wait_gone(pid, 5):
+        return _stopped_ok(result.stdout.strip() or result.stderr.strip() or f"Stopped PID {pid}.")
+
+    # SIGTERM was ignored. Windows taskkill already forced (/F); on POSIX
+    # escalate to SIGKILL so the Stop button can't be defeated by a hung server.
+    if not is_windows():
+        subprocess.run(["kill", "-9", str(pid)], capture_output=True, text=True, timeout=timeout, check=False)
+        if _wait_gone(pid, 3):
+            return _stopped_ok(f"Stopped PID {pid} with SIGKILL after it ignored SIGTERM.")
 
     _update_server(
         server["id"],
@@ -213,7 +237,7 @@ def stop_server(server_id: str | None = None, mode: str | None = None, timeout: 
     )
     return {
         "success": False,
-        "message": f"PID {pid} did not exit within 5 seconds after kill signal.",
+        "message": f"PID {pid} did not exit after SIGTERM and SIGKILL.",
         "server": _find_server(server["id"]),
     }
 
@@ -353,6 +377,11 @@ def start_profile(
             stderr=stderr_handle,
             stdin=subprocess.DEVNULL,
             shell=False,
+            # Detach so the managed server outlives the control center: a
+            # terminal/process-group signal (Ctrl-C, systemd stop) to us must
+            # not take down the servers we track in state. setsid on POSIX,
+            # ignored on Windows (CREATE_NO_WINDOW already detaches the console).
+            start_new_session=True,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
     except Exception as exc:

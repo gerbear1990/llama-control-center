@@ -4,8 +4,9 @@
 > runtimes, preparing `llama.cpp` launch commands, running fit tests, and managing
 > tracked local inference servers.
 
-**v0.5.0** — Fixed GPU/VRAM detection (Windows CIM, nvidia-smi), added GGUF layer-aware
-memory fit, and expanded GPU support tables. See [CHANGELOG.md](./CHANGELOG.md) for details.
+**v0.6.0** — Reliable server stop (SIGKILL escalation, zombie detection), started
+servers survive control-center shutdown, bandwidth-capped tokens/sec estimates, and a
+parallel/progressive dashboard load. See [CHANGELOG.md](./CHANGELOG.md) for details.
 
 The app is designed to be portable: paths live in user settings or environment
 variables, not in source code.
@@ -43,11 +44,14 @@ variables, not in source code.
   more.
 - Runs `llama-fit-params` when available and applies parsed recommendations to
   the parameter editor.
-- Estimates tokens/sec from the selected model, hardware, and parameters with
-  confidence levels based on detected bandwidth data.
+- Estimates tokens/sec from the selected model, hardware, and parameters, with
+  detected VRAM/RAM bandwidth applied as a hard decode ceiling and "high"
+  confidence reported only when that ceiling actually binds.
 - Runs a benchmark against the local OpenAI-compatible chat endpoint to capture
   measured tokens/sec.
-- Starts and stops only servers tracked by this app.
+- Starts and stops only servers tracked by this app. Started servers are detached
+  so they outlive the control center, and Stop escalates to a forced kill (POSIX
+  `SIGKILL`) if a server ignores the graceful signal.
 - Tracked server history is configurable (default 5) via Settings.
 - Hugging Face CLI widget: detect, version display, update check against PyPI,
   and automatic install via pip.

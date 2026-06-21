@@ -8,6 +8,7 @@ from typing import Any
 
 from .estimates import estimate_tokens_per_second
 from .hardware import detect_system_hardware
+from .llama_args import normalize_gpu_layers
 from .server_manager import prepare_launch_command
 
 
@@ -84,8 +85,10 @@ FIT_APPLY_KEYS = {
 
 
 def build_fit_args(fit_binary: str, model_path: str, params: dict[str, Any], target_mib: int = 1024) -> list[str]:
-    gpu_layers = params.get("gpu_layers", 999)
-    gpu_layers_arg = "-2" if int(gpu_layers) >= 999 else str(int(gpu_layers))
+    gpu_layers = normalize_gpu_layers(params.get("gpu_layers"))
+    if gpu_layers is None:
+        gpu_layers = 999
+    gpu_layers_arg = "-2" if gpu_layers >= 999 else str(gpu_layers)
     args = [
         fit_binary,
         "-m",
@@ -151,10 +154,12 @@ def _find_fitted_args(stdout: str) -> str | None:
         has_layers = any(f" {flag} " in f" {line} " for flag in GPU_LAYER_FLAGS)
         if not has_context or not has_layers:
             continue
-        for marker in ["-c ", "--ctx-size "]:
-            idx = line.find(marker)
-            if idx >= 0:
-                return line[idx:]
+        # Slice from the earliest flag so a leading prose prefix is dropped but
+        # no flag is lost if -ngl happens to precede -c in the tool's output.
+        markers = ["-c ", "--ctx-size "] + [f"{flag} " for flag in GPU_LAYER_FLAGS]
+        positions = [pos for pos in (line.find(marker) for marker in markers) if pos >= 0]
+        if positions:
+            return line[min(positions):]
     return None
 
 

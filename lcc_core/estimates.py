@@ -133,6 +133,8 @@ def _model_params_b(model: dict[str, Any] | None) -> float | None:
             bits = 8.8
         elif quant in {"F16", "BF16"}:
             bits = 16.0
+        elif quant == "F32":
+            bits = 32.0
         return max((size_bytes * 8 / bits) / 1_000_000_000, 0.1)
     return None
 
@@ -447,16 +449,24 @@ def estimate_tokens_per_second(
     if params.get("draft_model") and str(params.get("spec_type", "")).strip():
         batch_factor *= 1.08
 
+    # Memory bandwidth is a hard ceiling on decode speed: a token cannot be
+    # produced faster than the weights it reads can be streamed. Apply it as a
+    # cap (min), never a boost, and only trust "high" confidence when the cap
+    # actually binds — having the numbers present is not the same as using them.
+    bandwidth_bound = False
     if layer_fraction >= 1.0 and gpu_bandwidth_gbps and gpu_bandwidth_gbps > 0:
-        gpu_speed = _estimate_gpu_gpu_speed(gpu_bandwidth_gbps, gpu_name, model_params_b, quant_factor, layer_fraction)
-        blended = max(blended, gpu_speed)
-
+        ceiling = _estimate_gpu_gpu_speed(gpu_bandwidth_gbps, gpu_name, model_params_b, quant_factor, layer_fraction)
+        if ceiling > 0 and ceiling < blended:
+            blended = ceiling
+            bandwidth_bound = True
     if layer_fraction < 1.0 and ram_bandwidth_gbps and ram_bandwidth_gbps > 0:
-        ram_speed = _estimate_ram_spill_speed(ram_bandwidth_gbps, model_params_b, layer_fraction)
-        blended = max(blended, ram_speed)
+        ceiling = _estimate_ram_spill_speed(ram_bandwidth_gbps, model_params_b, layer_fraction)
+        if ceiling > 0 and ceiling < blended:
+            blended = ceiling
+            bandwidth_bound = True
 
     estimate = max(0.5, blended * ctx_factor * batch_factor)
-    if has_bandwidth_info and model and primary_gpu:
+    if bandwidth_bound and model:
         confidence = "high"
     elif model and primary_gpu:
         confidence = "medium"
@@ -474,6 +484,8 @@ def estimate_tokens_per_second(
             assumptions.append(f"GPU VRAM bandwidth detected: {gpu_bandwidth_gbps} GB/s.")
         if ram_bandwidth_gbps:
             assumptions.append(f"System RAM bandwidth detected: {ram_bandwidth_gbps} GB/s.")
+    if bandwidth_bound:
+        assumptions.append("Estimate is capped by measured memory bandwidth (decode is bandwidth-bound).")
     if layer_fraction < 1:
         assumptions.append("Partial GPU layers usually means more system RAM traffic and lower speed.")
     if not params.get("kv_offload", True):
@@ -493,12 +505,9 @@ def estimate_tokens_per_second(
 
 def _estimate_gpu_gpu_speed(gpu_bandwidth_gbps: float, gpu_name: str, model_params_b: float, quant_factor: float, layer_fraction: float) -> float:
     """Estimate TPS based on GPU memory bandwidth bound."""
-    model_size_mib = _model_size_mib(None) if model_params_b > 0 else 0
-    if model_params_b > 0:
-        quant = "Q4"
-        model_size_mib = model_params_b * 1e9 * 4.8 / 8 / 1024 / 1024
-    else:
+    if model_params_b <= 0:
         return 0.0
+    model_size_mib = model_params_b * 1e9 * 4.8 / 8 / 1024 / 1024
     
     gpu_bw = gpu_bandwidth_gbps
     if "4090" in gpu_name.lower():
@@ -510,15 +519,25 @@ def _estimate_gpu_gpu_speed(gpu_bandwidth_gbps: float, gpu_name: str, model_para
     elif "4070" in gpu_name.lower():
         gpu_bw = min(gpu_bw, 350)
     
-    tps = (gpu_bw * 1000 / 8) / (model_size_mib * 1024 * 1024 / 1e6) * quant_factor * layer_fraction
+    # gpu_bw is GB/s; bytes/s / bytes-per-token -> tokens/s
+    tps = (gpu_bw * 1000) / (model_size_mib * 1024 * 1024 / 1e6) * quant_factor * layer_fraction
     tps = min(tps, gpu_bw / model_params_b * 500 * quant_factor)
     return max(tps, 1.0)
 
 
 def _estimate_ram_spill_speed(ram_bandwidth_gbps: float, model_params_b: float, layer_fraction: float) -> float:
-    """Estimate TPS when model data spills to system RAM."""
+    """RAM-bandwidth ceiling on TPS when part of the model spills to system RAM.
+
+    ram_bandwidth_gbps is GB/s (bytes). Each token must stream the spilled
+    fraction of the weights through host RAM (the slow path that dominates),
+    so tps_ceiling = (RAM bytes/s) / (spilled model bytes per token). Weight
+    size assumes ~4.8 bits/param (Q4-class), matching _estimate_gpu_gpu_speed.
+    """
     if ram_bandwidth_gbps <= 0 or model_params_b <= 0:
         return 0.0
-    spill_fraction = 1.0 - layer_fraction
-    ram_tps = (ram_bandwidth_gbps * 1000 / 8) / (model_params_b * 1e9 / 8) * spill_fraction * 3
-    return max(ram_tps, 0.3)
+    spill_fraction = max(1.0 - layer_fraction, 0.0)
+    if spill_fraction <= 0:
+        return 0.0
+    spilled_bytes_per_token = model_params_b * 1e9 * 4.8 / 8 * spill_fraction
+    ram_bytes_per_s = ram_bandwidth_gbps * 1e9
+    return max(ram_bytes_per_s / spilled_bytes_per_token, 0.3)
