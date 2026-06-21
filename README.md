@@ -77,6 +77,30 @@ Settings are stored in the operating system's user config directory. Cache data,
 tracked server state, logs, and benchmark results are stored in the operating
 system's user cache directory.
 
+## Dashboard
+
+The web UI is keyboard-friendly, respects `prefers-reduced-motion`, and ships
+with matching light and dark themes. The theme toggle in the top bar persists
+your choice in browser storage.
+
+- The sidebar shows navigation, API status, and the running app version.
+- The top bar shows the detected CPU, GPU, VRAM, and RAM, plus a search field
+  that filters both profiles and models.
+- The status strip summarizes runtime count, launchable profile count, total
+  model count, and how many items need setup.
+- The **Runtimes** panel shows each detected runtime's binary/module location,
+  API or probe URL, and port.
+- The **Profiles** table is clickable row-by-row and shows fit badges, context
+  size, port, and Prepare/Start actions for each profile.
+- The **Models** panel lists local GGUF files with quant, size, source, and
+  path.
+- The right-side inspector holds the **Parameters** editor, **Model Notes**
+  (Hugging Face summary and fit-test output), tracked **Servers**, **Logs**,
+  and **Portability**.
+
+Start, Benchmark, and similar destructive actions ask for confirmation through
+an in-page modal that supports Escape, Enter, and Tab focus trapping.
+
 ## Environment Variables
 
 Use these when you want repeatable setup without editing settings in the UI:

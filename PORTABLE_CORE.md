@@ -103,6 +103,7 @@ python -m unittest discover -s tests
 Useful endpoints:
 
 - `GET /health`
+- `GET /api/meta`
 - `GET /api/inventory`
 - `GET /api/profiles`
 - `GET /api/config`

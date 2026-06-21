@@ -23,7 +23,7 @@
 - [ ] Runtime cards should check for runtime updates automatically.
 - [ ] Settings should let users choose stable releases or another update channel.
 - [ ] Runtime cards should include an update/apply button when an update is available.
-- [ ] Run a full UI pass for spacing, responsive layout, visual polish, and modern clean styling.
+- [x] Run a full UI pass for spacing, responsive layout, visual polish, and modern clean styling.
 - [ ] Draft model field should suggest compatible draft models for the selected profile.
 - [ ] Draft model workflow should optionally pull compatible draft models from Hugging Face.
 - [ ] Detect whether the Hugging Face CLI is installed and use it for pulls when available.

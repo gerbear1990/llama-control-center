@@ -8,6 +8,9 @@ passes.
 
 - Runtime cards show each runtime's binary/module location, API or probe URL,
   and port. Added in `v0.1.1`.
+- Full UI pass over spacing, responsive behavior, visual hierarchy, modal
+  patterns, focus management, color contrast, and version surface. Added in
+  `v0.1.2`.
 
 ## Runtime Management
 
@@ -18,8 +21,8 @@ passes.
 
 ## UI Polish
 
-- Run a full UI pass for spacing, alignment, responsive behavior, tooltip
-  placement, and visual hierarchy.
+- Continue iterating on spacing, alignment, and visual hierarchy as new
+  panels are added.
 - Keep the style clean, modern, and utilitarian rather than decorative.
 
 ## Draft Models
