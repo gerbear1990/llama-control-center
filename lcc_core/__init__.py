@@ -10,4 +10,6 @@ from .profile_resolver import resolve_profiles
 
 __all__ = ["build_inventory", "resolve_profiles"]
 __version__ = "0.2.0"
-__license__ = "MIT"from .hf_cli import detect_hf_cli, check_for_updates, install_hf_cli
+__license__ = "MIT"
+
+from .hf_cli import detect_hf_cli, check_for_updates, install_hf_cli
