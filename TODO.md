@@ -39,9 +39,13 @@
 - [ ] Add a button to check Hugging Face for updates to the selected model.
 - [ ] Add full Ollama support so users can use Ollama as a preferred model/runtime source instead of Hugging Face.
 - [ ] Refine and tighten the Model Notes panel after a benchmark runs so the result is laid out cleanly and clearly separated from the fit-test output.
-- [ ] Verify and harden stop-server logic so a tracked server actually transitions from running to stopped after Stop is clicked, with the dashboard reflecting the new state.
-- [ ] After a benchmark completes, force the live "Estimated speed" card to show the benchmarked tokens/sec for the current profile instead of the heuristic estimate.
+- [x] Verify and harden stop-server logic so a tracked server actually transitions from running to stopped after Stop is clicked, with the dashboard reflecting the new state.
+- [x] After a benchmark completes, force the live "Estimated speed" card to show the benchmarked tokens/sec for the current profile instead of the heuristic estimate.
 - [ ] Tighten the tokens-per-second estimation logic so it tracks real measured performance more closely across model sizes, quantizations, and runtimes (current heuristic can drift wildly from actual benchmarks).
 - [x] Investigate whether a script can register locally tracked llama.cpp servers with downstream apps such as OpenCode, so the running server appears as a usable model provider without manual configuration.
 - [ ] Auto-sync LCC's tracked server state with the OpenCode provider config so a new profile mode does not need a manual JSONC edit before OpenCode can address it.
-- [ ] When the API status indicator shows a partial state, surface a hover tooltip listing which endpoints succeeded and which failed (and why).
+- [x] When the API status indicator shows a partial state, surface a hover tooltip listing which endpoints succeeded and which failed (and why).
+- [ ] Profiles table should show a Stop button for profiles with a running server, wired to the same stop logic as the Servers panel.
+- [ ] Runtimes panel should show the live preview host/port from the Parameters panel for llama.cpp, letting users see what endpoint their current settings would use.
+- [ ] Fit test should pass all user-configurable parameters to llama-fit-params so the output includes fitted values for the complete parameter set.
+- [ ] Check for updates button should give clear feedback when no runtimes support update checks (no version detected, unsupported runtime).
