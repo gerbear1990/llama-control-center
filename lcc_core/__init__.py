@@ -9,3 +9,5 @@ from .inventory import build_inventory
 from .profile_resolver import resolve_profiles
 
 __all__ = ["build_inventory", "resolve_profiles"]
+__version__ = "0.2.0"
+__license__ = "MIT"

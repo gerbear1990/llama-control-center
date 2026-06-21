@@ -178,6 +178,10 @@ The product direction was inspired in part by Alex Jones' `llama-panel`,
 `llmfit`, and `llmserve` projects. No source code from those repositories has
 been copied or vendored into this repository at this stage.
 
+## License
+
+MIT. See [`LICENSE`](./LICENSE) for the full text.
+
 ## Development
 
 Run tests:
