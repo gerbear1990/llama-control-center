@@ -300,6 +300,29 @@ textarea {
   font-variant-numeric: tabular-nums;
 }
 
+.api-copy-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  margin-left: 4px;
+  border-radius: 3px;
+  color: var(--subtle);
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.api-copy-btn:hover,
+.api-copy-btn:focus {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, var(--surface));
+}
+
+.api-copy-btn svg {
+  display: block;
+}
+
 .status-dot {
   width: 9px;
   height: 9px;

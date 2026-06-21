@@ -350,9 +350,17 @@ def check_runtime_updates(
     except OSError:
         pass
 
+    all_runtime_ids = [env.get("id") or env.get("kind") for env in (environments or []) if env.get("id") or env.get("kind")]
+    supported_but_no_version = [rid for rid in all_runtime_ids if rid in GITHUB_REPOS and not any(rid == cid for cid, _ in candidates)]
+    unsupported_runtimes = [rid for rid in all_runtime_ids if rid not in GITHUB_REPOS]
+
     return {
         "channel": channel,
         "checked_at": now,
         "updates": [info.to_dict() for info in results],
         "supported_channels": list(SUPPORTED_CHANNELS),
+        "known_runtime_count": len(all_runtime_ids),
+        "checked_runtime_count": len(results),
+        "skipped_no_version": supported_but_no_version,
+        "skipped_unsupported": unsupported_runtimes,
     }

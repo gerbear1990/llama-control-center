@@ -355,10 +355,30 @@ function setApiStatus(ok, text, details) {
   dot.classList.toggle('ok', ok);
   dot.classList.toggle('error', !ok);
   $('#api-status').textContent = text;
-  $('#api-dot').dataset.tooltip = details || '';
-  $('#api-status').dataset.tooltip = details || '';
   if (details) {
-    bindHelpDot($('#api-dot'));
+    dot.dataset.tooltip = details;
+    if (!dot.querySelector('.api-copy-btn')) {
+      const copyBtn = document.createElement('span');
+      copyBtn.className = 'api-copy-btn';
+      copyBtn.title = 'Copy API status details';
+      copyBtn.setAttribute('aria-label', 'Copy API status details');
+      copyBtn.setAttribute('role', 'button');
+      copyBtn.setAttribute('tabindex', '0');
+      copyBtn.innerHTML = '<svg viewBox="0 0 16 16" width="10" height="10" aria-hidden="true" focusable="false"><rect x="5" y="5" width="9" height="9" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.5"/><rect x="2" y="2" width="9" height="9" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>';
+      dot.appendChild(copyBtn);
+      const copyHandler = () => {
+        navigator.clipboard.writeText(details).then(() => toast('API status copied to clipboard'));
+      };
+      copyBtn.addEventListener('click', (e) => { e.stopPropagation(); copyHandler(); });
+      copyBtn.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); copyHandler(); }
+      });
+    }
+    bindHelpDot(dot);
+  } else {
+    const existingBtn = dot.querySelector('.api-copy-btn');
+    if (existingBtn) existingBtn.remove();
+    delete dot.dataset.tooltip;
   }
 }
 
@@ -1222,7 +1242,16 @@ async function refreshRuntimeUpdates(trigger) {
       renderRuntimes();
       const updates = data.updates || [];
       const available = updates.filter((item) => item.update_available).length;
-      if (!available) {
+      const skippedNoVersion = data.skipped_no_version || [];
+      const skippedUnsupported = data.skipped_unsupported || [];
+      if (data.checked_runtime_count === 0 && data.known_runtime_count === 0) {
+        toast('No runtimes detected that support update checks.');
+      } else if (data.checked_runtime_count === 0) {
+        const reasons = [];
+        if (skippedNoVersion.length) reasons.push(`${skippedNoVersion.join(', ')} (no version detected)`);
+        if (skippedUnsupported.length) reasons.push(`${skippedUnsupported.join(', ')} (not tracked)`);
+        toast(`No update checks ran: ${reasons.join('; ')}`);
+      } else if (!available) {
         toast('All runtimes are up to date');
       } else {
         toast(`${available} runtime update${available === 1 ? '' : 's'} available`);

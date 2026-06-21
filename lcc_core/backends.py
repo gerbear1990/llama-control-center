@@ -158,13 +158,16 @@ def detect_ollama() -> Environment:
     model_count = None
     if ok and isinstance(payload, dict):
         model_count = len(payload.get("models", []) or [])
+    binary = _find_executable("ollama", ["OLLAMA_BIN"])
+    version = _binary_version(binary) if binary else None
     return Environment(
         id="ollama",
         kind="api_runtime",
         name="Ollama",
         available=ok,
-        binary_path=_find_executable("ollama", ["OLLAMA_BIN"]),
+        binary_path=binary,
         api_url=api_url if ok else None,
+        version=version,
         model_count=model_count,
         details={"probe_url": api_url, "probe_error": None if ok else error},
     )
