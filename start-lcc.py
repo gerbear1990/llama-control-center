@@ -12,6 +12,8 @@ APP_NAME = "llama-control-center"
 PID_FILENAME = "lcc-api.pid"
 STDOUT_LOG = "lcc-api-out.log"
 STDERR_LOG = "lcc-api-err.log"
+DEFAULT_HOST = "127.0.0.1"
+DEFAULT_PORT = 8716
 
 
 def get_pid_file_path() -> Path:
@@ -127,7 +129,7 @@ def stop_server(pid: int | None = None) -> int:
             print(f"Error stopping server: {exc}", file=sys.stderr)
             return 1
     else:
-        port = 8716
+        port = DEFAULT_PORT
         fallback_pid = find_process_on_port(port)
         if fallback_pid is not None:
             print(f"No PID file found, but found process {fallback_pid} on port {port}.")
@@ -208,8 +210,8 @@ def main(argv: list[str] | None = None) -> int:
     subparsers = parser.add_subparsers(dest="command")
 
     start_parser = subparsers.add_parser("start", help="Start the server")
-    start_parser.add_argument("--host", default="127.0.0.1", help="Bind address")
-    start_parser.add_argument("--port", type=int, default=8716, help="Bind port")
+    start_parser.add_argument("--host", default=DEFAULT_HOST, help="Bind address")
+    start_parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="Bind port")
     start_parser.add_argument("--reload", action="store_true", help="Enable auto-reload")
 
     subparsers.add_parser("stop", help="Stop the running server")
@@ -225,7 +227,7 @@ def main(argv: list[str] | None = None) -> int:
         pid = get_pid()
         if pid is not None and pid_is_running(pid):
             print(f"Server is running (PID {pid}).")
-            print(f"  Dashboard: http://{pid}")
+            print(f"  Dashboard: http://{DEFAULT_HOST}:{DEFAULT_PORT}/")
             return 0
         else:
             print("Server is not running.")

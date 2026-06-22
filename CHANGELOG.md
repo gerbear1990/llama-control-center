@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-06-22
+
+### Fixed
+
+- **`stop-lcc.py` crashed on import.** It tried `from start_lcc import stop_server`,
+  but the launcher file is `start-lcc.py` — a hyphen is not a legal module name, so the
+  import always failed with `ModuleNotFoundError`. It now loads `start-lcc.py` by path via
+  `importlib` and reuses its `stop_server()`. ([stop-lcc.py](stop-lcc.py))
+- **`status` printed a malformed dashboard URL** (`http://<pid>`). It now prints the
+  correct `http://<host>:<port>/` using shared `DEFAULT_HOST` / `DEFAULT_PORT` constants,
+  which also replace the magic port numbers in the argparse defaults and port fallback.
+  ([start-lcc.py](start-lcc.py))
+
 ## [0.7.0] - 2026-06-22
 
 ### Added
