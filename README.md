@@ -4,12 +4,10 @@
 > runtimes, preparing `llama.cpp` launch commands, running fit tests, and managing
 > tracked local inference servers.
 
-**v0.7.0** — Auto-generated launch scripts for every discovered model. The app now
-writes portable PowerShell launch scripts into the project's `scripts/` folder (with a
-POSIX `.sh` companion off-Windows), registers newly found models as launchable
-`models.json` profiles, and repairs broken script references so profiles resolve to an
-exact model path. Runs automatically at startup and is exposed via `/api/launch-scripts`.
-Builds on v0.6.3's smart fit auto-tune and task-intent sampling suggestions.
+**v0.8.0** — Fresh clone works out of the box (no manual `models.json` needed), fit tests
+now parse memory estimates from Apple Metal, ROCm, Vulkan, and other backends (not just
+CUDA), and mmproj projector files are properly skipped regardless of where `mmproj`
+appears in the filename. Builds on v0.7.1's stop-lcc.py repair.
 See [CHANGELOG.md](./CHANGELOG.md) for details.
 
 The app is designed to be portable: paths live in user settings or environment
@@ -51,7 +49,8 @@ variables, not in source code.
   layers, KV cache quantization, offload toggles, temperature, sampling, and
   more.
 - Runs `llama-fit-params` when available and applies parsed recommendations to
-  the parameter editor.
+  the parameter editor, with support for CUDA, Metal, ROCm, Vulkan, SYCL, and other
+  accelerator backends.
 - Estimates tokens/sec from the selected model, hardware, and parameters, with
   detected VRAM/RAM bandwidth applied as a hard decode ceiling and "high"
   confidence reported only when that ceiling actually binds.
