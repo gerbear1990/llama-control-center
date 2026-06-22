@@ -12,7 +12,10 @@ from .llama_args import normalize_gpu_layers
 from .server_manager import prepare_launch_command
 
 
-MEMORY_RE = re.compile(r"(?im)^CUDA\d+\s+(?P<model>\d+)\s+(?P<context>\d+)\s+(?P<compute>\d+)")
+MEMORY_RE = re.compile(
+    r"(?im)^(?P<device>(?:CUDA|MTL|METAL|ROCM|HIP|VULKAN|VK|SYCL|GPU)\d*)\s+"
+    r"(?P<model>\d+)\s+(?P<context>\d+)\s+(?P<compute>\d+)"
+)
 FREE_RE = re.compile(r"projected to use (?P<used>\d+) MiB.* vs\. (?P<free>\d+) MiB", re.IGNORECASE)
 LEAVE_RE = re.compile(r"will leave (?P<remaining>\d+).*?MiB", re.IGNORECASE)
 
@@ -253,7 +256,7 @@ def parse_fit_output(stdout: str, stderr: str = "") -> dict[str, Any]:
             "compute": compute_mib,
             "projected": model_mib + context_mib + compute_mib,
         }
-        notes.append("Parsed CUDA memory estimate from llama-fit-params output.")
+        notes.append(f"Parsed {memory.group('device')} memory estimate from llama-fit-params output.")
 
     if free_match:
         used = int(free_match.group("used"))

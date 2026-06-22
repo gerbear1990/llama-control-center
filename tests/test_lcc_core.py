@@ -734,5 +734,35 @@ class ServerStopTests(unittest.TestCase):
             proc.stdout.close()
 
 
+    def test_fit_parser_reads_metal_memory_line(self) -> None:
+        parsed = parse_fit_output("-c 8192 -ngl -2\n", "MTL0 2883 47 548\nHost 2208 0 82")
+        self.assertEqual(parsed["suggestions"]["cuda_memory_mib"]["model"], 2883)
+        self.assertEqual(parsed["suggestions"]["cuda_memory_mib"]["context"], 47)
+        self.assertEqual(parsed["suggestions"]["cuda_memory_mib"]["compute"], 548)
+
+    def test_fit_parser_reads_rocm_memory_line(self) -> None:
+        parsed = parse_fit_output("-c 4096 -ngl 32\n", "ROCM0 1500 30 200")
+        self.assertEqual(parsed["suggestions"]["cuda_memory_mib"]["model"], 1500)
+
+    def test_mmproj_in_middle_of_filename_is_skipped(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            model_dir = root / "models"
+            model_dir.mkdir()
+            (model_dir / "gemma-4-default-mmproj.gguf").write_bytes(b"projector")
+            (model_dir / "gemma-4-26B-Q4_K_M.gguf").write_bytes(b"model")
+
+            models = discover_models([root / "models"])
+
+        self.assertEqual(len(models), 1)
+        self.assertIn("gemma-4-26B", models[0].name)
+
+    def test_find_project_root_falls_back_to_package_location(self) -> None:
+        # The real repo has pyproject.toml, so find_project_root() should resolve.
+        root = find_project_root(Path(__file__).parent.parent)
+        self.assertIsNotNone(root)
+        self.assertTrue((root / "pyproject.toml").exists())
+
+
 if __name__ == "__main__":
     unittest.main()

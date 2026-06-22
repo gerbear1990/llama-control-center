@@ -170,10 +170,14 @@ def find_project_root(start: str | os.PathLike[str] | None = None) -> Path | Non
     if current.is_file():
         current = current.parent
 
-    markers = {"models.json", "llama-server.exe", "llama-server", "switch-model.ps1"}
+    markers = {"models.json", "llama-server.exe", "llama-server", "switch-model.ps1", "pyproject.toml"}
     for parent in [current, *current.parents]:
         if any((parent / marker).exists() for marker in markers):
             return parent
+    # Fallback: the installed package root (repo checkout) is a sane default.
+    pkg_root = Path(__file__).resolve().parent.parent
+    if (pkg_root / "pyproject.toml").exists():
+        return pkg_root
     return None
 
 

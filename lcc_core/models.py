@@ -42,7 +42,7 @@ def _find_mmproj(directory: Path) -> str | None:
     if not directory.is_dir():
         return None
     for child in directory.iterdir():
-        if child.is_file() and child.suffix.lower() == ".gguf" and child.name.lower().startswith("mmproj"):
+        if child.is_file() and child.suffix.lower() == ".gguf" and "mmproj" in child.name.lower():
             return str(child)
     return None
 
@@ -93,7 +93,7 @@ def discover_models(
                 if not filename.lower().endswith(".gguf"):
                     continue
                 path = Path(current_root) / filename
-                if filename.lower().startswith("mmproj"):
+                if "mmproj" in filename.lower():
                     continue
                 skip_split_part, split_total, split_parts = _split_info(path)
                 if skip_split_part:

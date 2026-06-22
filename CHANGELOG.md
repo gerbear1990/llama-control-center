@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-06-22
+
+### Added
+
+- **Fresh clone works out of the box.** `find_project_root()` now recognizes
+  `pyproject.toml` as a project root marker and falls back to the package location
+  when no other marker is found walking up from cwd. An empty `models.json` ships with
+  the repository so profiles can be created immediately after cloning.
+  ([paths.py](lcc_core/paths.py), [models.json](models.json))
+
+- **Fit test works on Apple Metal and other backends.** The memory-line parser in
+  `parse_fit_output()` now matches all llama.cpp accelerator labels (`CUDA`, `MTL`,
+  `METAL`, `ROCM`, `HIP`, `VULKAN`, `VK`, `SYCL`, `GPU`) instead of only CUDA.
+  Parsed notes reflect the actual device name. ([fit.py](lcc_core/fit.py))
+
+### Fixed
+
+- **mmproj projector files no longer registered as launchable models.** The skip filter
+  in `discover_models()` now matches `mmproj` anywhere in the filename (e.g.
+  `gemma-4-default-mmproj.gguf`) instead of only at the start, bringing it in line with
+  how draft/speculative companions are handled. ([models.py](lcc_core/models.py))
+
+### Tests
+
+- Added tests for Metal and ROCm memory-line parsing, mmproj-in-middle filename skipping,
+  and package-location fallback for `find_project_root()`. ([test_lcc_core.py](tests/test_lcc_core.py))
+
 ## [0.7.1] - 2026-06-22
 
 ### Fixed

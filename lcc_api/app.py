@@ -50,7 +50,7 @@ async def _lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="Llama Control Center API", version="0.7.1", lifespan=_lifespan)
+app = FastAPI(title="Llama Control Center API", version="0.8.0", lifespan=_lifespan)
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
