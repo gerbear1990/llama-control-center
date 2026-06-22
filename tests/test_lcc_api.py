@@ -6,12 +6,15 @@ import unittest
 import warnings
 from pathlib import Path
 
-with warnings.catch_warnings():
-    warnings.filterwarnings("ignore", category=DeprecationWarning)
-    warnings.filterwarnings("ignore", message="Using `httpx` with `starlette.testclient` is deprecated.*")
-    from fastapi.testclient import TestClient
+try:
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", category=DeprecationWarning)
+        warnings.filterwarnings("ignore", message="Using `httpx` with `starlette.testclient` is deprecated.*")
+        from fastapi.testclient import TestClient
 
-from lcc_api.app import app
+    from lcc_api.app import app
+except ImportError as exc:  # fastapi/httpx are optional test deps; skip rather than error.
+    raise unittest.SkipTest(f"API smoke tests need fastapi + httpx installed: {exc}")
 
 
 class ApiSmokeTests(unittest.TestCase):

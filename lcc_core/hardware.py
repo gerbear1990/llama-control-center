@@ -7,6 +7,7 @@ import platform
 import re
 import shutil
 import subprocess
+from pathlib import Path
 from typing import Any
 
 from .paths import is_windows
@@ -246,6 +247,36 @@ def _windows_cpu_info() -> dict[str, Any]:
     }
 
 
+def _parse_cpuinfo(text: str) -> dict[str, Any]:
+    name: str | None = None
+    core_ids: set[tuple[str, str]] = set()
+    phys_id = core_id = None
+    for line in text.splitlines():
+        key, _, value = line.partition(":")
+        key, value = key.strip(), value.strip()
+        if not name and key in ("model name", "Hardware", "cpu model"):
+            name = value
+        elif key == "physical id":
+            phys_id = value
+        elif key == "core id":
+            core_id = value
+        elif line.strip() == "":  # blank line separates processor blocks
+            if phys_id is not None and core_id is not None:
+                core_ids.add((phys_id, core_id))
+            phys_id = core_id = None
+    if phys_id is not None and core_id is not None:
+        core_ids.add((phys_id, core_id))
+    return {"name": name, "physical_cores": len(core_ids) or None}
+
+
+def _linux_cpu_info() -> dict[str, Any]:
+    """Read CPU model and physical core count from /proc/cpuinfo."""
+    try:
+        return _parse_cpuinfo(Path("/proc/cpuinfo").read_text(encoding="utf-8", errors="replace"))
+    except OSError:
+        return {}
+
+
 def detect_cpu() -> dict[str, Any]:
     cpu = _windows_cpu_info() if is_windows() else {}
     if platform.system() == "Darwin":
@@ -254,6 +285,8 @@ def detect_cpu() -> dict[str, Any]:
             result = _run([sysctl, "-n", "machdep.cpu.brand_string"], timeout=1.5)
             if result and result.returncode == 0 and result.stdout.strip():
                 cpu["name"] = result.stdout.strip()
+    elif platform.system() == "Linux":
+        cpu = _linux_cpu_info()
     logical = cpu.get("logical_cores") or os.cpu_count()
     name = cpu.get("name") or platform.processor() or platform.machine() or "Unknown CPU"
     return {
@@ -747,6 +780,9 @@ def _linux_lspci_gpus() -> list[dict[str, Any]]:
         if not re.search(r"(?i)(vga|3d controller|display controller)", line):
             continue
         name = re.sub(r"^[0-9a-fA-F:.]+\s+", "", line).strip()
+        # Drop the "VGA compatible controller: " device-class prefix and "(rev NN)" suffix.
+        name = re.sub(r"^[^:]+:\s*", "", name)
+        name = re.sub(r"\s*\(rev [0-9a-fA-F]+\)\s*$", "", name).strip()
         if _is_virtual_display(name):
             continue
         vendor = _gpu_vendor(name)

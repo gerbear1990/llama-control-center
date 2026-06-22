@@ -9,6 +9,7 @@ from pathlib import Path
 from lcc_core.config import AppConfig
 from lcc_core.estimates import estimate_memory_fit, estimate_tokens_per_second
 from lcc_core.fit import apply_fit_suggestions, build_fit_args, parse_fit_output
+from lcc_core.hardware import _parse_cpuinfo
 from lcc_core.hf_metadata import infer_query
 from lcc_core.inventory import build_inventory
 from lcc_core.llama_args import build_llama_server_args
@@ -17,6 +18,33 @@ from lcc_core.models import discover_models, parse_params, parse_quant
 from lcc_core.paths import find_project_root
 from lcc_core.portability import scan_portability_issues
 from lcc_core.profile_resolver import resolve_profiles
+
+
+class LinuxCpuInfoTests(unittest.TestCase):
+    def test_parses_model_name_and_counts_physical_cores(self) -> None:
+        # Two logical CPUs sharing one physical core (hyperthreading) → 1 physical core.
+        text = (
+            "processor\t: 0\n"
+            "model name\t: 13th Gen Intel(R) Core(TM) i9-13900HK\n"
+            "physical id\t: 0\n"
+            "core id\t: 0\n"
+            "\n"
+            "processor\t: 1\n"
+            "model name\t: 13th Gen Intel(R) Core(TM) i9-13900HK\n"
+            "physical id\t: 0\n"
+            "core id\t: 0\n"
+            "\n"
+            "processor\t: 2\n"
+            "model name\t: 13th Gen Intel(R) Core(TM) i9-13900HK\n"
+            "physical id\t: 0\n"
+            "core id\t: 1\n"
+        )
+        info = _parse_cpuinfo(text)
+        self.assertEqual(info["name"], "13th Gen Intel(R) Core(TM) i9-13900HK")
+        self.assertEqual(info["physical_cores"], 2)
+
+    def test_missing_fields_do_not_crash(self) -> None:
+        self.assertEqual(_parse_cpuinfo(""), {"name": None, "physical_cores": None})
 
 
 class ModelDiscoveryTests(unittest.TestCase):
