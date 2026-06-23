@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-06-23
+
+### Fixed
+
+- **Linux CPU detection.** `detect_cpu()` had Windows and macOS branches but no
+  Linux one, so it fell back to `platform.processor()` and reported the CPU as
+  `x86_64` with an unknown core count — contradicting the README's "Detects CPU
+  model" claim. It now reads the model name and physical core count from
+  `/proc/cpuinfo` (stdlib only). ([hardware.py](lcc_core/hardware.py))
+
+- **Linux GPU names.** `lspci`-detected GPUs dropped the
+  `VGA compatible controller:` device-class prefix and the trailing `(rev NN)`
+  so the header shows e.g. `Intel Corporation Raptor Lake-P [Iris Xe Graphics]`.
+  ([hardware.py](lcc_core/hardware.py))
+
+- **Fresh-clone test run.** The API smoke test now skips cleanly when
+  `fastapi`/`httpx` are not installed instead of erroring the whole
+  `unittest discover` run. ([test_lcc_api.py](tests/test_lcc_api.py))
+
+### Changed
+
+- The API version is now sourced from `lcc_api.__version__` instead of a
+  duplicated literal, and a `test_version_strings_match` guard fails the suite
+  if `pyproject.toml`, `lcc_api`, and `lcc_core` versions ever drift apart.
+
 ## [0.8.0] - 2026-06-22
 
 ### Added

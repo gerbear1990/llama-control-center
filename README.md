@@ -4,10 +4,10 @@
 > runtimes, preparing `llama.cpp` launch commands, running fit tests, and managing
 > tracked local inference servers.
 
-**v0.8.0** — Fresh clone works out of the box (no manual `models.json` needed), fit tests
-now parse memory estimates from Apple Metal, ROCm, Vulkan, and other backends (not just
-CUDA), and mmproj projector files are properly skipped regardless of where `mmproj`
-appears in the filename. Builds on v0.7.1's stop-lcc.py repair.
+**v0.8.1** — Linux now reports the real CPU model (e.g. `Core i9-13900HK`) and
+physical core count from `/proc/cpuinfo` instead of `x86_64`, `lspci` GPU names
+are cleaned up, and a fresh clone's test run no longer errors when optional test
+deps are missing. Builds on v0.8.0's out-of-the-box clone support.
 See [CHANGELOG.md](./CHANGELOG.md) for details.
 
 The app is designed to be portable: paths live in user settings or environment

@@ -20,6 +20,26 @@ from lcc_core.portability import scan_portability_issues
 from lcc_core.profile_resolver import resolve_profiles
 
 
+class VersionConsistencyTests(unittest.TestCase):
+    def test_version_strings_match(self) -> None:
+        import re
+
+        import lcc_api
+        import lcc_core
+
+        root = Path(__file__).resolve().parent.parent
+        pyproject = (root / "pyproject.toml").read_text(encoding="utf-8")
+        match = re.search(r'(?m)^version = "([^"]+)"', pyproject)
+        self.assertIsNotNone(match, "pyproject.toml has no version line")
+        pyproject_version = match.group(1)
+        self.assertEqual(
+            {pyproject_version, lcc_api.__version__, lcc_core.__version__},
+            {pyproject_version},
+            f"version drift: pyproject={pyproject_version}, "
+            f"lcc_api={lcc_api.__version__}, lcc_core={lcc_core.__version__}",
+        )
+
+
 class LinuxCpuInfoTests(unittest.TestCase):
     def test_parses_model_name_and_counts_physical_cores(self) -> None:
         # Two logical CPUs sharing one physical core (hyperthreading) → 1 physical core.
