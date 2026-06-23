@@ -748,7 +748,9 @@ function renderRuntimes() {
   $('#runtime-grid').innerHTML = envs.map((env) => {
     const url = runtimeUrl(env);
     const port = runtimePort(env);
-    const warning = env.warnings?.[0] || env.details?.probe_error || '';
+    // ponytail: only surface warnings for runtimes that were actually detected.
+    // An undetected runtime is an expected state, not an error worth showing.
+    const warning = env.available ? (env.warnings?.[0] || env.details?.probe_error || '') : '';
     const update = runtimeUpdateFor(env.id || env.kind);
     const isLlamaCpp = env.id === 'llama.cpp' || env.kind === 'local_binary';
     const previewHost = state.paramPreviewHost || '127.0.0.1';

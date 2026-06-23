@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.2] - 2026-06-23
+
+### Changed
+
+- **Quieter runtime cards.** Runtime cards no longer show a warning/error line
+  (e.g. "unreachable") for runtimes that were not detected. An undetected runtime
+  is an expected state, so the card simply shows `not found` without an error
+  message. Warnings still appear for runtimes that *are* detected but have a
+  problem (e.g. a reachable-but-erroring probe). ([app.js](lcc_api/static/app.js))
+
 ## [0.10.1] - 2026-06-23
 
 ### Changed

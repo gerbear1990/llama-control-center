@@ -4,10 +4,9 @@
 > runtimes, preparing `llama.cpp` launch commands, running fit tests, and managing
 > tracked local inference servers.
 
-**v0.10.1** — UI polish: shorter sampling-preset labels and compact, two-line
-hardware chips (trimmed CPU/GPU names, `Shared` VRAM for integrated GPUs) so
-header text no longer truncates. Builds on v0.10.0's collapsible panels, sidebar,
-and themed selects.
+**v0.10.2** — Runtime cards no longer show an error line for runtimes that were
+not detected; warnings appear only for detected-but-problematic runtimes. Builds
+on v0.10.1's shorter sampling labels and compact hardware chips.
 See [CHANGELOG.md](./CHANGELOG.md) for details.
 
 The app is designed to be portable: paths live in user settings or environment
