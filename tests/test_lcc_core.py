@@ -812,5 +812,21 @@ class ServerStopTests(unittest.TestCase):
         self.assertTrue((root / "pyproject.toml").exists())
 
 
+class RuntimeDispatchTests(unittest.TestCase):
+    def test_detect_runtime_maps_ids_and_rejects_unknown(self) -> None:
+        from lcc_core.backends import LAUNCHABLE_RUNTIMES, detect_runtime
+
+        # Known ids return an Environment with the matching id; default/empty
+        # falls back to llama.cpp. Detection may report unavailable offline —
+        # we only assert the dispatch here, not availability.
+        self.assertEqual(detect_runtime("llama.cpp").id, "llama.cpp")
+        self.assertEqual(detect_runtime(None).id, "llama.cpp")
+        self.assertEqual(detect_runtime("ollama").id, "ollama")
+        # Unknown id is rejected (no silent fallback to llama.cpp).
+        self.assertIsNone(detect_runtime("nonsense-runtime"))
+        # llama.cpp is the only runtime wired into the launch path so far.
+        self.assertEqual(LAUNCHABLE_RUNTIMES, ("llama.cpp",))
+
+
 if __name__ == "__main__":
     unittest.main()

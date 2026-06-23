@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .backends import detect_llama_cpp
+from .backends import detect_llama_cpp, detect_runtime
 from .config import AppConfig
 from .llama_args import LaunchCommand, build_llama_server_args
 from .paths import cache_dir, find_project_root, is_windows
@@ -309,14 +309,33 @@ def prepare_launch_command(
             "profile": resolved.to_dict(),
         }
 
-    llama = detect_llama_cpp(root, config=app_config)
-    if not llama.binary_path:
-        return {"success": False, "error": "llama-server was not found.", "environment": llama.to_dict()}
-
     params = dict(resolved.params)
     params.update(overrides or {})
     params.setdefault("host", app_config.default_host)
     params.setdefault("port", app_config.default_port)
+
+    runtime = str(params.get("runtime") or "llama.cpp").strip() or "llama.cpp"
+    if runtime != "llama.cpp":
+        env = detect_runtime(runtime, root, config=app_config)
+        if env is None:
+            return {"success": False, "error": f"Unknown runtime: {runtime}"}
+        # llama.cpp is the only runtime wired into the launch path so far; report a
+        # clear error for the others instead of silently starting llama.cpp.
+        return {
+            "success": False,
+            "error": (
+                f"{env.name} is selected but cannot be launched from here yet — "
+                "only llama.cpp is wired into Start/Fit. Switch the Runtime back to "
+                "llama.cpp to launch this profile."
+            ),
+            "environment": env.to_dict(),
+            "profile": resolved.to_dict(),
+        }
+
+    llama = detect_llama_cpp(root, config=app_config)
+    if not llama.binary_path:
+        return {"success": False, "error": "llama-server was not found.", "environment": llama.to_dict()}
+
     command = build_llama_server_args(
         llama.binary_path,
         resolved.model["path"],

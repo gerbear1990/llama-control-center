@@ -293,3 +293,29 @@ def detect_all(project_root: Path | None = None, config: AppConfig | None = None
         detect_vllm(),
         detect_mlx(),
     ]
+
+
+# Runtimes whose launch path is actually wired into prepare_launch_command.
+# Others are detectable (and selectable in the UI) but cannot be started yet.
+LAUNCHABLE_RUNTIMES = ("llama.cpp",)
+
+
+def detect_runtime(
+    runtime_id: str | None,
+    project_root: Path | None = None,
+    config: AppConfig | None = None,
+) -> Environment | None:
+    """Detect a single runtime by its environment id. Returns None if unknown."""
+
+    if runtime_id in (None, "", "llama.cpp"):
+        return detect_llama_cpp(project_root, config=config)
+    if runtime_id == "wsl-llama.cpp":
+        return detect_wsl_llama_cpp()
+    detectors = {
+        "ollama": detect_ollama,
+        "lm-studio": detect_lm_studio,
+        "vllm": detect_vllm,
+        "mlx": detect_mlx,
+    }
+    detector = detectors.get(runtime_id)
+    return detector() if detector else None
