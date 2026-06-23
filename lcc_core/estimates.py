@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import os
 import re
+from functools import lru_cache
 from typing import Any
 
 
@@ -41,6 +42,7 @@ _N_LAYER_PATTERNS = [
 ]
 
 
+@lru_cache(maxsize=256)
 def _read_gguf_n_layer(model_path: str | None) -> int | None:
     """Read the actual number of transformer layers from a GGUF file header.
     

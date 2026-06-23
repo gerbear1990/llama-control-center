@@ -1464,7 +1464,7 @@ function reconcileSelectedMode() {
 const DASHBOARD_RESOURCES = [
   { label: 'profiles', path: '/api/profiles', apply: (d) => { state.profiles = d.profiles || []; }, render: () => { reconcileSelectedMode(); renderProfiles(); renderParameters(); renderSummary(); } },
   { label: 'servers', path: '/api/servers', apply: (d) => { state.servers = d.servers || []; }, render: renderServers },
-  { label: 'inventory', path: '/api/inventory', apply: (d) => { state.inventory = d; }, render: () => { renderSummary(); renderModels(); renderIssues(); } },
+  { label: 'inventory', path: '/api/inventory', apply: (d) => { state.inventory = d; }, render: () => { renderSummary(); renderModels(); renderIssues(); renderRuntimes(); } },
   { label: 'settings', path: '/api/config', apply: (d) => { state.config = d; }, render: () => { renderSettings(); renderParameters(); } },
   { label: 'hardware', path: '/api/system', apply: (d) => { state.hardware = d; }, render: () => { renderHardware(); renderParameters(); } },
   { label: 'meta', path: '/api/meta', apply: (d) => { state.meta = d; }, render: renderVersion },
@@ -2359,6 +2359,17 @@ function wireEvents() {
     state.paramPreviewHost = $('#param-host').value.trim() || '127.0.0.1';
     state.paramPreviewPort = numericValue('#param-port') || 8080;
     scheduleTpsEstimate();
+  });
+  // Preset picker writes into #param-ctx (the source of truth), then resets so it
+  // always reads "Presets" and never filters its options by the current value.
+  $('#param-ctx-preset').addEventListener('change', (event) => {
+    const value = event.target.value;
+    event.target.value = '';
+    if (!value) return;
+    const ctx = $('#param-ctx');
+    ctx.value = value;
+    ctx.dispatchEvent(new Event('input', { bubbles: true }));
+    ctx.dispatchEvent(new Event('change', { bubbles: true }));
   });
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') {

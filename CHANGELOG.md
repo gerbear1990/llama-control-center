@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.3] - 2026-06-23
+
+### Added
+
+- **Context-size presets.** The Context field now has a themed preset picker
+  (2K–256K) beside the input. It uses a native `<select>` (not a `<datalist>`),
+  so it matches the app theme and always lists every preset regardless of the
+  current value; the number input still accepts any custom value and remains the
+  source of truth for Fit Test / Smart Fit. ([index.html](lcc_api/static/index.html),
+  [app.js](lcc_api/static/app.js)) (#7)
+
+### Fixed
+
+- **Runtimes panel race.** The Runtimes panel could render "No runtimes detected"
+  even when `/api/inventory` detected them, because the grid was only drawn by the
+  `runtime-updates` resource — which, after v0.10.2's update-check caching, often
+  resolved before the slower inventory scan. `renderRuntimes()` now also runs when
+  inventory resolves, so the grid is order-independent. ([app.js](lcc_api/static/app.js)) (#5)
+- **Smart Fit hang.** `auto_tune_fit()` re-parsed the GGUF header (~5s) for each of
+  its ~144 partial-offload candidates, pinning a CPU core for ~11 minutes.
+  `_read_gguf_n_layer()` is now memoized with `functools.lru_cache`, cutting a warm
+  Smart Fit run from minutes to under a second. ([estimates.py](lcc_core/estimates.py)) (#6)
+
 ## [0.10.2] - 2026-06-23
 
 ### Changed
