@@ -4,9 +4,10 @@
 > runtimes, preparing `llama.cpp` launch commands, running fit tests, and managing
 > tracked local inference servers.
 
-**v0.10.2** — Runtime cards no longer show an error line for runtimes that were
-not detected; warnings appear only for detected-but-problematic runtimes. Builds
-on v0.10.1's shorter sampling labels and compact hardware chips.
+**v0.10.3** — Context field gains a themed preset picker (2K–256K) that always
+lists every size and still allows custom values; fixes the Runtimes panel
+sometimes showing "No runtimes detected" (render race) and a Smart Fit hang
+caused by re-parsing the GGUF header per candidate.
 See [CHANGELOG.md](./CHANGELOG.md) for details.
 
 The app is designed to be portable: paths live in user settings or environment

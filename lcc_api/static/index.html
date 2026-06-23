@@ -228,7 +228,20 @@
                 <div class="field-grid">
                   <label class="field" title="How much conversation the model can remember. Bigger values need more memory.">
                     <span>Context</span>
-                    <input id="param-ctx" name="ctx_size" type="number" min="256" step="256" />
+                    <div class="input-with-preset">
+                      <input id="param-ctx" name="ctx_size" type="number" min="256" step="256" />
+                      <select id="param-ctx-preset" aria-label="Common context sizes" title="Pick a common context size, or type a custom value.">
+                        <option value="">Presets</option>
+                        <option value="2048">2K</option>
+                        <option value="4096">4K</option>
+                        <option value="8192">8K</option>
+                        <option value="16384">16K</option>
+                        <option value="32768">32K</option>
+                        <option value="65536">64K</option>
+                        <option value="131072">128K</option>
+                        <option value="262144">256K</option>
+                      </select>
+                    </div>
                   </label>
                   <label class="field" title="How much of the model runs on the GPU. All is fastest when it fits; lower values use more system RAM.">
                     <span>GPU layers</span>

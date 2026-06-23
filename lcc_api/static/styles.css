@@ -1574,6 +1574,21 @@ td:nth-child(7) {
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
 }
 
+.input-with-preset {
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+}
+
+.input-with-preset input {
+  flex: 1;
+}
+
+.input-with-preset select {
+  width: auto;
+  flex: 0 0 auto;
+}
+
 .field input[readonly] {
   color: var(--muted);
   background: var(--surface-3);
