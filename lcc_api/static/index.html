@@ -195,6 +195,12 @@
                 </label>
                 <div class="param-section-title">Runtime</div>
                 <div class="field-grid">
+                  <label class="field wide" title="Which backend starts this model. Only llama.cpp can be launched from here today; other detected runtimes are selectable but report a clear error until their launch support lands.">
+                    <span>Runtime</span>
+                    <select id="param-runtime" name="runtime">
+                      <option value="llama.cpp">llama.cpp</option>
+                    </select>
+                  </label>
                   <label class="field" title="Use 127.0.0.1 to keep the server on this machine. Use 0.0.0.0 only when you want LAN access.">
                     <span>Host</span>
                     <input id="param-host" name="host" type="text" autocomplete="off" />

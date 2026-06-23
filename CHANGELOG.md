@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.4] - 2026-06-23
+
+### Added
+
+- **Runtime selection dropdown.** The Parameters panel now has a **Runtime**
+  dropdown, populated from the detected environments and persisted per profile in
+  `models.json`. llama.cpp is fully wired for Start/Fit; other detected runtimes
+  (Ollama, LM Studio, vLLM, MLX) are selectable but yield a clear "not launchable
+  yet" error from `prepare_launch_command` instead of silently falling back to
+  llama.cpp. `detect_runtime()` dispatches a single runtime by id and rejects
+  unknown ids. ([backends.py](lcc_core/backends.py),
+  [server_manager.py](lcc_core/server_manager.py),
+  [index.html](lcc_api/static/index.html), [app.js](lcc_api/static/app.js)) (#4)
+
 ## [0.10.3] - 2026-06-23
 
 ### Added

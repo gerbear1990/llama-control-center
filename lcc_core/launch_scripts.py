@@ -129,6 +129,7 @@ def _is_draft_model(model_path: str) -> bool:
 
 
 MANIFEST_PARAM_KEYS = (
+    "runtime",
     "ctx_size",
     "threads",
     "threads_batch",
