@@ -25,6 +25,7 @@ const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => Array.from(document.querySelectorAll(selector));
 const hasOwn = (object, key) => Object.prototype.hasOwnProperty.call(object || {}, key);
 const PARAM_DEFAULTS = {
+  runtime: 'llama.cpp',
   host: '127.0.0.1',
   port: 8080,
   acceleration_backend: 'auto',
@@ -593,6 +594,26 @@ function renderParamProfileOptions() {
   if (selected) select.value = selected.mode;
 }
 
+function renderRuntimeOptions(selectedValue) {
+  const select = $('#param-runtime');
+  if (!select) return;
+  // Launch is wired for llama.cpp only; other detected runtimes are selectable
+  // but the backend returns a clear "not launchable yet" error for them.
+  const envs = state.inventory?.environments || [];
+  const options = envs.length
+    ? envs.map((env) => ({ value: env.id, label: env.name || env.id, available: env.available }))
+    : [{ value: 'llama.cpp', label: 'llama.cpp', available: true }];
+  const selected = String(selectedValue || 'llama.cpp');
+  if (!options.some((opt) => opt.value === selected)) {
+    options.push({ value: selected, label: selected, available: false });
+  }
+  select.innerHTML = options.map((opt) => {
+    const suffix = opt.value === 'llama.cpp' ? '' : opt.available ? ' (not launchable yet)' : ' (not detected)';
+    return `<option value="${escapeHtml(opt.value)}">${escapeHtml(opt.label)}${suffix}</option>`;
+  }).join('');
+  select.value = selected;
+}
+
 function renderAccelerationOptions(selectedValue) {
   const select = $('#param-acceleration');
   const selected = String(selectedValue || 'auto').toLowerCase();
@@ -608,7 +629,9 @@ function renderParameters() {
   const profile = getSelectedProfile();
   if (!profile) return;
   const params = getProfileParams(profile);
+  renderRuntimeOptions(params.runtime);
   renderAccelerationOptions(params.acceleration_backend);
+  setFieldValue('#param-runtime', params.runtime || 'llama.cpp');
   setFieldValue('#param-host', params.host);
   setFieldValue('#param-port', params.port);
   setFieldValue('#param-acceleration', params.acceleration_backend || 'auto');
@@ -652,6 +675,7 @@ function numericValue(id) {
 
 function collectOverrides() {
   return {
+    runtime: $('#param-runtime')?.value || 'llama.cpp',
     host: $('#param-host').value.trim() || '127.0.0.1',
     port: numericValue('#param-port'),
     acceleration_backend: $('#param-acceleration').value || 'auto',
@@ -1464,7 +1488,7 @@ function reconcileSelectedMode() {
 const DASHBOARD_RESOURCES = [
   { label: 'profiles', path: '/api/profiles', apply: (d) => { state.profiles = d.profiles || []; }, render: () => { reconcileSelectedMode(); renderProfiles(); renderParameters(); renderSummary(); } },
   { label: 'servers', path: '/api/servers', apply: (d) => { state.servers = d.servers || []; }, render: renderServers },
-  { label: 'inventory', path: '/api/inventory', apply: (d) => { state.inventory = d; }, render: () => { renderSummary(); renderModels(); renderIssues(); renderRuntimes(); } },
+  { label: 'inventory', path: '/api/inventory', apply: (d) => { state.inventory = d; }, render: () => { renderSummary(); renderModels(); renderIssues(); renderRuntimes(); renderRuntimeOptions($('#param-runtime')?.value); } },
   { label: 'settings', path: '/api/config', apply: (d) => { state.config = d; }, render: () => { renderSettings(); renderParameters(); } },
   { label: 'hardware', path: '/api/system', apply: (d) => { state.hardware = d; }, render: () => { renderHardware(); renderParameters(); } },
   { label: 'meta', path: '/api/meta', apply: (d) => { state.meta = d; }, render: renderVersion },

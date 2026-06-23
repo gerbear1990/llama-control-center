@@ -4,10 +4,10 @@
 > runtimes, preparing `llama.cpp` launch commands, running fit tests, and managing
 > tracked local inference servers.
 
-**v0.10.3** — Context field gains a themed preset picker (2K–256K) that always
-lists every size and still allows custom values; fixes the Runtimes panel
-sometimes showing "No runtimes detected" (render race) and a Smart Fit hang
-caused by re-parsing the GGUF header per candidate.
+**v0.10.4** — Parameters panel gains a Runtime dropdown (persisted per profile);
+llama.cpp is fully wired for Start/Fit, other detected runtimes are selectable but
+report a clear "not launchable yet" error. Builds on v0.10.3's context-size preset
+picker and the Runtimes-panel / Smart-Fit fixes.
 See [CHANGELOG.md](./CHANGELOG.md) for details.
 
 The app is designed to be portable: paths live in user settings or environment
