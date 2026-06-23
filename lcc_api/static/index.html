@@ -385,6 +385,19 @@
               <div class="server-box" id="server-box"></div>
             </section>
 
+            <section class="panel" id="test-prompt">
+              <div class="panel-heading compact">
+                <div>
+                  <h3>Test Prompt</h3>
+                  <p>Send a chat message to the selected running server.</p>
+                </div>
+                <button class="mini-button" type="button" id="test-prompt-send">Send</button>
+              </div>
+              <textarea id="test-prompt-input" rows="2" placeholder="Ask the running model something…" autocomplete="off"></textarea>
+              <div class="test-prompt-meta" id="test-prompt-meta" hidden></div>
+              <pre class="log-preview" id="test-prompt-output" hidden></pre>
+            </section>
+
             <section class="panel" id="logs">
               <div class="panel-heading compact">
                 <div>

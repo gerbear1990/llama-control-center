@@ -75,6 +75,65 @@ def _fallback_token_count(text: str) -> int:
     return max(1, round(len(text) / 4))
 
 
+def send_chat_prompt(
+    mode: str,
+    prompt: str,
+    max_tokens: int = 256,
+    temperature: float = 0.7,
+    timeout_seconds: int = 120,
+) -> dict[str, Any]:
+    """Send one chat prompt to an already-running tracked server and return the reply.
+
+    Unlike run_profile_benchmark, this never starts or restarts the server — it only
+    talks to a server this app already has running for the given mode.
+    """
+    prompt = (prompt or "").strip()
+    if not prompt:
+        return {"success": False, "error": "Prompt is empty."}
+    server = _server_for_mode(mode)
+    if not server:
+        return {"success": False, "error": f"No running tracked server for '{mode}'. Start it first."}
+
+    base_url = _api_base(server)
+    request_payload = {
+        "model": mode,
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": float(temperature),
+        "max_tokens": int(max_tokens),
+        "stream": False,
+    }
+    raw = json.dumps(request_payload).encode("utf-8")
+    req = urllib.request.Request(
+        f"{base_url}/v1/chat/completions",
+        data=raw,
+        headers={"Content-Type": "application/json", "User-Agent": "llama-control-center/test-prompt"},
+        method="POST",
+    )
+
+    started = time.perf_counter()
+    try:
+        with urllib.request.urlopen(req, timeout=timeout_seconds) as response:
+            response_payload = json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
+        return {"success": False, "error": str(exc), "endpoint": f"{base_url}/v1/chat/completions"}
+    elapsed = max(time.perf_counter() - started, 0.001)
+
+    usage = response_payload.get("usage") or {}
+    text = _completion_text(response_payload)
+    completion_count = int(usage.get("completion_tokens") or usage.get("predicted_n") or _fallback_token_count(text))
+    tokens_per_second = completion_count / elapsed if completion_count else 0.0
+
+    return {
+        "success": True,
+        "reply": text,
+        "endpoint": f"{base_url}/v1/chat/completions",
+        "elapsed_seconds": round(elapsed, 3),
+        "completion_tokens": completion_count,
+        "prompt_tokens": int(usage.get("prompt_tokens") or usage.get("prompt_n") or 0),
+        "tokens_per_second": round(tokens_per_second, 2),
+    }
+
+
 def run_profile_benchmark(
     mode: str,
     project_root: str | Path | None = None,

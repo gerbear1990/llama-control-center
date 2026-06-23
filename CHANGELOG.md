@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-06-23
+
+### Added
+
+- **Test Prompt panel.** A new inspector panel sends a single chat message to the
+  selected *running* tracked server via its `/v1/chat/completions` endpoint and
+  shows the reply plus measured tokens/sec, completion token count, and elapsed
+  time — without restarting the server or leaving the dashboard. Ctrl/Cmd+Enter
+  sends. Backed by `send_chat_prompt()` ([benchmark.py](lcc_core/benchmark.py)) and
+  the `POST /api/servers/test-prompt` endpoint ([app.py](lcc_api/app.py)). Closes the
+  ROADMAP "test-prompt box" item.
+
 ## [0.8.1] - 2026-06-23
 
 ### Fixed

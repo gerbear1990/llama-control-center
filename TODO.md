@@ -33,7 +33,7 @@
 - [x] VRAM detection should include memory generation, speed, and bandwidth where the GPU tooling exposes it.
 - [x] RAM/VRAM speed and bandwidth should feed into tokens/sec estimates and fit scoring when useful. _v0.6.0 (bandwidth applied as a decode ceiling)._
 - [x] Add a button to check Hugging Face for updates to the selected model. _v0.6.2 — resolves the model's HF repo, compares remote vs local file (size diff primary, repo last-modified fallback), and offers a confirm-gated re-download of just that file._
-- [ ] Add a test-prompt box that sends a chat completion to a running server and shows the reply plus measured tokens/sec.
+- [x] Add a test-prompt box that sends a chat completion to a running server and shows the reply plus measured tokens/sec. _v0.9.0._
 - [ ] Show live server metrics from llama.cpp (`/metrics`, `/health`, `/props`): KV-cache usage, slots in use, decode tokens/sec, context fill %.
 - [ ] Show live process memory (resident RAM + GPU memory) for a running tracked server to confirm the fit estimate and catch OOMs.
 - [ ] Add a crash/exit watchdog that flags tracked servers that died unexpectedly and offers restart with last log lines.

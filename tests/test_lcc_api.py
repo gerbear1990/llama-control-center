@@ -123,6 +123,20 @@ class ApiSmokeTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 404)
 
+    def test_test_prompt_empty_returns_400(self) -> None:
+        response = self.client.post("/api/servers/test-prompt", json={"mode": "anything", "prompt": "   "})
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("empty", str(response.json()).lower())
+
+    def test_test_prompt_no_running_server_returns_400(self) -> None:
+        response = self.client.post(
+            "/api/servers/test-prompt", json={"mode": "no-such-server-mode", "prompt": "hi"}
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("no running tracked server", str(response.json()).lower())
+
 
 if __name__ == "__main__":
     unittest.main()

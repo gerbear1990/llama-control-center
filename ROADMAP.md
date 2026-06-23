@@ -61,10 +61,9 @@ passes.
 The dashboard is strong pre-launch (discover → fit → estimate → prepare → start)
 but goes quiet once a server is running. These close that loop.
 
-- Test-prompt box against a running server: a textbox + Send that proxies to the
-  server's `/v1/chat/completions` and shows the reply plus measured tokens/sec.
-  Proves the launched server actually answers, from the dashboard. (Smallest, highest
-  UX payoff.)
+- ~~Test-prompt box against a running server~~ **Shipped in `v0.9.0`.** Test Prompt
+  panel proxies to the running server's `/v1/chat/completions` and shows the reply
+  plus measured tokens/sec.
 - Live server metrics from llama.cpp: poll the running server's `/metrics`
   (Prometheus), `/health`, and `/props` for real KV-cache usage, slots in use,
   prompt/decode tokens/sec, and context fill %. Turns the estimate into ground truth

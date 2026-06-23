@@ -1139,6 +1139,29 @@ td:nth-child(7) {
   white-space: pre-wrap;
 }
 
+#test-prompt-input {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  padding: 10px;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.test-prompt-meta {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+#test-prompt-output {
+  margin-top: 8px;
+  min-height: 0;
+  max-height: 220px;
+}
+
 .hf-widget {
   padding: 1rem;
 }

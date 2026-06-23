@@ -15,7 +15,7 @@ except ImportError as exc:  # pragma: no cover - exercised by runtime import
         "lcc_api requires fastapi and pydantic. Install dependencies with `pip install -r requirements.txt`."
     ) from exc
 
-from lcc_core.benchmark import load_benchmark_results, run_profile_benchmark
+from lcc_core.benchmark import load_benchmark_results, run_profile_benchmark, send_chat_prompt
 from lcc_core.config import AppConfig
 from lcc_core.estimates import enrich_profiles_with_fit_status, estimate_memory_fit, estimate_tokens_per_second
 from lcc_core.fit import run_fit_test
@@ -355,6 +355,26 @@ def run_benchmark(request: BenchmarkRequest) -> dict[str, Any]:
         restart=request.restart,
         stop_after=request.stop_after,
         ready_timeout_seconds=request.ready_timeout_seconds,
+    )
+    if not result.get("success"):
+        raise HTTPException(status_code=400, detail=result)
+    return result
+
+
+class TestPromptRequest(BaseModel):
+    mode: str
+    prompt: str
+    max_tokens: int = 256
+    temperature: float = 0.7
+
+
+@app.post("/api/servers/test-prompt")
+def test_prompt(request: TestPromptRequest) -> dict[str, Any]:
+    result = send_chat_prompt(
+        mode=request.mode,
+        prompt=request.prompt,
+        max_tokens=request.max_tokens,
+        temperature=request.temperature,
     )
     if not result.get("success"):
         raise HTTPException(status_code=400, detail=result)

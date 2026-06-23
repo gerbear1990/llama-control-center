@@ -1763,6 +1763,43 @@ function renderBenchmarkSummary(result) {
   `;
 }
 
+async function sendTestPrompt() {
+  const mode = selectedMode();
+  if (!mode) {
+    toast('Select a profile first');
+    return;
+  }
+  const input = $('#test-prompt-input');
+  const prompt = (input.value || '').trim();
+  if (!prompt) {
+    toast('Enter a prompt to send');
+    return;
+  }
+  if (!serverRunningForMode(mode)) {
+    toast(`Start the server for "${mode}" first`);
+    return;
+  }
+  const meta = $('#test-prompt-meta');
+  const output = $('#test-prompt-output');
+  output.hidden = false;
+  output.textContent = 'Sending…';
+  meta.hidden = true;
+  await withBusy($('#test-prompt-send'), async () => {
+    try {
+      const result = await api('/api/servers/test-prompt', {
+        method: 'POST',
+        body: JSON.stringify({ mode, prompt, max_tokens: 256 }),
+      });
+      output.textContent = result.reply || '(empty response)';
+      meta.hidden = false;
+      meta.textContent = `${result.tokens_per_second} tok/s · ${result.completion_tokens} tokens · ${result.elapsed_seconds}s`;
+    } catch (error) {
+      output.textContent = `Error: ${error.message}`;
+      meta.hidden = true;
+    }
+  });
+}
+
 async function runBenchmark() {
   const mode = selectedMode();
   if (!mode) return;
@@ -2084,6 +2121,10 @@ function wireEvents() {
   $('#sampling-suggest-button').addEventListener('click', applySamplingPreset);
   $('#fit-button').addEventListener('click', runFitTest);
   $('#benchmark-button').addEventListener('click', runBenchmark);
+  $('#test-prompt-send').addEventListener('click', sendTestPrompt);
+  $('#test-prompt-input').addEventListener('keydown', (event) => {
+    if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') sendTestPrompt();
+  });
   $('#hf-info-button').addEventListener('click', fetchHFInfo);
   $('#hf-update-button').addEventListener('click', checkModelUpdate);
   $('#hf-check-updates-button').addEventListener('click', (event) => {
