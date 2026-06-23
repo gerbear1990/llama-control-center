@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-06-23
+
+### Added
+
+- **Collapsible panels.** Every dashboard module now has a chevron toggle (and a
+  clickable heading) that expands/collapses its body with a smooth
+  `grid-template-rows` animation. Open/closed state persists per panel in
+  `localStorage`. Secondary inspector panels (Test Prompt, Logs, Portability,
+  HF Tools) start collapsed to reduce clutter. ([app.js](lcc_api/static/app.js),
+  [styles.css](lcc_api/static/styles.css))
+- **Collapsible sidebar.** A toggle button collapses the sidebar to an icon-only
+  rail (with hover tooltips) and back, with an animated width transition; the
+  state persists across reloads. ([index.html](lcc_api/static/index.html))
+
+### Changed
+
+- **Themed select controls.** All `<select>` elements (including the previously
+  unstyled sampling-preset dropdown) now use `appearance: none` with a custom
+  themed chevron, hover, and focus ring matching the rest of the inputs in both
+  light and dark themes.
+- Layout transitions are gated behind an `anim-ready` class applied after first
+  paint, so panels and the sidebar never animate from open→closed on load.
+  `prefers-reduced-motion` continues to disable all transitions.
+
 ## [0.9.0] - 2026-06-23
 
 ### Added

@@ -4,9 +4,11 @@
 > runtimes, preparing `llama.cpp` launch commands, running fit tests, and managing
 > tracked local inference servers.
 
-**v0.9.0** — New **Test Prompt** panel: send a chat message to a running tracked
-server and see the reply plus measured tokens/sec, without leaving the dashboard.
-Builds on v0.8.1's Linux CPU/GPU detection fixes.
+**v0.10.0** — UI pass: every panel is now a **collapsible module** with a smooth
+animated toggle (state persists), the **sidebar collapses** to an icon rail on
+demand, and all `<select>` controls — including the sampling-preset dropdown — are
+themed to match the app. Secondary panels start collapsed to cut clutter.
+Builds on v0.9.0's Test Prompt panel.
 See [CHANGELOG.md](./CHANGELOG.md) for details.
 
 The app is designed to be portable: paths live in user settings or environment
@@ -142,7 +144,10 @@ The web UI is keyboard-friendly, respects `prefers-reduced-motion`, and ships
 with matching light and dark themes. The theme toggle in the top bar persists
 your choice in browser storage.
 
-- The sidebar shows navigation, API status, and the running app version.
+- The sidebar shows navigation, API status, and the running app version, and
+  collapses to an icon-only rail via the toggle at its top.
+- Every panel collapses/expands via its heading or chevron toggle; the state is
+  remembered between visits.
 - The top bar shows the detected CPU, GPU, VRAM, and RAM (with DDR type, speed,
   and bus width where available), plus a search field that filters both profiles
   and models.

@@ -2013,9 +2013,94 @@ async function loadLogs(serverId, trigger) {
   });
 }
 
+const PANEL_COLLAPSE_KEY = 'lcc-collapsed-panels';
+const DEFAULT_COLLAPSED_PANELS = ['test-prompt', 'logs', 'portability', 'hf-tools'];
+
+function loadCollapsedPanels() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(PANEL_COLLAPSE_KEY));
+    if (Array.isArray(raw)) return new Set(raw);
+  } catch (error) {
+    /* fall through to defaults */
+  }
+  return new Set(DEFAULT_COLLAPSED_PANELS);
+}
+
+// Turn every .panel into a collapsible module: wrap its body, add a chevron
+// toggle, and persist open/closed state per panel id.
+function enhancePanels() {
+  const collapsed = loadCollapsedPanels();
+  const saveState = () => localStorage.setItem(PANEL_COLLAPSE_KEY, JSON.stringify([...collapsed]));
+
+  $$('.panel').forEach((panel) => {
+    const heading = panel.querySelector(':scope > .panel-heading');
+    if (!heading || panel.querySelector(':scope > .panel-body')) return;
+
+    const inner = document.createElement('div');
+    inner.className = 'panel-body-inner';
+    let node = heading.nextSibling;
+    while (node) {
+      const next = node.nextSibling;
+      inner.appendChild(node);
+      node = next;
+    }
+    const body = document.createElement('div');
+    body.className = 'panel-body';
+    body.appendChild(inner);
+    panel.appendChild(body);
+
+    const id = panel.id;
+    const titleZone = heading.querySelector(':scope > div');
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'panel-toggle';
+    toggle.setAttribute('aria-label', 'Toggle section');
+    toggle.innerHTML = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+    heading.appendChild(toggle);
+
+    const apply = (isCollapsed, persist) => {
+      panel.classList.toggle('collapsed', isCollapsed);
+      toggle.setAttribute('aria-expanded', String(!isCollapsed));
+      if (persist) {
+        if (isCollapsed) collapsed.add(id);
+        else collapsed.delete(id);
+        saveState();
+      }
+    };
+    apply(collapsed.has(id), false);
+
+    const flip = () => apply(!panel.classList.contains('collapsed'), true);
+    toggle.addEventListener('click', (event) => { event.stopPropagation(); flip(); });
+    if (titleZone) {
+      titleZone.classList.add('panel-title-toggle');
+      titleZone.addEventListener('click', flip);
+    }
+  });
+}
+
+function enhanceSidebar() {
+  const shell = $('.app-shell');
+  const collapsed = localStorage.getItem('lcc-sidebar-collapsed') === '1';
+  shell.classList.toggle('sidebar-collapsed', collapsed);
+  $$('.nav-item').forEach((item) => {
+    const label = item.querySelector('span:last-child');
+    if (label && !item.title) item.title = label.textContent.trim();
+  });
+  $('#sidebar-toggle').addEventListener('click', () => {
+    const next = !shell.classList.contains('sidebar-collapsed');
+    shell.classList.toggle('sidebar-collapsed', next);
+    localStorage.setItem('lcc-sidebar-collapsed', next ? '1' : '0');
+  });
+}
+
 function wireEvents() {
   applyTheme();
   enhanceTooltips();
+  enhancePanels();
+  enhanceSidebar();
+  // Enable layout transitions only after the initial collapsed state is painted,
+  // so panels and the sidebar don't animate from open→closed on first load.
+  requestAnimationFrame(() => $('.app-shell').classList.add('anim-ready'));
   $('#refresh-button').addEventListener('click', refresh);
   $('#check-updates-button').addEventListener('click', (event) => refreshRuntimeUpdates(event.currentTarget));
   $('#settings-button').addEventListener('click', openSettings);
