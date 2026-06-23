@@ -4,11 +4,10 @@
 > runtimes, preparing `llama.cpp` launch commands, running fit tests, and managing
 > tracked local inference servers.
 
-**v0.10.0** — UI pass: every panel is now a **collapsible module** with a smooth
-animated toggle (state persists), the **sidebar collapses** to an icon rail on
-demand, and all `<select>` controls — including the sampling-preset dropdown — are
-themed to match the app. Secondary panels start collapsed to cut clutter.
-Builds on v0.9.0's Test Prompt panel.
+**v0.10.1** — UI polish: shorter sampling-preset labels and compact, two-line
+hardware chips (trimmed CPU/GPU names, `Shared` VRAM for integrated GPUs) so
+header text no longer truncates. Builds on v0.10.0's collapsible panels, sidebar,
+and themed selects.
 See [CHANGELOG.md](./CHANGELOG.md) for details.
 
 The app is designed to be portable: paths live in user settings or environment

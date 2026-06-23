@@ -7,7 +7,7 @@ from typing import Any
 # UI can explain why. Presets are starting points the user then tunes.
 SAMPLING_PRESETS: dict[str, dict[str, Any]] = {
     "coding": {
-        "label": "Coding / deterministic",
+        "label": "Coding",
         "description": "Tight, repeatable output for code and structured formats.",
         "params": {"temperature": 0.2, "top_k": 40, "top_p": 0.95, "min_p": 0.05,
                    "repeat_penalty": 1.1, "repeat_last_n": 64},
@@ -20,7 +20,7 @@ SAMPLING_PRESETS: dict[str, dict[str, Any]] = {
         },
     },
     "factual": {
-        "label": "Factual Q&A",
+        "label": "Factual",
         "description": "Grounded, low-variance answers for retrieval and reasoning.",
         "params": {"temperature": 0.3, "top_k": 40, "top_p": 0.9, "min_p": 0.05,
                    "repeat_penalty": 1.1, "repeat_last_n": 64},
@@ -33,7 +33,7 @@ SAMPLING_PRESETS: dict[str, dict[str, Any]] = {
         },
     },
     "balanced": {
-        "label": "Balanced chat",
+        "label": "Balanced",
         "description": "General assistant default — coherent but not rigid.",
         "params": {"temperature": 0.7, "top_k": 40, "top_p": 0.9, "min_p": 0.05,
                    "repeat_penalty": 1.1, "repeat_last_n": 64},
@@ -46,7 +46,7 @@ SAMPLING_PRESETS: dict[str, dict[str, Any]] = {
         },
     },
     "creative": {
-        "label": "Creative writing",
+        "label": "Creative",
         "description": "Varied, surprising output for prose and brainstorming.",
         "params": {"temperature": 1.0, "top_k": 100, "top_p": 0.95, "min_p": 0.02,
                    "repeat_penalty": 1.05, "repeat_last_n": 256},

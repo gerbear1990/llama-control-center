@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-06-23
+
+### Changed
+
+- **Shorter sampling labels.** The sampling-preset dropdown options are now single
+  words (Coding, Factual, Balanced, Creative) so they no longer truncate; the full
+  description remains as the option's hover tooltip. ([sampling.py](lcc_core/sampling.py))
+- **Compact hardware chips.** The CPU and GPU header chips now show trimmed names
+  (e.g. `Core i9-13900HK`, `Iris Xe Graphics`) instead of the raw vendor strings,
+  wrap to two lines before truncating, and expose the full value on hover. The VRAM
+  chip shows `Shared` for integrated GPUs instead of a dangling `-`.
+  ([app.js](lcc_api/static/app.js), [styles.css](lcc_api/static/styles.css))
+
 ## [0.10.0] - 2026-06-23
 
 ### Added

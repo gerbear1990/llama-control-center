@@ -506,20 +506,55 @@ function paramDefaults() {
   };
 }
 
+// Trim vendor/marketing cruft so the header chips read cleanly without truncating.
+// The full name still shows on hover via the chip's title attribute.
+function shortCpuName(name) {
+  if (!name) return '';
+  return name
+    .replace(/\(R\)|\(TM\)|™|®/gi, '')
+    .replace(/\b\d+th Gen\b/gi, '')
+    .replace(/\bIntel\b|\bAMD\b|\bGenuine\b/gi, '')
+    .replace(/\b\d+-Core\b/gi, '')
+    .replace(/\bProcessor\b|\bCPU\b/gi, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim() || name;
+}
+
+function shortGpuName(name) {
+  if (!name) return '';
+  const brackets = [...name.matchAll(/\[([^\]]+)\]/g)];
+  if (brackets.length) return brackets[brackets.length - 1][1].trim();
+  return name
+    .replace(/\bCorporation\b|\bInc\.?\b|\bLtd\.?\b/gi, '')
+    .replace(/\bNVIDIA\b|\bAdvanced Micro Devices\b/gi, '')
+    .replace(/,/g, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim() || name;
+}
+
+function setChip(id, text, fullTitle) {
+  const el = $(id);
+  el.textContent = text;
+  // Always set the tooltip when we have a value: chips clamp to two lines, so even
+  // a non-shortened value can be visually cut off.
+  if (fullTitle) el.title = fullTitle;
+  else el.removeAttribute('title');
+}
+
 function renderHardware() {
   const cpu = state.hardware?.cpu || {};
   const gpu = primaryGpu();
   const cores = cpu.physical_cores ? `${cpu.physical_cores} cores` : (cpu.logical_cores ? `${cpu.logical_cores} threads` : '');
-  $('#hardware-cpu').textContent = [cpu.name, cores].filter(Boolean).join(' · ') || '-';
-  $('#hardware-gpu').textContent = gpu?.name || 'Not detected';
-  const vramParts = [formatBytes(gpu?.vram_total_bytes)];
-  if (gpu?.vram_data_rate_mts) {
-    vramParts.push(`${gpu.vram_data_rate_mts} MT/s`);
-  }
-  if (gpu?.vram_bus_width_bits) {
-    vramParts.push(`${gpu.vram_bus_width_bits}-bit`);
-  }
-  $('#hardware-vram').textContent = vramParts.join(' · ');
+  const cpuFull = [cpu.name, cores].filter(Boolean).join(' · ');
+  setChip('#hardware-cpu', shortCpuName(cpu.name) || '-', cpuFull);
+  setChip('#hardware-gpu', shortGpuName(gpu?.name) || 'Not detected', gpu?.name);
+  const vramParts = [];
+  if (gpu?.vram_total_bytes) vramParts.push(formatBytes(gpu.vram_total_bytes));
+  else if (gpu?.integrated) vramParts.push('Shared');
+  if (gpu?.vram_data_rate_mts) vramParts.push(`${gpu.vram_data_rate_mts} MT/s`);
+  if (gpu?.vram_bus_width_bits) vramParts.push(`${gpu.vram_bus_width_bits}-bit`);
+  const vramText = vramParts.length ? vramParts.join(' · ') : '-';
+  setChip('#hardware-vram', vramText, vramText);
   const ramParts = [formatBytes(state.hardware?.memory?.total_bytes)];
   if (state.hardware?.memory?.ram_type) {
     ramParts.push(state.hardware.memory.ram_type);
