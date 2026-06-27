@@ -1755,6 +1755,53 @@ td:nth-child(7) {
   text-align: right;
 }
 
+.tune-suggestions {
+  display: grid;
+  gap: 8px;
+}
+
+.tune-suggestions h4 {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.tune-suggestion {
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface);
+  padding: 9px 10px;
+}
+
+.tune-suggestion-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.tune-suggestion p {
+  margin: 4px 0 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.tune-suggestion-specs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.tune-suggestion-specs span {
+  padding: 2px 7px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 11px;
+  color: var(--text);
+}
+
 .fit-details {
   border: 1px solid var(--border);
   border-radius: 7px;

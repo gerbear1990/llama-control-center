@@ -326,7 +326,7 @@ def estimate_launch(request: EstimateRequest) -> dict[str, Any]:
     params.update(request.overrides or {})
     hardware = detect_system_hardware()
     speed_estimate = estimate_tokens_per_second(params, profile.model, hardware)
-    fit_status = estimate_memory_fit(params, profile.model, hardware)
+    fit_status = estimate_memory_fit(params, profile.model, hardware, probe_model=True)
     return {
         "success": True,
         "mode": request.mode,

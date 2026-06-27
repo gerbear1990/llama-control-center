@@ -3,7 +3,6 @@ from __future__ import annotations
 import math
 import os
 import re
-from functools import lru_cache
 from typing import Any
 
 
@@ -32,6 +31,13 @@ CACHE_BYTES = {
     "IQ4_NL": 0.52,
 }
 
+# Fallback KV-cache scaling when exact GGUF dims are unavailable. The exact
+# size is ``ctx * n_layer * n_head_kv * head_dim * bytes_per_elem`` (per K and
+# V); without those dims we approximate KV elements/token as a fraction of the
+# parameter count. ~0.012 lands between dense attention (~0.036) and heavy GQA
+# (~0.005) for a mid-range guess. Prefer _kv_dims() whenever a GGUF path exists.
+KV_FALLBACK_FACTOR = 0.012
+
 # GGUF tensor name patterns that reveal n_layer
 _N_LAYER_PATTERNS = [
     r"\.h\[(\d+)\]\.",
@@ -42,66 +48,287 @@ _N_LAYER_PATTERNS = [
 ]
 
 
-@lru_cache(maxsize=256)
-def _read_gguf_n_layer(model_path: str | None) -> int | None:
-    """Read the actual number of transformer layers from a GGUF file header.
-    
-    First tries architecture-specific KV keys (e.g. 'llama.block_count',
-    'gemma4.block_count'), then falls back to scanning tensor names for
-    the highest layer index.
+def _gguf_field_value(field):
+    """Extract a scalar (int or str) value from a GGUF ReaderField.
+
+    Prefers the typed ``field.contents()`` accessor so short strings (e.g. an
+    architecture name like ``"gemma4"``) aren't misread as integers. Falls back
+    to a type-aware byte decode on older gguf builds that lack ``contents()``.
     """
-    if not model_path:
+    if field is None:
         return None
+    types = getattr(field, "types", None) or []
+    try:
+        import gguf as _gguf
+        # Arrays/per-layer fields aren't scalars we can use here.
+        if types and types[0] == _gguf.GGUFValueType.ARRAY:
+            return None
+        is_string = bool(types) and types[0] == _gguf.GGUFValueType.STRING
+    except Exception:
+        is_string = False
+
+    contents = getattr(field, "contents", None)
+    if callable(contents):
+        try:
+            value = contents()
+        except Exception:
+            value = None
+        if isinstance(value, bytes):
+            return value.decode("utf-8", errors="replace").strip("\x00")
+        if value is not None:
+            return value
+
+    if not field.parts:
+        return None
+    last_part = field.parts[-1]
+    if hasattr(last_part, "tobytes"):
+        raw = last_part.tobytes()
+        if not raw:
+            return None
+        if is_string:
+            return raw.decode("utf-8", errors="replace").strip("\x00")
+        if len(raw) <= 8:
+            return int.from_bytes(raw, "little")
+        return raw.decode("utf-8", errors="replace").strip("\x00")
+    return None
+
+
+def _extract_n_layer(reader, arch: str | None) -> int | None:
+    """Number of transformer layers from an already-open GGUF reader.
+
+    Tries architecture-specific KV keys (e.g. 'llama.block_count'), then falls
+    back to scanning tensor names for the highest layer index.
+    """
+    if arch:
+        for key_suffix in ("block_count", "n_layer"):
+            val = _gguf_field_value(reader.get_field(f"{arch}.{key_suffix}"))
+            if isinstance(val, int) and val > 0:
+                return val
+    max_layer = -1
+    for tensor in reader.tensors:
+        name = tensor.name
+        for pattern in _N_LAYER_PATTERNS:
+            m = re.search(pattern, name)
+            if m:
+                idx = int(m.group(1))
+                if idx > max_layer:
+                    max_layer = idx
+                break
+    if max_layer >= 0:
+        return max_layer + 1
+    return None
+
+
+def _kv_head_total(field, n_layer: int | None, n_head_fallback) -> int | None:
+    """Total KV heads summed across all layers.
+
+    ``head_count_kv`` is a scalar for plain GQA but a per-layer array for mixed
+    local/global attention (e.g. Gemma alternates wide and narrow KV layers).
+    For an array we sum the per-layer counts; for a scalar we multiply by the
+    layer count. Falls back to ``n_head`` (full MHA) only when nothing usable
+    is found.
+    """
+    if field is not None:
+        types = getattr(field, "types", None) or []
+        try:
+            import gguf as _gguf
+            is_array = bool(types) and types[0] == _gguf.GGUFValueType.ARRAY
+        except Exception:
+            is_array = False
+        contents = getattr(field, "contents", None)
+        if is_array and callable(contents):
+            try:
+                values = [int(x) for x in contents()]
+            except Exception:
+                values = []
+            total = sum(v for v in values if v > 0)
+            if total > 0:
+                return total
+    scalar = _gguf_field_value(field)
+    if not isinstance(scalar, int) or scalar <= 0:
+        scalar = n_head_fallback
+    if isinstance(scalar, int) and scalar > 0 and isinstance(n_layer, int) and n_layer > 0:
+        return n_layer * scalar
+    return None
+
+
+def _extract_kv_dims(reader, arch: str | None, n_layer: int | None) -> tuple[int, int, int] | None:
+    """Read (total_kv_heads, k_dim, v_dim) from an already-open GGUF reader.
+
+    Each decoded token stores, across all layers, ``total_kv_heads * k_dim`` key
+    elements and ``total_kv_heads * v_dim`` value elements; ``total_kv_heads``
+    folds in the layer count and any per-layer GQA variation. Returns ``None``
+    when attention metadata is missing or implausible.
+    """
+    if not isinstance(arch, str) or not arch:
+        return None
+
+    def _scalar(suffix: str):
+        return _gguf_field_value(reader.get_field(f"{arch}.{suffix}"))
+
+    n_head = _scalar("attention.head_count")
+    n_embd = _scalar("embedding_length")
+    k_dim = _scalar("attention.key_length")
+    v_dim = _scalar("attention.value_length")
+    total_kv_heads = _kv_head_total(
+        reader.get_field(f"{arch}.attention.head_count_kv"), n_layer, n_head
+    )
+    head_dim = None
+    if isinstance(n_embd, int) and isinstance(n_head, int) and n_head > 0:
+        head_dim = n_embd // n_head
+    if not isinstance(k_dim, int) or k_dim <= 0:
+        k_dim = head_dim
+    if not isinstance(v_dim, int) or v_dim <= 0:
+        v_dim = head_dim
+
+    dims = (total_kv_heads, k_dim, v_dim)
+    if not all(isinstance(x, int) and x > 0 for x in dims):
+        return None
+    # Reject implausible values (likely a misread field).
+    if total_kv_heads > 200000 or k_dim > 4096 or v_dim > 4096:
+        return None
+    return dims
+
+
+# Reading a GGUF header is slow (5-11s per multi-GB file: the reader parses every
+# tensor's metadata), so we read each file at most once per process and persist
+# the tiny result. ``_gguf_meta_mem`` caches within a process; the on-disk cache
+# (keyed by size+mtime) survives restarts, so a profiles refresh never re-parses.
+_GGUF_META_CACHE_FILENAME = "gguf_meta_cache.json"
+_gguf_meta_mem: dict[str, tuple[tuple[int, int], int | None, tuple | None]] = {}
+
+
+def _file_signature(model_path: str) -> tuple[int, int] | None:
+    try:
+        st = os.stat(model_path)
+        return (st.st_size, int(st.st_mtime))
+    except OSError:
+        return None
+
+
+def _meta_cache_file():
+    try:
+        from .paths import cache_dir
+        return cache_dir() / _GGUF_META_CACHE_FILENAME
+    except Exception:
+        return None
+
+
+def _load_meta_cache() -> dict[str, Any]:
+    path = _meta_cache_file()
+    if not path or not path.is_file():
+        return {}
+    try:
+        import json
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _store_meta_cache(model_path: str, sig: tuple[int, int], n_layer: int | None, kv_dims: tuple | None) -> None:
+    path = _meta_cache_file()
+    if not path:
+        return
+    try:
+        import json
+        data = _load_meta_cache()
+        data[str(model_path)] = {
+            "size": sig[0],
+            "mtime": sig[1],
+            "n_layer": n_layer,
+            "kv_dims": list(kv_dims) if kv_dims else None,
+        }
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(json.dumps(data), encoding="utf-8")
+        tmp.replace(path)
+    except Exception:
+        pass
+
+
+def _parse_gguf_meta(model_path: str) -> tuple[int | None, tuple | None]:
+    """One GGUF reader pass: (n_layer, kv_dims). Empty on any failure."""
     try:
         import gguf as _gguf
         reader = _gguf.GGUFReader(str(model_path))
-
-        def _field_value(field):
-            """Extract the actual value from a ReaderField."""
-            if field is None or not field.parts:
-                return None
-            # The last part contains the actual value bytes
-            last_part = field.parts[-1]
-            if hasattr(last_part, "tobytes"):
-                raw = last_part.tobytes()
-                if not raw:
-                    return None
-                # Try to interpret as integer
-                if len(raw) <= 8:
-                    return int.from_bytes(raw, "little")
-                # String value
-                return raw.decode("utf-8", errors="replace").strip("\x00")
-            return None
-
-        # Get architecture name
-        arch_field = reader.get_field("general.architecture")
-        arch = _field_value(arch_field)
-
-        if arch:
-            for key_suffix in ("block_count", "n_layer"):
-                full_key = f"{arch}.{key_suffix}"
-                field = reader.get_field(full_key)
-                val = _field_value(field)
-                if isinstance(val, int) and val > 0:
-                    return val
-
-        # Fall back: scan tensor names for blk.N or block.N indices
-        max_layer = -1
-        for tensor in reader.tensors:
-            name = tensor.name
-            for pattern in _N_LAYER_PATTERNS:
-                m = re.search(pattern, name)
-                if m:
-                    idx = int(m.group(1))
-                    if idx > max_layer:
-                        max_layer = idx
-                    break
-
-        if max_layer >= 0:
-            return max_layer + 1
-        return None
+        arch = _gguf_field_value(reader.get_field("general.architecture"))
+        if not isinstance(arch, str):
+            arch = None
+        n_layer = _extract_n_layer(reader, arch)
+        kv_dims = _extract_kv_dims(reader, arch, n_layer)
+        return (n_layer, kv_dims)
     except Exception:
+        return (None, None)
+
+
+def _gguf_meta(model_path: str | None, parse: bool) -> tuple[int | None, tuple | None]:
+    """Resolve (n_layer, kv_dims) for a GGUF path via memory/disk cache.
+
+    When ``parse`` is False, never opens the GGUF — returns cached values or
+    ``(None, None)`` so callers (e.g. the profiles-list fit badge) stay fast and
+    fall back to heuristics. When True, parses once on a miss and persists the
+    result for every later process.
+    """
+    if not model_path:
+        return (None, None)
+    key = str(model_path)
+    sig = _file_signature(key)
+
+    mem = _gguf_meta_mem.get(key)
+    if mem and sig and mem[0] == sig:
+        return (mem[1], mem[2])
+
+    if sig:
+        disk = _load_meta_cache().get(key)
+        if disk and disk.get("size") == sig[0] and disk.get("mtime") == sig[1]:
+            kv = tuple(disk["kv_dims"]) if disk.get("kv_dims") else None
+            _gguf_meta_mem[key] = (sig, disk.get("n_layer"), kv)
+            return (disk.get("n_layer"), kv)
+
+    if not parse:
+        # Don't cache the negative: a later parse=True call must still read it.
+        return (None, None)
+
+    n_layer, kv_dims = _parse_gguf_meta(key)
+    if sig:
+        _gguf_meta_mem[key] = (sig, n_layer, kv_dims)
+        _store_meta_cache(key, sig, n_layer, kv_dims)
+    return (n_layer, kv_dims)
+
+
+def _read_gguf_n_layer(model_path: str | None) -> int | None:
+    """Number of transformer layers (parses + caches on a miss)."""
+    return _gguf_meta(model_path, parse=True)[0]
+
+
+def _read_gguf_kv_dims(model_path: str | None) -> tuple[int, int, int] | None:
+    """Exact (total_kv_heads, k_dim, v_dim) (parses + caches on a miss)."""
+    return _gguf_meta(model_path, parse=True)[1]  # type: ignore[return-value]
+
+
+def prime_model_meta(model: dict[str, Any] | None) -> None:
+    """Parse and persist a model's GGUF dims so later fit badges are exact+fast."""
+    if not model:
+        return
+    path = model.get("path") or model.get("model_path")
+    if path:
+        _gguf_meta(str(path), parse=True)
+
+
+def _kv_dims(model: dict[str, Any] | None, probe: bool = False) -> tuple[int, int, int] | None:
+    """Resolve exact KV-cache dimensions for a model dict, if discoverable.
+
+    With ``probe`` False (the default, used by the profiles list), only returns
+    cached dims — it never opens the GGUF, so the refresh can't block.
+    """
+    if not model:
         return None
+    cached = model.get("kv_dims")
+    if cached and len(cached) == 3 and all(isinstance(x, int) and x > 0 for x in cached):
+        return tuple(cached)  # type: ignore[return-value]
+    path = model.get("path") or model.get("model_path")
+    if not path:
+        return None
+    return _gguf_meta(str(path), parse=probe)[1]  # type: ignore[return-value]
 
 
 def _float_or_none(value: Any) -> float | None:
@@ -283,8 +510,15 @@ def estimate_memory_fit(
     params: dict[str, Any],
     model: dict[str, Any] | None = None,
     hardware: dict[str, Any] | None = None,
+    probe_model: bool = False,
 ) -> dict[str, Any]:
-    """Estimate accelerator and RAM pressure for fit badges and live settings."""
+    """Estimate accelerator and RAM pressure for fit badges and live settings.
+
+    ``probe_model`` controls whether exact KV dimensions may be read from the
+    GGUF header on a cache miss. The default (False) keeps batch callers like the
+    profiles-list refresh fast by using cached dims or a heuristic; explicit
+    single-model paths (Smart Fit, live settings) pass True for exact sizing.
+    """
 
     hardware = hardware or {}
     model_size_mib = _model_size_mib(model) or 0.0
@@ -300,8 +534,15 @@ def estimate_memory_fit(
 
     cache_k = _cache_bytes(params.get("cache_type_k"))
     cache_v = _cache_bytes(params.get("cache_type_v"))
-    avg_cache = (cache_k + cache_v) / 2.0
-    kv_cache_mib = ctx * params_b * avg_cache * 0.0004
+    kv_dims = _kv_dims(model, probe=probe_model)
+    if kv_dims is not None:
+        total_kv_heads, k_dim, v_dim = kv_dims
+        k_elems = total_kv_heads * k_dim
+        v_elems = total_kv_heads * v_dim
+        kv_cache_mib = ctx * (k_elems * cache_k + v_elems * cache_v) / 1024.0 / 1024.0
+    else:
+        avg_cache = (cache_k + cache_v) / 2.0
+        kv_cache_mib = ctx * params_b * avg_cache * KV_FALLBACK_FACTOR
     compute_mib = 420.0 + min(batch, 4096.0) * 0.28 + min(ubatch, 2048.0) * 0.18
     if params.get("flash_attn", True):
         compute_mib *= 0.86

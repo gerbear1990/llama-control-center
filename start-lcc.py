@@ -94,8 +94,54 @@ def find_process_on_port(port: int) -> int | None:
     return None
 
 
+def stop_model_servers() -> int:
+    """Reap the llama-server processes the dashboard spawned.
+
+    Spawned servers are detached (`start_new_session`) so they outlive the API
+    daemon — stopping the daemon alone orphans them, leaving the model resident
+    and the port bound. Reuse the server manager's SIGTERM->SIGKILL teardown
+    over every tracked server, the same path the dashboard's Stop button uses.
+    Best-effort: a missing/broken server manager never blocks the daemon stop.
+    """
+    try:
+        from lcc_core import server_manager
+    except Exception as exc:
+        print(f"Could not load server manager to stop model servers: {exc}", file=sys.stderr)
+        return 0
+    try:
+        servers = server_manager.list_servers()
+    except Exception as exc:
+        print(f"Could not list tracked model servers: {exc}", file=sys.stderr)
+        return 0
+
+    stopped = 0
+    for server in servers:
+        if not server.get("running") or not server.get("pid"):
+            continue
+        label = server.get("mode") or server.get("id") or "server"
+        server_pid = server.get("pid")
+        try:
+            result = server_manager.stop_server(server_id=server.get("id"))
+        except Exception as exc:
+            print(f"Error stopping model server '{label}' (PID {server_pid}): {exc}", file=sys.stderr)
+            continue
+        if result.get("success"):
+            stopped += 1
+            print(f"Stopped model server '{label}' (PID {server_pid}).")
+        else:
+            print(
+                f"Could not stop model server '{label}' (PID {server_pid}): "
+                f"{result.get('message', 'unknown error')}",
+                file=sys.stderr,
+            )
+    return stopped
+
+
 def stop_server(pid: int | None = None) -> int:
     if pid is None:
+        # Reap spawned llama-server children before tearing down the daemon, so
+        # `stop` cleans them up even when the daemon PID file is already gone.
+        stop_model_servers()
         pid = get_pid()
     if pid is not None and pid_is_running(pid):
         try:

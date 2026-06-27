@@ -7,6 +7,76 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-06-27
+
+### Added
+
+- **Smart Fit suggestions by need.** `auto_tune_fit()` now returns a
+  `suggestions` list with three named picks — **Balanced**, **Max quality**, and
+  **Max context** — each carrying its own params, fit status, and speed estimate.
+  The balanced pick stays as `tuned_params`/`after` for backward compatibility,
+  and the Smart Fit panel renders the alternatives with one-click **Apply**
+  buttons. ([smart_tune.py](lcc_core/smart_tune.py), [app.js](lcc_api/static/app.js),
+  [styles.css](lcc_api/static/styles.css))
+
+### Changed
+
+- **Smart Fit no longer trades KV quant quality for a bigger cache.** The old
+  search ranked context size strictly above KV-cache fidelity, so it would drop
+  to `q4_0` purely to win a larger window. Scoring is now a quality-leaning
+  weighted blend (KV fidelity weighted slightly above context), applied after
+  maximizing GPU offload, and the final tiebreak prefers the roomier ("good")
+  fit over a "tight" one. ([smart_tune.py](lcc_core/smart_tune.py))
+- **Quantized KV now forces flash attention.** Any tuned candidate using a
+  quantized KV cache (anything but `f16`) sets `flash_attn=True`, since llama.cpp
+  requires it for quantized K/V. ([smart_tune.py](lcc_core/smart_tune.py))
+- **Smart Fit tunes K and V caches independently.** The search now explores
+  asymmetric KV quants (e.g. `q8_0` K / `q4_0` V) instead of forcing K==V. Since
+  the K cache is more quantization-sensitive than V, V is never set more precise
+  than K, and K fidelity is weighted higher (0.6/0.4) when scoring — so under
+  memory pressure the tuner compacts V first and preserves K. The estimator
+  already sized K and V separately, so this is a search-space change only.
+  ([smart_tune.py](lcc_core/smart_tune.py))
+
+### Fixed
+
+- **Profiles stuck "Refreshing" / models unselectable.** The new exact-KV sizing
+  read every model's GGUF header on every fit badge — but a `GGUFReader`
+  construction costs 5–11s per multi-GB file, and the badge ran it
+  unconditionally (previously the estimator only touched the GGUF for
+  partial-layer profiles), so a cold profiles refresh parsed ~13 files and
+  effectively hung. KV-dim reads are now (a) consolidated to a single reader
+  pass shared with the layer-count read, (b) persisted to an on-disk cache keyed
+  by file size+mtime so a header is parsed at most once ever, and (c) skipped
+  entirely on the list-refresh path — `estimate_memory_fit(..., probe_model=...)`
+  defaults to cache-or-heuristic and only parses for explicit single-model
+  actions (Smart Fit, live settings), which also warm the cache for later
+  badges. Cold list refresh went from minutes to ~0s.
+  ([estimates.py](lcc_core/estimates.py), [smart_tune.py](lcc_core/smart_tune.py),
+  [app.py](lcc_api/app.py))
+- **`stop` left spawned `llama-server` processes orphaned.** Stopping the control
+  center killed only the API daemon; the model servers it spawned are detached
+  (`start_new_session`), so they kept running with the port bound and the model
+  resident in RAM. `stop_server()` now reaps every tracked model server via the
+  server manager's SIGTERM→SIGKILL teardown (the same path the dashboard Stop
+  button uses) before tearing down the daemon, and does so even when the daemon
+  PID file is already gone. ([start-lcc.py](start-lcc.py)) (#11)
+- **KV-cache memory was underestimated by ~1–2 orders of magnitude.** The
+  estimator approximated KV size as `ctx * params_b * avg_cache * 0.0004`, which
+  put a 7B/4096/f16 cache at ~23 MiB (reality: gigabytes), so context almost
+  never bound the fit and Smart Fit happily pushed context to the ladder max.
+  `estimate_memory_fit()` now reads exact KV dimensions from the GGUF header
+  (`n_layer`, per-layer `head_count_kv`, `key_length`/`value_length`) and sizes
+  the cache as `ctx * total_kv_heads * (k_dim·bytes_k + v_dim·bytes_v)`, summing
+  per-layer KV heads for mixed-attention models like Gemma. A recalibrated
+  params-based heuristic is used only when GGUF dims can't be read.
+  ([estimates.py](lcc_core/estimates.py))
+- **GGUF string fields ≤ 8 bytes were misread as integers.** `_gguf_field_value`
+  decoded short string fields (e.g. the architecture name `"gemma4"`) via
+  `int.from_bytes`, corrupting every `{arch}.*` metadata lookup; layer counts
+  only survived via a tensor-name fallback. It now uses the typed
+  `field.contents()` accessor. ([estimates.py](lcc_core/estimates.py))
+
 ## [0.10.4] - 2026-06-23
 
 ### Added

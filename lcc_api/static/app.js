@@ -1669,9 +1669,47 @@ function renderTuneSummary(result) {
           </ul>
         </section>
       </div>
+      ${renderTuneSuggestions(result.suggestions)}
       ${reasons ? `<details class="fit-details"><summary>Why these changes</summary><ul>${reasons}</ul></details>` : ''}
     </div>
   `;
+}
+
+function renderTuneSuggestions(suggestions) {
+  if (!Array.isArray(suggestions) || suggestions.length <= 1) return '';
+  const cards = suggestions.map((s, index) => {
+    const p = s.params || {};
+    const fit = s.fit_status || {};
+    const speed = s.speed_estimate || {};
+    const cache = p.cache_type_k === p.cache_type_v
+      ? (p.cache_type_k ?? '-')
+      : `${p.cache_type_k ?? '-'}/${p.cache_type_v ?? '-'}`;
+    const specs = [
+      `Ctx ${formatNumber(p.ctx_size)}`,
+      `KV ${escapeHtml(String(cache))}`,
+      `${fitStatusLabel(fit.status)} fit`,
+      `~${speed.estimate_tps ?? '-'} tok/s`,
+    ].map((t) => `<span>${escapeHtml(t)}</span>`).join('');
+    return `
+      <div class="tune-suggestion">
+        <div class="tune-suggestion-head">
+          <strong>${escapeHtml(s.label || s.intent || 'Option')}</strong>
+          <button class="mini-button" type="button" data-tune-index="${index}">Apply</button>
+        </div>
+        <p>${escapeHtml(s.description || '')}</p>
+        <div class="tune-suggestion-specs">${specs}</div>
+      </div>`;
+  }).join('');
+  return `<section class="tune-suggestions"><h4>Suggestions for your need</h4>${cards}</section>`;
+}
+
+function applyTuneSuggestion(index) {
+  const suggestion = (state.tuneSuggestions || [])[index];
+  if (!suggestion) return;
+  applyTunedParams(suggestion.params);
+  renderTpsEstimate(suggestion.speed_estimate);
+  scheduleTpsEstimate(80);
+  toast(`Applied ${suggestion.label || 'suggestion'}`);
 }
 
 function applyTunedParams(tuned) {
@@ -1702,6 +1740,7 @@ async function runAutoTune() {
         toast('Smart fit found no safe configuration');
         return;
       }
+      state.tuneSuggestions = result.suggestions || [];
       applyTunedParams(result.tuned_params);
       setModelNote('tune', renderTuneSummary(result));
       renderTpsEstimate(result.after?.speed_estimate);
@@ -2264,6 +2303,10 @@ function wireEvents() {
   });
   $('#prepare-selected-button').addEventListener('click', (event) => prepareProfile(selectedMode(), event.currentTarget));
   $('#smart-fit-button').addEventListener('click', runAutoTune);
+  $('#model-info-box').addEventListener('click', (event) => {
+    const button = event.target.closest('[data-tune-index]');
+    if (button) applyTuneSuggestion(Number(button.dataset.tuneIndex));
+  });
   $('#sampling-suggest-button').addEventListener('click', applySamplingPreset);
   $('#fit-button').addEventListener('click', runFitTest);
   $('#benchmark-button').addEventListener('click', runBenchmark);
