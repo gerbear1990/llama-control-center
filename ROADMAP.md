@@ -83,6 +83,14 @@ but goes quiet once a server is running. These close that loop.
   green/orange/red fit verdict, so the user picks the largest quant that fits at a
   glance.
 
+## Smart Fit
+
+- Expand the KV-cache quant ladder beyond `f16 / q8_0 / q5_1 / q4_0`. The memory
+  estimator (`estimates.py`) already prices `q5_0`, `q4_1`, and `iq4_nl`, so adding
+  them as search rungs — for both K and V, which are now tuned independently —
+  would give the asymmetric search finer memory/quality landing spots. Low risk:
+  it is a search-space change only, with no estimator or API changes.
+
 ## Runtime Management
 
 - Add a small apply-update button on runtime cards when an update is available.

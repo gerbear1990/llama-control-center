@@ -543,6 +543,59 @@ class HuggingFaceMetadataTests(unittest.TestCase):
             self.assertFalse(same["update_available"])
 
 
+class KvMetaProbeTests(unittest.TestCase):
+    """Reading a GGUF header is slow, so the profiles-list fit badge must never
+    parse it; exact dims come only from the probe path, then persist."""
+
+    def setUp(self) -> None:
+        import lcc_core.estimates as est
+
+        self.est = est
+        est._gguf_meta_mem.clear()
+        self._tmp = tempfile.mkdtemp()
+        self._cache = Path(self._tmp) / "gguf_meta_cache.json"
+        self._orig_cache_file = est._meta_cache_file
+        self._orig_parse = est._parse_gguf_meta
+        est._meta_cache_file = lambda: self._cache
+
+        self.parse_calls: list[str] = []
+
+        def fake_parse(path: str):
+            self.parse_calls.append(path)
+            return (32, (256, 128, 128))
+
+        est._parse_gguf_meta = fake_parse
+        self.model_file = Path(self._tmp) / "model.gguf"
+        self.model_file.write_bytes(b"x")  # real file so the size+mtime signature works
+        self.model = {"name": "m", "path": str(self.model_file), "params_b": 7, "quant": "Q4_K_M"}
+
+    def tearDown(self) -> None:
+        self.est._meta_cache_file = self._orig_cache_file
+        self.est._parse_gguf_meta = self._orig_parse
+        self.est._gguf_meta_mem.clear()
+        shutil.rmtree(self._tmp, ignore_errors=True)
+
+    def test_list_badge_does_not_parse_gguf(self) -> None:
+        fit = self.est.estimate_memory_fit({"ctx_size": 4096}, self.model, None, probe_model=False)
+        self.assertEqual(self.parse_calls, [])  # never opened the GGUF
+        self.assertIsNotNone(fit["estimated"]["kv_cache_mib"])  # heuristic still produced a number
+
+    def test_probe_parses_once_then_persists(self) -> None:
+        self.est.estimate_memory_fit({"ctx_size": 4096}, self.model, None, probe_model=True)
+        self.assertEqual(len(self.parse_calls), 1)
+        # A later cache-only badge read (fresh in-process cache) reuses the
+        # persisted dims — no second parse, and the exact dims are applied.
+        self.est._gguf_meta_mem.clear()
+        fit = self.est.estimate_memory_fit(
+            {"ctx_size": 32768, "cache_type_k": "f16", "cache_type_v": "f16"},
+            self.model, None, probe_model=False,
+        )
+        self.assertEqual(len(self.parse_calls), 1)
+        # 32768 * 32 kv-heads(256? no: total 256) ... exact = ctx*256*(128+128)*2B
+        expected = int(round(32768 * (256 * 128 * 2.0 + 256 * 128 * 2.0) / 1024 / 1024))
+        self.assertEqual(fit["estimated"]["kv_cache_mib"], expected)
+
+
 class SmartTuneTests(unittest.TestCase):
     def _hw(self, vram_gb: float | None) -> dict:
         gpu = {"name": "RTX 4090", "vram_bandwidth_gbps": 1000}
@@ -571,6 +624,58 @@ class SmartTuneTests(unittest.TestCase):
         # With no measurable VRAM, any surviving pick must keep layers off the GPU.
         if out["success"]:
             self.assertEqual(out["after"]["fit_status"]["inputs"]["gpu_layer_fraction"], 0)
+
+    def test_reports_named_suggestions(self) -> None:
+        from lcc_core.smart_tune import auto_tune_fit
+
+        model = {"name": "test-7B", "params_b": 7, "quant": "Q4_K_M"}
+        out = auto_tune_fit({"gpu_layers": 0, "ctx_size": 2048}, model, self._hw(24))
+        self.assertTrue(out["success"])
+        self.assertTrue(out["suggestions"])
+        covered = {i for s in out["suggestions"] for i in s["intents"]}
+        self.assertEqual(covered, {"balanced", "max_quality", "max_context"})
+        # The default pick is the balanced one.
+        self.assertEqual(out["tuned_params"], out["suggestions"][0]["params"])
+
+    def test_does_not_trade_quant_quality_for_a_bigger_cache(self) -> None:
+        from lcc_core.smart_tune import auto_tune_fit, _CACHE_RANK
+
+        model = {"name": "test-7B", "params_b": 7, "quant": "Q4_K_M"}
+        out = auto_tune_fit({"gpu_layers": 0, "ctx_size": 2048}, model, self._hw(24))
+        self.assertTrue(out["success"])
+        quality = next(s for s in out["suggestions"] if "max_quality" in s["intents"])
+        context = next(s for s in out["suggestions"] if "max_context" in s["intents"])
+        # Max-context never beats max-quality on context while the quality pick
+        # holds an equal-or-better quant — i.e. quality is never sacrificed for size.
+        self.assertGreaterEqual(context["params"]["ctx_size"], quality["params"]["ctx_size"])
+        self.assertGreaterEqual(
+            _CACHE_RANK[quality["params"]["cache_type_k"]],
+            _CACHE_RANK[context["params"]["cache_type_k"]],
+        )
+
+    def test_never_spends_more_bits_on_v_than_k(self) -> None:
+        from lcc_core.smart_tune import auto_tune_fit, _CACHE_RANK
+
+        model = {"name": "test-7B", "params_b": 7, "quant": "Q4_K_M"}
+        out = auto_tune_fit({"gpu_layers": 0, "ctx_size": 2048}, model, self._hw(24))
+        self.assertTrue(out["success"])
+        for s in out["suggestions"]:
+            p = s["params"]
+            self.assertLessEqual(
+                _CACHE_RANK[p["cache_type_v"]], _CACHE_RANK[p["cache_type_k"]], p
+            )
+
+    def test_quantized_kv_forces_flash_attention(self) -> None:
+        from lcc_core.smart_tune import auto_tune_fit
+
+        model = {"name": "test-7B", "params_b": 7, "quant": "Q4_K_M"}
+        out = auto_tune_fit(
+            {"gpu_layers": 0, "ctx_size": 2048, "flash_attn": False}, model, self._hw(24)
+        )
+        self.assertTrue(out["success"])
+        for s in out["suggestions"]:
+            if str(s["params"].get("cache_type_k", "f16")).lower() != "f16":
+                self.assertTrue(s["params"].get("flash_attn"), s["params"])
 
 
 class SamplingTests(unittest.TestCase):
