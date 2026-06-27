@@ -2030,3 +2030,16 @@ td:nth-child(7) {
     transition: none !important;
   }
 }
+
+.param-hint {
+  margin-left: 0.35em;
+  padding: 0.05em 0.4em;
+  border-radius: 999px;
+  font-size: 0.72em;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  color: var(--accent);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
+  background: color-mix(in srgb, var(--accent) 12%, var(--surface));
+}

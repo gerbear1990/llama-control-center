@@ -562,7 +562,7 @@ class KvMetaProbeTests(unittest.TestCase):
 
         def fake_parse(path: str):
             self.parse_calls.append(path)
-            return (32, (256, 128, 128))
+            return (32, (256, 128, 128), True)
 
         est._parse_gguf_meta = fake_parse
         self.model_file = Path(self._tmp) / "model.gguf"
@@ -595,6 +595,23 @@ class KvMetaProbeTests(unittest.TestCase):
         expected = int(round(32768 * (256 * 128 * 2.0 + 256 * 128 * 2.0) / 1024 / 1024))
         self.assertEqual(fit["estimated"]["kv_cache_mib"], expected)
 
+    def test_tool_support_detected_cached_and_recommended(self) -> None:
+        # First read parses; the tool flag persists so a later cache-only read
+        # (fresh in-process cache) reuses it without re-opening the GGUF.
+        self.assertIs(self.est.model_supports_tools(str(self.model_file)), True)
+        self.assertEqual(len(self.parse_calls), 1)
+        self.est._gguf_meta_mem.clear()
+        self.assertIs(self.est.model_supports_tools(str(self.model_file), probe=False), True)
+        self.assertEqual(len(self.parse_calls), 1)
+        rec = self.est.recommend_jinja({"path": str(self.model_file)})
+        self.assertTrue(rec["recommended"])
+
+    def test_template_tool_markers(self) -> None:
+        self.assertTrue(self.est._template_supports_tools("...{{ tool_call }}..."))
+        self.assertTrue(self.est._template_supports_tools("...[TOOL_CALLS]..."))
+        self.assertFalse(self.est._template_supports_tools("a plain {{ messages }} template"))
+        self.assertFalse(self.est._template_supports_tools(None))
+
 
 class SmartTuneTests(unittest.TestCase):
     def _hw(self, vram_gb: float | None) -> dict:
@@ -615,6 +632,22 @@ class SmartTuneTests(unittest.TestCase):
         self.assertNotEqual(out["after"]["fit_status"]["status"], "near_limit")
         self.assertEqual(str(out["tuned_params"]["gpu_layers"]), "all")
         self.assertGreaterEqual(out["after"]["fit_status"]["inputs"]["ctx_size"], 2048)
+
+    def test_jinja_recommendation_flows_into_suggestions(self) -> None:
+        import lcc_core.smart_tune as st
+
+        model = {"name": "test-7B", "params_b": 7, "quant": "Q4_K_M"}
+        orig = st.recommend_jinja
+        st.recommend_jinja = lambda m, probe=True: {"recommended": True, "reason": "test template"}
+        try:
+            out = st.auto_tune_fit({"gpu_layers": 0, "ctx_size": 2048, "jinja": False}, model, self._hw(24))
+        finally:
+            st.recommend_jinja = orig
+        self.assertTrue(out["success"])
+        self.assertTrue(out["jinja"]["recommended"])
+        for suggestion in out["suggestions"]:
+            self.assertTrue(suggestion["params"]["jinja"])
+        self.assertTrue(any(c["field"] == "jinja" for c in out["changes"]))
 
     def test_unknown_vram_does_not_recommend_gpu_offload(self) -> None:
         from lcc_core.smart_tune import auto_tune_fit

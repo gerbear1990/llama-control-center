@@ -4,10 +4,11 @@
 > runtimes, preparing `llama.cpp` launch commands, running fit tests, and managing
 > tracked local inference servers.
 
-**v0.10.4** — Parameters panel gains a Runtime dropdown (persisted per profile);
-llama.cpp is fully wired for Start/Fit, other detected runtimes are selectable but
-report a clear "not launchable yet" error. Builds on v0.10.3's context-size preset
-picker and the Runtimes-panel / Smart-Fit fixes.
+**v0.12.0** — Adds a **Jinja template** option (`--jinja`) so tool-capable models
+parse tool calls correctly. Tool-calling support is auto-detected from the model's
+GGUF chat template, Smart Fit recommends enabling jinja for those models, and a
+"recommended" hint surfaces in the parameter editor. Builds on v0.11.0's Smart Fit
+overhaul and exact KV-cache sizing.
 See [CHANGELOG.md](./CHANGELOG.md) for details.
 
 The app is designed to be portable: paths live in user settings or environment

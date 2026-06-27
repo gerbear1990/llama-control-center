@@ -107,6 +107,11 @@ def build_llama_server_args(
 
     args.extend(["--flash-attn", _bool_on(params.get("flash_attn", True))])
     args.extend(["--reasoning", _bool_on(params.get("reasoning", False))])
+    # --jinja is a presence flag (no on/off value). It makes llama.cpp use the
+    # model's own chat template + tool-call parser; without it, tool results are
+    # injected wrong and tool-capable models loop the same call forever.
+    if params.get("jinja"):
+        args.append("--jinja")
     args.append("--kv-offload" if params.get("kv_offload", True) else "--no-kv-offload")
     args.append("--op-offload" if params.get("op_offload", True) else "--no-op-offload")
 

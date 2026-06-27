@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-06-27
+
+### Added
+
+- **Jinja template support for tool calling.** A new `jinja` parameter toggles
+  `--jinja` in the generated `llama-server` launch command, making llama.cpp use
+  the model's own chat template and tool-call parser. The parameter editor gains
+  a **Jinja template (tool calling)** checkbox with an inline hint badge.
+  Without `--jinja`, tool-capable models can loop the same tool call forever
+  because tool results are injected the wrong way.
+  ([llama_args.py](lcc_core/llama_args.py), [index.html](lcc_api/static/index.html),
+  [app.js](lcc_api/static/app.js), [styles.css](lcc_api/static/styles.css))
+- **Automatic tool-calling detection.** The GGUF `tokenizer.chat_template` is now
+  read during the existing header pass (no extra GGUF reads) and scanned for
+  tool-call markers (Qwen/Hermes `tool_call`, Mistral/Devstral `[TOOL_CALLS]`).
+  The result is exposed via `model_supports_tools()` and `recommend_jinja()`, and
+  the `supports_tools` flag is cached alongside `n_layer`/`kv_dims` in the on-disk
+  GGUF meta cache. Pre-existing cache entries are backfilled on the next parse.
+  ([estimates.py](lcc_core/estimates.py))
+- **Smart Fit recommends jinja.** `auto_tune_fit()` reports a `jinja` recommendation
+  (derived from the cached chat template) and applies it to every suggestion, so
+  tool-capable models launch with jinja on without manual setup.
+  ([smart_tune.py](lcc_core/smart_tune.py))
+- **Detection-driven jinja default.** Resolving a profile defaults `jinja` on when
+  the matched model's chat template advertises tool calling (cache-only, so the
+  profiles list never blocks on a GGUF read); an explicitly saved value always
+  wins. ([profile_resolver.py](lcc_core/profile_resolver.py))
+
 ## [0.11.0] - 2026-06-27
 
 ### Added

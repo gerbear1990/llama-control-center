@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from .estimates import estimate_memory_fit, estimate_tokens_per_second, _get_total_layers, prime_model_meta
+from .estimates import estimate_memory_fit, estimate_tokens_per_second, _get_total_layers, prime_model_meta, recommend_jinja
 
 # ponytail: greedy grid scan over the existing estimator (layers x ctx x kv-cache).
 # No subprocess, no optimizer lib — ~100 cheap pure-Python fit evals. The ceiling
@@ -40,6 +40,7 @@ _REASONS = {
     "cache_type_k": "pick the KV-cache quant that best balances fidelity and memory",
     "cache_type_v": "pick the KV-cache quant that best balances fidelity and memory",
     "flash_attn": "enable flash attention (required for a quantized KV cache)",
+    "jinja": "use the model's own chat template so tool calls parse correctly (no tool-call loops)",
 }
 
 # Named intents the tuner reports so a caller can pick by current need.
@@ -63,7 +64,7 @@ def _layer_options(model: dict[str, Any] | None) -> list[Any]:
 
 def _changes(base: dict[str, Any], tuned: dict[str, Any]) -> list[dict[str, Any]]:
     changes = []
-    for key in (*_TUNE_KEYS, "flash_attn"):
+    for key in (*_TUNE_KEYS, "flash_attn", "jinja"):
         before, after = base.get(key), tuned.get(key)
         if str(before) != str(after):
             changes.append({"field": key, "from": before, "to": after, "why": _REASONS[key]})
@@ -154,6 +155,9 @@ def auto_tune_fit(
     # Parse the GGUF once up front so every grid eval below reads exact KV dims
     # from cache instead of re-opening the (slow) header.
     prime_model_meta(model)
+    # Jinja is orthogonal to the memory grid — recommend it from the model's chat
+    # template (now cached by prime_model_meta) and apply it to every suggestion.
+    jinja_rec = recommend_jinja(model)
     before_fit = estimate_memory_fit(base, model, hardware)
     before_speed = estimate_tokens_per_second(base, model, hardware)
 
@@ -179,6 +183,7 @@ def auto_tune_fit(
             entry["label"] = " / ".join(entry["labels"])
             continue
         tuned = best["params"]
+        tuned["jinja"] = jinja_rec["recommended"]
         entry = {
             "intent": intent_id,
             "intents": [intent_id],
@@ -200,6 +205,7 @@ def auto_tune_fit(
         "tuned_params": tuned,
         "changes": primary["changes"],
         "suggestions": suggestions,
+        "jinja": jinja_rec,
         "before": {"params": base, "fit_status": before_fit, "speed_estimate": before_speed},
         "after": {"params": tuned, "fit_status": after_fit, "speed_estimate": primary["speed_estimate"]},
         "notes": [
@@ -207,6 +213,7 @@ def auto_tune_fit(
             "Priority: max GPU layers, then a balance of KV-cache fidelity and context (quality-leaning).",
             "K and V caches are tuned independently; V is never set more precise than K.",
             "Pick 'Max quality' or 'Max context' from the suggestions when your need leans one way.",
+            f"Jinja {'on' if jinja_rec['recommended'] else 'off'}: {jinja_rec['reason']}.",
         ],
     }
 

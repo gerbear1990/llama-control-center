@@ -5,6 +5,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .estimates import recommend_jinja
 from .inventory import build_inventory
 from .manifest import load_profiles
 from .models import discover_models
@@ -143,6 +144,12 @@ def _resolved_params(profile: ModelProfile) -> dict[str, Any]:
     params.setdefault("flash_attn", True)
     params.setdefault("kv_offload", True)
     params.setdefault("op_offload", True)
+    # Detection-driven jinja default: on when the model's chat template advertises
+    # tool calling (needed so tool-capable models don't loop tool calls). Cache-only
+    # (probe=False) so resolving the profiles list never blocks on a GGUF read; an
+    # explicit saved value always wins via setdefault.
+    if "jinja" not in params and profile.model_path:
+        params.setdefault("jinja", recommend_jinja(profile.model_path, probe=False)["recommended"])
     params.setdefault("acceleration_backend", "auto")
     params.setdefault("device", "auto")
     return params

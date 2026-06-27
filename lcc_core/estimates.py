@@ -195,7 +195,20 @@ def _extract_kv_dims(reader, arch: str | None, n_layer: int | None) -> tuple[int
 # the tiny result. ``_gguf_meta_mem`` caches within a process; the on-disk cache
 # (keyed by size+mtime) survives restarts, so a profiles refresh never re-parses.
 _GGUF_META_CACHE_FILENAME = "gguf_meta_cache.json"
-_gguf_meta_mem: dict[str, tuple[tuple[int, int], int | None, tuple | None]] = {}
+_gguf_meta_mem: dict[str, tuple[tuple[int, int], int | None, tuple | None, bool | None]] = {}
+
+# Substrings that, in a GGUF chat template, indicate the model was trained to emit
+# tool calls (Qwen/Hermes use ``tool_call`` + a ``tools`` list; Mistral/Devstral use
+# ``[TOOL_CALLS]``). When present, llama.cpp needs ``--jinja`` to parse them, so we
+# recommend turning jinja on. Matched case-insensitively against the template text.
+_TOOL_TEMPLATE_MARKERS = ("tool_call", "[tool_calls]", "tool_calls", "toolcall")
+
+
+def _template_supports_tools(template: Any) -> bool:
+    if not isinstance(template, str) or not template:
+        return False
+    lowered = template.lower()
+    return any(marker in lowered for marker in _TOOL_TEMPLATE_MARKERS)
 
 
 def _file_signature(model_path: str) -> tuple[int, int] | None:
@@ -225,7 +238,7 @@ def _load_meta_cache() -> dict[str, Any]:
         return {}
 
 
-def _store_meta_cache(model_path: str, sig: tuple[int, int], n_layer: int | None, kv_dims: tuple | None) -> None:
+def _store_meta_cache(model_path: str, sig: tuple[int, int], n_layer: int | None, kv_dims: tuple | None, supports_tools: bool | None) -> None:
     path = _meta_cache_file()
     if not path:
         return
@@ -237,6 +250,7 @@ def _store_meta_cache(model_path: str, sig: tuple[int, int], n_layer: int | None
             "mtime": sig[1],
             "n_layer": n_layer,
             "kv_dims": list(kv_dims) if kv_dims else None,
+            "supports_tools": supports_tools,
         }
         tmp = path.with_suffix(path.suffix + ".tmp")
         tmp.write_text(json.dumps(data), encoding="utf-8")
@@ -245,8 +259,12 @@ def _store_meta_cache(model_path: str, sig: tuple[int, int], n_layer: int | None
         pass
 
 
-def _parse_gguf_meta(model_path: str) -> tuple[int | None, tuple | None]:
-    """One GGUF reader pass: (n_layer, kv_dims). Empty on any failure."""
+def _parse_gguf_meta(model_path: str) -> tuple[int | None, tuple | None, bool | None]:
+    """One GGUF reader pass: (n_layer, kv_dims, supports_tools). Empty on failure.
+
+    ``supports_tools`` reads ``tokenizer.chat_template`` from the same (slow) header
+    pass we already do for dims, so jinja detection adds no extra GGUF reads.
+    """
     try:
         import gguf as _gguf
         reader = _gguf.GGUFReader(str(model_path))
@@ -255,44 +273,52 @@ def _parse_gguf_meta(model_path: str) -> tuple[int | None, tuple | None]:
             arch = None
         n_layer = _extract_n_layer(reader, arch)
         kv_dims = _extract_kv_dims(reader, arch, n_layer)
-        return (n_layer, kv_dims)
+        template = _gguf_field_value(reader.get_field("tokenizer.chat_template"))
+        supports_tools = _template_supports_tools(template)
+        return (n_layer, kv_dims, supports_tools)
     except Exception:
-        return (None, None)
+        return (None, None, None)
 
 
-def _gguf_meta(model_path: str | None, parse: bool) -> tuple[int | None, tuple | None]:
-    """Resolve (n_layer, kv_dims) for a GGUF path via memory/disk cache.
+def _gguf_meta(model_path: str | None, parse: bool) -> tuple[int | None, tuple | None, bool | None]:
+    """Resolve (n_layer, kv_dims, supports_tools) for a GGUF via memory/disk cache.
 
     When ``parse`` is False, never opens the GGUF — returns cached values or
-    ``(None, None)`` so callers (e.g. the profiles-list fit badge) stay fast and
-    fall back to heuristics. When True, parses once on a miss and persists the
+    ``(None, None, None)`` so callers (e.g. the profiles-list fit badge) stay fast
+    and fall back to heuristics. When True, parses once on a miss and persists the
     result for every later process.
     """
     if not model_path:
-        return (None, None)
+        return (None, None, None)
     key = str(model_path)
     sig = _file_signature(key)
 
     mem = _gguf_meta_mem.get(key)
     if mem and sig and mem[0] == sig:
-        return (mem[1], mem[2])
+        return (mem[1], mem[2], mem[3])
 
     if sig:
         disk = _load_meta_cache().get(key)
         if disk and disk.get("size") == sig[0] and disk.get("mtime") == sig[1]:
-            kv = tuple(disk["kv_dims"]) if disk.get("kv_dims") else None
-            _gguf_meta_mem[key] = (sig, disk.get("n_layer"), kv)
-            return (disk.get("n_layer"), kv)
+            # Pre-jinja cache entries lack the tool flag; re-parse to backfill it
+            # when a parsing caller asks, otherwise serve the cached dims as-is.
+            if parse and "supports_tools" not in disk:
+                pass
+            else:
+                kv = tuple(disk["kv_dims"]) if disk.get("kv_dims") else None
+                tools = disk.get("supports_tools")
+                _gguf_meta_mem[key] = (sig, disk.get("n_layer"), kv, tools)
+                return (disk.get("n_layer"), kv, tools)
 
     if not parse:
         # Don't cache the negative: a later parse=True call must still read it.
-        return (None, None)
+        return (None, None, None)
 
-    n_layer, kv_dims = _parse_gguf_meta(key)
+    n_layer, kv_dims, supports_tools = _parse_gguf_meta(key)
     if sig:
-        _gguf_meta_mem[key] = (sig, n_layer, kv_dims)
-        _store_meta_cache(key, sig, n_layer, kv_dims)
-    return (n_layer, kv_dims)
+        _gguf_meta_mem[key] = (sig, n_layer, kv_dims, supports_tools)
+        _store_meta_cache(key, sig, n_layer, kv_dims, supports_tools)
+    return (n_layer, kv_dims, supports_tools)
 
 
 def _read_gguf_n_layer(model_path: str | None) -> int | None:
@@ -303,6 +329,35 @@ def _read_gguf_n_layer(model_path: str | None) -> int | None:
 def _read_gguf_kv_dims(model_path: str | None) -> tuple[int, int, int] | None:
     """Exact (total_kv_heads, k_dim, v_dim) (parses + caches on a miss)."""
     return _gguf_meta(model_path, parse=True)[1]  # type: ignore[return-value]
+
+
+def model_supports_tools(model_path: str | None, probe: bool = True) -> bool | None:
+    """Whether the GGUF chat template advertises tool calling.
+
+    ``True``/``False`` once known; ``None`` when the template can't be read. With
+    ``probe`` False, never opens the GGUF (cache-only) so callers can stay fast.
+    """
+    return _gguf_meta(model_path, parse=probe)[2]
+
+
+def recommend_jinja(model: dict[str, Any] | str | None, probe: bool = True) -> dict[str, Any]:
+    """Recommend whether to launch with ``--jinja`` for a model.
+
+    Tool-capable chat templates need jinja so llama.cpp parses tool calls with the
+    model's own template; without it tool-capable models loop the same call forever.
+    """
+    if isinstance(model, str):
+        path: str | None = model
+    elif model:
+        path = model.get("path") or model.get("model_path")
+    else:
+        path = None
+    supports = model_supports_tools(path, probe=probe) if path else None
+    if supports is True:
+        return {"recommended": True, "reason": "chat template advertises tool calling; jinja is required to parse tool calls"}
+    if supports is False:
+        return {"recommended": False, "reason": "no tool-calling template detected; jinja not required"}
+    return {"recommended": False, "reason": "couldn't read the chat template; left jinja off"}
 
 
 def prime_model_meta(model: dict[str, Any] | None) -> None:

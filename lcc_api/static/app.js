@@ -18,6 +18,7 @@ const state = {
   modelNotes: { hf: '', fit: '', benchmark: '' },
   profileFilter: 'all',
   query: '',
+  jinjaRecommended: false,
   theme: localStorage.getItem('lcc-theme') || 'light',
 };
 
@@ -55,6 +56,7 @@ const PARAM_DEFAULTS = {
   reasoning: false,
   kv_offload: true,
   op_offload: true,
+  jinja: false,
   mmap: true,
 };
 const FIT_APPLIED_FIELDS = [
@@ -82,6 +84,7 @@ const FIT_APPLIED_FIELDS = [
   ['seed', '#param-seed'],
   ['kv_offload', '#param-kv-offload'],
   ['op_offload', '#param-op-offload'],
+  ['jinja', '#param-jinja'],
 ];
 
 function formatBytes(bytes) {
@@ -661,6 +664,9 @@ function renderParameters() {
   setFieldValue('#param-reasoning', params.reasoning);
   setFieldValue('#param-kv-offload', params.kv_offload);
   setFieldValue('#param-op-offload', params.op_offload);
+  setFieldValue('#param-jinja', params.jinja);
+  const jinjaHint = $('#param-jinja-hint');
+  if (jinjaHint) jinjaHint.hidden = !(state.jinjaRecommended && !$('#param-jinja')?.checked);
   setFieldValue('#param-mmap', params.mmap);
   state.paramPreviewHost = $('#param-host')?.value.trim() || '127.0.0.1';
   state.paramPreviewPort = $('#param-port') ? (Number($('#param-port').value) || 8080) : 8080;
@@ -705,6 +711,7 @@ function collectOverrides() {
     reasoning: $('#param-reasoning').checked,
     kv_offload: $('#param-kv-offload').checked,
     op_offload: $('#param-op-offload').checked,
+    jinja: $('#param-jinja').checked,
     mmap: $('#param-mmap').checked,
   };
 }
@@ -1256,6 +1263,7 @@ function renderFitSummary(result, applied) {
     fitItem('KV cache offload', applied.kv_offload),
     fitItem('CPU helper offload', applied.op_offload),
     fitItem('Flash attention', applied.flash_attn),
+    fitItem('Jinja template', applied.jinja),
   ].filter(Boolean).join('');
   const speed = result.speed_estimate;
   const speedItems = speed ? [
@@ -1741,6 +1749,7 @@ async function runAutoTune() {
         return;
       }
       state.tuneSuggestions = result.suggestions || [];
+      state.jinjaRecommended = !!(result.jinja && result.jinja.recommended);
       applyTunedParams(result.tuned_params);
       setModelNote('tune', renderTuneSummary(result));
       renderTpsEstimate(result.after?.speed_estimate);

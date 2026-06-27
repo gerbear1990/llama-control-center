@@ -1,4 +1,4 @@
 """FastAPI app for the portable Llama Control Center backend."""
 
-__version__ = "0.11.0"
+__version__ = "0.12.0"
 __license__ = "MIT"

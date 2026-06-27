@@ -361,6 +361,7 @@
                   <label title="Loads the model file on demand instead of copying the whole file into process memory."><input id="param-mmap" name="mmap" type="checkbox" /> mmap</label>
                   <label title="Lets llama.cpp move helper work from CPU to GPU when it can improve speed."><input id="param-op-offload" name="op_offload" type="checkbox" /> CPU helper offload</label>
                   <label title="Keeps the conversation memory cache on the GPU when possible. Turn off only for troubleshooting or tight VRAM."><input id="param-kv-offload" name="kv_offload" type="checkbox" /> KV cache offload</label>
+                  <label title="Use the model's own chat template (--jinja). Required for correct tool calling — without it, tool-capable models can loop the same tool call forever."><input id="param-jinja" name="jinja" type="checkbox" /> Jinja template (tool calling) <span id="param-jinja-hint" class="param-hint" hidden>recommended</span></label>
                 </div>
                 <div class="estimate-card" id="fit-estimate-card" title="A live memory estimate for the selected model and parameters. Green is comfortable; orange is tight; red is close to the limit.">
                   <div>
