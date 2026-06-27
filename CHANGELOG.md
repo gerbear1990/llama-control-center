@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.1] - 2026-06-28
+
+### Fixed
+
+- **VRAM estimates for hybrid SSM+attention models.** Models like Qwen3.5 and
+  Qwen3.5-MoE interleave standard attention layers with pure SSM/Mamba layers
+  (controlled by the GGUF `full_attention_interval` field — e.g. only every 4th
+  layer has attention). The estimator was multiplying KV-cache heads by the total
+  block count instead of the attention-layer count, inflating the KV-cache
+  estimate by up to 4×. A real-world Qwen3.5-27B at 120 K context dropped from a
+  31.4 GiB estimate (32% over actual) to 23.0 GiB (3.2% under actual 23.8 GiB).
+  Detection uses the `full_attention_interval` metadata when available, then
+  falls back to scanning tensor names for `attn_k.weight` / `attn_v.weight`
+  (robust across Jamba, Granite, and other hybrid architectures).
+  ([estimates.py](lcc_core/estimates.py))
+
+### Changed
+
+- **Quantized KV-cache byte rates corrected.** `Q4_0` 0.53 → 0.56, `Q4_1` 0.56 →
+  0.63, `Q5_0` 0.66 → 0.63, `IQ4_NL` 0.52 → 0.56 now match llama.cpp's actual
+  block layouts (18 B / 32 and 20 B / 32 per block). The f-string fallback in
+  `_cache_bytes` is updated to match.
+- **CUDA context overhead added to accelerator estimate.** A flat 300 MiB is now
+  included for driver/cuDNN/cuBLAS allocations that are independent of model size
+  but were previously omitted.
+- **GGUF meta cache version bumped to 2.** Entries cached by v0.12.0 or earlier
+  had KV-head totals computed with the wrong layer count. The version check
+  silently invalidates them so the next parse recomputes correct values.
+
 ## [0.12.0] - 2026-06-27
 
 ### Added

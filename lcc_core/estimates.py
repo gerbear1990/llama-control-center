@@ -24,11 +24,11 @@ CACHE_BYTES = {
     "F16": 2.0,
     "BF16": 2.0,
     "Q8_0": 1.06,
-    "Q5_1": 0.70,
-    "Q5_0": 0.66,
-    "Q4_1": 0.56,
-    "Q4_0": 0.53,
-    "IQ4_NL": 0.52,
+    "Q5_1": 0.69,
+    "Q5_0": 0.63,
+    "Q4_1": 0.63,
+    "Q4_0": 0.56,
+    "IQ4_NL": 0.56,
 }
 
 # Fallback KV-cache scaling when exact GGUF dims are unavailable. The exact
@@ -37,6 +37,11 @@ CACHE_BYTES = {
 # parameter count. ~0.012 lands between dense attention (~0.036) and heavy GQA
 # (~0.005) for a mid-range guess. Prefer _kv_dims() whenever a GGUF path exists.
 KV_FALLBACK_FACTOR = 0.012
+
+# CUDA/cuDNN runtime context, memory pools, and cuBLAS handles allocated once at
+# model-load time — independent of model or context size. Typical 200-400 MiB on
+# NVIDIA consumer GPUs; folded into the accelerator estimate.
+_CUDA_CONTEXT_OVERHEAD_MIB = 300.0
 
 # GGUF tensor name patterns that reveal n_layer
 _N_LAYER_PATTERNS = [
@@ -119,14 +124,14 @@ def _extract_n_layer(reader, arch: str | None) -> int | None:
     return None
 
 
-def _kv_head_total(field, n_layer: int | None, n_head_fallback) -> int | None:
-    """Total KV heads summed across all layers.
+def _kv_head_total(field, n_attn_layers: int | None, n_head_fallback) -> int | None:
+    """Total KV heads summed across all *attention* layers.
 
     ``head_count_kv`` is a scalar for plain GQA but a per-layer array for mixed
     local/global attention (e.g. Gemma alternates wide and narrow KV layers).
     For an array we sum the per-layer counts; for a scalar we multiply by the
-    layer count. Falls back to ``n_head`` (full MHA) only when nothing usable
-    is found.
+    attention-layer count. Falls back to ``n_head`` (full MHA) only when nothing
+    usable is found.
     """
     if field is not None:
         types = getattr(field, "types", None) or []
@@ -147,18 +152,53 @@ def _kv_head_total(field, n_layer: int | None, n_head_fallback) -> int | None:
     scalar = _gguf_field_value(field)
     if not isinstance(scalar, int) or scalar <= 0:
         scalar = n_head_fallback
-    if isinstance(scalar, int) and scalar > 0 and isinstance(n_layer, int) and n_layer > 0:
-        return n_layer * scalar
+    if isinstance(scalar, int) and scalar > 0 and isinstance(n_attn_layers, int) and n_attn_layers > 0:
+        return n_attn_layers * scalar
     return None
+
+
+def _extract_n_attn_layers(reader, arch: str | None, n_layer: int | None) -> int | None:
+    """Number of layers that contribute to the KV cache.
+
+    Hybrid SSM+attention architectures (e.g. Qwen3.5, Jamba) interleave standard
+    attention layers with pure SSM/Mamba layers that use a fixed-size recurrent
+    state instead of a growing KV cache. Only the attention layers grow VRAM with
+    context length, so the KV-cache multiplier must use the attention-layer count,
+    not the total block count.
+
+    Detection priority:
+    1. Architecture-specific interval metadata (``full_attention_interval``).
+    2. Tensor scan: count layers with explicit ``attn_k.weight`` / ``attn_v.weight``
+       tensors. SSM-only layers lack these.
+    3. Fall back to ``n_layer`` (standard all-attention architecture).
+    """
+    if arch:
+        val = _gguf_field_value(reader.get_field(f"{arch}.full_attention_interval"))
+        if isinstance(val, int) and val > 1 and isinstance(n_layer, int) and n_layer > 0:
+            result = n_layer // val
+            if result > 0:
+                return result
+
+    attn_layers: set[int] = set()
+    for tensor in reader.tensors:
+        name = tensor.name
+        if name.endswith(".attn_k.weight") or name.endswith(".attn_v.weight"):
+            m = re.search(r"(?:blk|block)\.(\d+)\.", name)
+            if m:
+                attn_layers.add(int(m.group(1)))
+    if attn_layers:
+        return len(attn_layers)
+
+    return n_layer
 
 
 def _extract_kv_dims(reader, arch: str | None, n_layer: int | None) -> tuple[int, int, int] | None:
     """Read (total_kv_heads, k_dim, v_dim) from an already-open GGUF reader.
 
-    Each decoded token stores, across all layers, ``total_kv_heads * k_dim`` key
-    elements and ``total_kv_heads * v_dim`` value elements; ``total_kv_heads``
-    folds in the layer count and any per-layer GQA variation. Returns ``None``
-    when attention metadata is missing or implausible.
+    Each decoded token stores, across all attention layers, ``total_kv_heads *
+    k_dim`` key elements and ``total_kv_heads * v_dim`` value elements;
+    ``total_kv_heads`` folds in the attention-layer count and any per-layer GQA
+    variation. Returns ``None`` when attention metadata is missing or implausible.
     """
     if not isinstance(arch, str) or not arch:
         return None
@@ -170,8 +210,9 @@ def _extract_kv_dims(reader, arch: str | None, n_layer: int | None) -> tuple[int
     n_embd = _scalar("embedding_length")
     k_dim = _scalar("attention.key_length")
     v_dim = _scalar("attention.value_length")
+    n_attn_layers = _extract_n_attn_layers(reader, arch, n_layer)
     total_kv_heads = _kv_head_total(
-        reader.get_field(f"{arch}.attention.head_count_kv"), n_layer, n_head
+        reader.get_field(f"{arch}.attention.head_count_kv"), n_attn_layers, n_head
     )
     head_dim = None
     if isinstance(n_embd, int) and isinstance(n_head, int) and n_head > 0:
@@ -195,6 +236,7 @@ def _extract_kv_dims(reader, arch: str | None, n_layer: int | None) -> tuple[int
 # the tiny result. ``_gguf_meta_mem`` caches within a process; the on-disk cache
 # (keyed by size+mtime) survives restarts, so a profiles refresh never re-parses.
 _GGUF_META_CACHE_FILENAME = "gguf_meta_cache.json"
+_KV_META_CACHE_VERSION = 2  # bump when kv_dims computation changes to invalidate stale entries
 _gguf_meta_mem: dict[str, tuple[tuple[int, int], int | None, tuple | None, bool | None]] = {}
 
 # Substrings that, in a GGUF chat template, indicate the model was trained to emit
@@ -233,7 +275,10 @@ def _load_meta_cache() -> dict[str, Any]:
         return {}
     try:
         import json
-        return json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if data.get("_version", 1) != _KV_META_CACHE_VERSION:
+            return {}
+        return data
     except Exception:
         return {}
 
@@ -245,6 +290,7 @@ def _store_meta_cache(model_path: str, sig: tuple[int, int], n_layer: int | None
     try:
         import json
         data = _load_meta_cache()
+        data["_version"] = _KV_META_CACHE_VERSION
         data[str(model_path)] = {
             "size": sig[0],
             "mtime": sig[1],
@@ -517,9 +563,9 @@ def _cache_bytes(cache_type: Any) -> float:
     if value.startswith("Q6"):
         return 0.78
     if value.startswith("Q5"):
-        return 0.68
+        return 0.66
     if value.startswith("Q4") or value.startswith("IQ4"):
-        return 0.53
+        return 0.56
     return 2.0
 
 
@@ -611,6 +657,7 @@ def estimate_memory_fit(
     accelerator_used_mib = 0.0
     if layer_fraction > 0:
         accelerator_used_mib += accelerator_model_mib
+        accelerator_used_mib += _CUDA_CONTEXT_OVERHEAD_MIB
     if kv_offload and layer_fraction > 0:
         accelerator_used_mib += kv_cache_mib
     if op_offload and layer_fraction > 0:

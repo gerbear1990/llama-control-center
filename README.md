@@ -4,11 +4,10 @@
 > runtimes, preparing `llama.cpp` launch commands, running fit tests, and managing
 > tracked local inference servers.
 
-**v0.12.0** — Adds a **Jinja template** option (`--jinja`) so tool-capable models
-parse tool calls correctly. Tool-calling support is auto-detected from the model's
-GGUF chat template, Smart Fit recommends enabling jinja for those models, and a
-"recommended" hint surfaces in the parameter editor. Builds on v0.11.0's Smart Fit
-overhaul and exact KV-cache sizing.
+**v0.12.1** — Fixes a major VRAM overestimate for **hybrid SSM+attention
+models** (Qwen3.5, Qwen3.5-MoE, and similar architectures where only a fraction
+of layers carry KV cache). Also corrects quantized KV-cache byte rates to match
+llama.cpp block sizes and adds CUDA context overhead to the estimate.
 See [CHANGELOG.md](./CHANGELOG.md) for details.
 
 The app is designed to be portable: paths live in user settings or environment
