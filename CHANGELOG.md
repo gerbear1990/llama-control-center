@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-07-02
+
+### Added
+
+- **Smart Fit recommends threads and batch sizes.** `auto_tune_fit()` now sets
+  `-t`/`-tb` from detected CPU core counts (a small fixed pool for decode when
+  the model is fully offloaded, since decode is memory-bandwidth-bound and gains
+  nothing from extra threads; physical-cores-minus-one plus full logical cores
+  for prompt processing when layers stay on the CPU) and grows `-b`/`-ub` into
+  whatever memory headroom is left after context and KV-cache quality are
+  settled, without ever shrinking below the caller's starting batch.
+  ([smart_tune.py](lcc_core/smart_tune.py))
+
+### Changed
+
+- **KV-cache quant search leans harder toward V being more compact than K.**
+  The K/V fidelity weighting moved from 0.6/0.4 to 0.7/0.3, so when memory is
+  short the search sheds V-cache precision before K, freeing headroom for
+  context or K quality without touching the hard rule that V is never set more
+  precise than K. ([smart_tune.py](lcc_core/smart_tune.py))
+- **Smart Fit prefers BF16 over F16 on BF16-friendly GPUs.** BF16 now ties F16
+  on fidelity score and wins only by hardware-aware candidate order, so the
+  existing 16-bit-vs-quantized cache weighting is unchanged while CUDA GPUs
+  known to run BF16 well get the better 16-bit KV default.
+  ([smart_tune.py](lcc_core/smart_tune.py))
+
+### Fixed
+
+- **Quantized KV-cache byte sizes were still off after v0.12.1.** `Q5_1`
+  (0.69 → 0.75) and `Q5_0` (0.63 → 0.6875) didn't match llama.cpp's actual
+  24 B/32 and 22 B/32 block layouts; all `CACHE_BYTES` entries are now the
+  exact block ratio (`Q8_0` 1.0625, `Q4_1` 0.625, `Q4_0`/`IQ4_NL` 0.5625).
+  Verified against real server logs: KV-cache estimates now match llama.cpp's
+  actual allocation to the MiB (previously off by up to ~8%).
+- **Partial GPU offload mis-split the KV cache and compute buffers between
+  VRAM and system RAM.** With `gpu_layers` below the full layer count, the
+  estimator charged the *entire* KV cache to VRAM and none to RAM (llama.cpp
+  places each layer's KV cache where that layer lives); it now splits KV by
+  `layer_fraction` between the two. A pure-CPU run (`gpu_layers: 0`) also now
+  counts the compute buffer against RAM instead of nothing.
+  ([estimates.py](lcc_core/estimates.py))
+
 ## [0.12.1] - 2026-06-28
 
 ### Fixed

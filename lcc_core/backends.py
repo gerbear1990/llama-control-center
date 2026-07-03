@@ -119,8 +119,8 @@ def detect_llama_cpp(project_root: Path | None = None, config: AppConfig | None 
     if configured_url:
         api_url = _normalize_base_url(configured_url, configured_url)
     else:
-        port = os.environ.get("LLAMA_SERVER_PORT", "8080")
-        host = os.environ.get("LLAMA_SERVER_HOST", "127.0.0.1")
+        port = os.environ.get("LLAMA_SERVER_PORT") or str(app_config.default_port or 8080)
+        host = os.environ.get("LLAMA_SERVER_HOST") or app_config.default_host or "127.0.0.1"
         api_url = _normalize_base_url(f"{host}:{port}", "http://127.0.0.1:8080")
 
     ok, models_payload, error = _request_json(f"{api_url}/v1/models")

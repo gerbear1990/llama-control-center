@@ -19,16 +19,18 @@ QUANT_FACTORS = {
     "F32": 0.24,
 }
 
+# Bytes per element, from llama.cpp block sizes (block of 32 elements):
+# q8_0 = 34/32, q5_1 = 24/32, q5_0 = 22/32, q4_1 = 20/32, q4_0 = iq4_nl = 18/32.
 CACHE_BYTES = {
     "F32": 4.0,
     "F16": 2.0,
     "BF16": 2.0,
-    "Q8_0": 1.06,
-    "Q5_1": 0.69,
-    "Q5_0": 0.63,
-    "Q4_1": 0.63,
-    "Q4_0": 0.56,
-    "IQ4_NL": 0.56,
+    "Q8_0": 1.0625,
+    "Q5_1": 0.75,
+    "Q5_0": 0.6875,
+    "Q4_1": 0.625,
+    "Q4_0": 0.5625,
+    "IQ4_NL": 0.5625,
 }
 
 # Fallback KV-cache scaling when exact GGUF dims are unavailable. The exact
@@ -559,13 +561,13 @@ def _cache_bytes(cache_type: Any) -> float:
         if value == key or value.startswith(key):
             return bytes_per_value
     if value.startswith("Q8"):
-        return 1.06
+        return 1.0625
     if value.startswith("Q6"):
-        return 0.78
+        return 0.8125
     if value.startswith("Q5"):
-        return 0.66
+        return 0.75
     if value.startswith("Q4") or value.startswith("IQ4"):
-        return 0.56
+        return 0.5625
     return 2.0
 
 
@@ -659,7 +661,8 @@ def estimate_memory_fit(
         accelerator_used_mib += accelerator_model_mib
         accelerator_used_mib += _CUDA_CONTEXT_OVERHEAD_MIB
     if kv_offload and layer_fraction > 0:
-        accelerator_used_mib += kv_cache_mib
+        # KV lives with its layer: only the offloaded layers' share sits in VRAM.
+        accelerator_used_mib += kv_cache_mib * layer_fraction
     if op_offload and layer_fraction > 0:
         accelerator_used_mib += compute_mib
     elif layer_fraction > 0:
@@ -668,8 +671,14 @@ def estimate_memory_fit(
     host_used_mib = host_model_mib
     if not kv_offload or layer_fraction <= 0:
         host_used_mib += kv_cache_mib
+    elif layer_fraction < 1.0:
+        # Layers left on the CPU keep their share of the KV cache in host RAM.
+        host_used_mib += kv_cache_mib * (1.0 - layer_fraction)
     if not op_offload:
         host_used_mib += compute_mib * 0.35
+    elif layer_fraction <= 0:
+        # Pure-CPU run: the compute buffers are allocated in system RAM.
+        host_used_mib += compute_mib
 
     primary_gpu = hardware.get("primary_gpu") or {}
     memory = hardware.get("memory") or {}
