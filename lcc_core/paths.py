@@ -163,6 +163,28 @@ def executable_names(base_name: str) -> list[str]:
     return [base_name]
 
 
+def _looks_like_llama_runtime_root(path: Path) -> bool:
+    """Return true when a directory contains a llama.cpp runtime marker."""
+
+    if any((path / name).is_file() for name in executable_names("llama-server")):
+        return True
+    if (path / "switch-model.ps1").is_file():
+        return True
+    return False
+
+
+def _runtime_ancestors(start: Path | None) -> list[Path]:
+    if not start:
+        return []
+    try:
+        current = start.expanduser().resolve()
+    except OSError:
+        current = start.expanduser()
+    if current.is_file():
+        current = current.parent
+    return [path for path in [current, *current.parents] if _looks_like_llama_runtime_root(path)]
+
+
 def find_project_root(start: str | os.PathLike[str] | None = None) -> Path | None:
     """Find the nearest parent that looks like a Llama Control Center root."""
 
@@ -189,6 +211,9 @@ def candidate_llama_roots(project_root: Path | None = None) -> list[Path]:
 
     if project_root:
         candidates.extend([project_root, project_root / "build", project_root / "build" / "bin", project_root / "bin"])
+        candidates.extend(_runtime_ancestors(project_root))
 
-    candidates.append(Path.cwd())
+    cwd = Path.cwd()
+    candidates.append(cwd)
+    candidates.extend(_runtime_ancestors(cwd))
     return existing_dirs(candidates)

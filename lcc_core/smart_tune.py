@@ -9,17 +9,61 @@ from .estimates import estimate_memory_fit, estimate_tokens_per_second, _get_tot
 # is the estimator's own accuracy; a real benchmark should override these picks.
 CTX_LADDER = [2048, 4096, 8192, 16384, 32768, 49152, 65536, 98304, 131072]
 CACHE_LADDER = ["f16", "q8_0", "q5_1", "q4_0"]  # highest quality -> most compact
+_BF16_CACHE_LADDER = ["bf16", *CACHE_LADDER]
 # higher rank == better KV quality, used to weight/break ties toward fidelity
 _CACHE_RANK = {name: i for i, name in enumerate(reversed(CACHE_LADDER))}
+_CACHE_RANK["bf16"] = _CACHE_RANK["f16"]
 _MAX_CACHE_RANK = max(_CACHE_RANK.values())
 _MAX_CTX_INDEX = len(CTX_LADDER) - 1
 
 # K and V are tuned independently. The K cache is more sensitive to quantization
-# than V, so we (a) never spend more bits on V than K and (b) weight K fidelity
-# higher when scoring. This makes asymmetric picks like q8_0 K / q4_0 V a memory
-# win that keeps the precision that matters most.
-_CACHE_K_WEIGHT = 0.6
-_CACHE_V_WEIGHT = 0.4
+# than V (keys drive attention scores; values are just averaged), so we (a) never
+# spend more bits on V than K and (b) weight K fidelity well above V when scoring.
+# The search therefore sheds V bits first when memory is short, keeping asymmetric
+# picks like q8_0 K / q4_0 V that preserve the precision that matters most.
+_CACHE_K_WEIGHT = 0.7
+_CACHE_V_WEIGHT = 0.3
+
+
+_BF16_BACKEND_MARKERS = ("cuda", "nvidia", "geforce", "rtx", "quadro", "tesla")
+_BF16_GPU_MARKERS = (
+    "blackwell", "rtx 50", "rtx 5070", "rtx 5080", "rtx 5090",
+    "ada", "rtx 40", "rtx 4070", "rtx 4080", "rtx 4090",
+    "h100", "h200", "h800", "h20",
+    "b100", "b200", "gb200",
+    "a100", "a800",
+    "l4", "l40", "l40s",
+)
+_SIXTEEN_BIT_CACHES = {"f16", "bf16"}
+
+
+def _gpu_descriptor(hardware: dict[str, Any] | None) -> str:
+    gpu = (hardware or {}).get("primary_gpu") or {}
+    fields = (
+        gpu.get("name"),
+        gpu.get("vendor"),
+        gpu.get("backend"),
+        gpu.get("acceleration_backend"),
+    )
+    return " ".join(str(value).lower() for value in fields if value)
+
+
+def _prefers_bf16_kv(hardware: dict[str, Any] | None) -> bool:
+    """Return true when the detected accelerator is a known-good BF16 target."""
+    descriptor = _gpu_descriptor(hardware)
+    if not descriptor:
+        return False
+    if not any(marker in descriptor for marker in _BF16_BACKEND_MARKERS):
+        return False
+    return any(marker in descriptor for marker in _BF16_GPU_MARKERS)
+
+
+def _cache_ladder(hardware: dict[str, Any] | None) -> list[str]:
+    return list(_BF16_CACHE_LADDER if _prefers_bf16_kv(hardware) else CACHE_LADDER)
+
+
+def _is_16bit_cache(cache: Any) -> bool:
+    return str(cache).lower() in _SIXTEEN_BIT_CACHES
 
 
 def _cache_fidelity_norm(cache_k: str, cache_v: str) -> float:
@@ -33,15 +77,31 @@ def _cache_fidelity_norm(cache_k: str, cache_v: str) -> float:
 _BALANCED_CACHE_WEIGHT = 0.55
 _BALANCED_CTX_WEIGHT = 0.45
 
-_TUNE_KEYS = ("gpu_layers", "ctx_size", "cache_type_k", "cache_type_v")
+_TUNE_KEYS = (
+    "gpu_layers", "ctx_size", "cache_type_k", "cache_type_v",
+    "batch_size", "ubatch_size", "threads", "threads_batch",
+)
 _REASONS = {
     "gpu_layers": "offload as many layers to the accelerator as memory allows (biggest speed lever)",
     "ctx_size": "grow the context window into the remaining memory headroom",
     "cache_type_k": "pick the KV-cache quant that best balances fidelity and memory",
-    "cache_type_v": "pick the KV-cache quant that best balances fidelity and memory",
+    "cache_type_v": "pick the KV-cache quant that best balances fidelity and memory (V sheds bits before K)",
+    "batch_size": "grow the logical batch into leftover memory headroom for faster prompt processing",
+    "ubatch_size": "grow the physical batch into leftover memory headroom for faster prompt processing",
+    "threads": "match generation threads to the CPU (decode is memory-bound; extra threads add contention)",
+    "threads_batch": "use more threads for prompt processing (it scales with logical cores)",
     "flash_attn": "enable flash attention (required for a quantized KV cache)",
     "jinja": "use the model's own chat template so tool calls parse correctly (no tool-call loops)",
 }
+
+# Prompt-processing batch pairs (batch, ubatch), largest first. Batch sizes only
+# affect the compute buffer, so they're grown into whatever headroom is left
+# AFTER the main grid pick — context and KV quality always take priority. The
+# logical batch (-b) is kept >= the physical batch (-ub).
+_BATCH_LADDER = [
+    (2048, 2048), (2048, 1024), (2048, 512),
+    (1024, 512), (512, 512), (512, 256), (256, 128),
+]
 
 # Named intents the tuner reports so a caller can pick by current need.
 _INTENTS = (
@@ -62,6 +122,64 @@ def _layer_options(model: dict[str, Any] | None) -> list[Any]:
     return ["all", 0]
 
 
+def _int_or_none(value: Any) -> int | None:
+    try:
+        result = int(float(value))
+        return result if result > 0 else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _recommend_threads(hardware: dict[str, Any] | None, layer_fraction: float) -> dict[str, int] | None:
+    """Recommend -t / -tb from the detected CPU and how much work stays on it.
+
+    Decode (-t) is memory-bandwidth-bound, so hyper-threads don't help and
+    oversubscription adds contention: use physical cores, minus one to keep the
+    OS and server responsive when the CPU is doing real layer work. Prompt
+    processing (-tb) is compute-bound and scales with logical cores. When the
+    model is fully offloaded the CPU only orchestrates and samples, so a small
+    fixed pool avoids busy-spin without costing speed.
+    """
+    cpu = (hardware or {}).get("cpu") or {}
+    physical = _int_or_none(cpu.get("physical_cores"))
+    logical = _int_or_none(cpu.get("logical_cores"))
+    if not physical and logical:
+        physical = max(1, logical // 2)  # assume SMT when only logical is known
+    if not physical:
+        return None
+    if layer_fraction >= 1.0:
+        threads = max(2, min(physical, 8))
+        return {"threads": threads, "threads_batch": threads}
+    threads = max(1, physical - 1)
+    return {"threads": threads, "threads_batch": max(threads, logical or physical)}
+
+
+def _tune_batch(
+    params: dict[str, Any],
+    model: dict[str, Any] | None,
+    hardware: dict[str, Any] | None,
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """Grow batch/ubatch into the headroom left over by the main grid pick.
+
+    Tries (batch, ubatch) pairs largest-first and keeps the first that still
+    fits; the caller's pair is included so the result is never smaller than
+    what already fit. Returns the (possibly updated) params and the fit for
+    the chosen pair (None when nothing beat the caller's own pair).
+    """
+    base_b = _int_or_none(params.get("batch_size")) or 512
+    base_ub = _int_or_none(params.get("ubatch_size")) or min(base_b, 512)
+    pairs = sorted(set(_BATCH_LADDER) | {(base_b, base_ub)}, key=lambda p: (p[1], p[0]), reverse=True)
+    for batch, ubatch in pairs:
+        if ubatch > batch:
+            continue
+        cand = {**params, "batch_size": batch, "ubatch_size": ubatch}
+        fit = estimate_memory_fit(cand, model, hardware)
+        if fit["status"] in ("near_limit", "unknown"):
+            continue
+        return cand, fit
+    return dict(params), None
+
+
 def _changes(base: dict[str, Any], tuned: dict[str, Any]) -> list[dict[str, Any]]:
     changes = []
     for key in (*_TUNE_KEYS, "flash_attn", "jinja"):
@@ -76,7 +194,7 @@ def _candidate_params(base: dict[str, Any], layers: Any, ctx: int, cache_k: str,
             "cache_type_k": cache_k, "cache_type_v": cache_v}
     # Quantized KV requires flash attention in llama.cpp; force it on so the
     # suggested config can actually launch (and so the estimate reflects it).
-    if cache_k != "f16" or cache_v != "f16":
+    if not _is_16bit_cache(cache_k) or not _is_16bit_cache(cache_v):
         cand["flash_attn"] = True
     return cand
 
@@ -88,10 +206,11 @@ def _collect_candidates(
 ) -> list[dict[str, Any]]:
     """Evaluate the grid once and keep every config the estimator says fits."""
     candidates: list[dict[str, Any]] = []
+    cache_ladder = _cache_ladder(hardware)
     for layers in _layer_options(model):
         for ctx in CTX_LADDER:
-            for cache_k in CACHE_LADDER:
-                for cache_v in CACHE_LADDER:
+            for cache_k in cache_ladder:
+                for cache_v in cache_ladder:
                     # Never spend more bits on V than K — K carries more signal.
                     if _CACHE_RANK[cache_v] > _CACHE_RANK[cache_k]:
                         continue
@@ -182,7 +301,13 @@ def auto_tune_fit(
             entry["labels"].append(label)
             entry["label"] = " / ".join(entry["labels"])
             continue
-        tuned = best["params"]
+        # Refine the winner: grow batch sizes into the leftover headroom, then
+        # match threads to the CPU and how much of the model stays on it.
+        tuned, refined_fit = _tune_batch(best["params"], model, hardware)
+        fit = refined_fit or best["fit"]
+        threads_rec = _recommend_threads(hardware, fit["inputs"]["gpu_layer_fraction"])
+        if threads_rec:
+            tuned.update(threads_rec)
         tuned["jinja"] = jinja_rec["recommended"]
         entry = {
             "intent": intent_id,
@@ -192,7 +317,7 @@ def auto_tune_fit(
             "description": description,
             "params": tuned,
             "changes": _changes(base, tuned),
-            "fit_status": best["fit"],
+            "fit_status": fit,
             "speed_estimate": estimate_tokens_per_second(tuned, model, hardware),
         }
         by_signature[sig] = entry
@@ -211,7 +336,9 @@ def auto_tune_fit(
         "notes": [
             "Suggestions come from the memory estimator, not a live run — verify with a fit test or benchmark.",
             "Priority: max GPU layers, then a balance of KV-cache fidelity and context (quality-leaning).",
-            "K and V caches are tuned independently; V is never set more precise than K.",
+            "K and V caches are tuned independently; V sheds bits before K and is never more precise than K.",
+            "Batch/ubatch grow into leftover headroom after context and KV quality are settled.",
+            "Threads follow the CPU: physical cores for decode, logical cores for prompt batches.",
             "Pick 'Max quality' or 'Max context' from the suggestions when your need leans one way.",
             f"Jinja {'on' if jinja_rec['recommended'] else 'off'}: {jinja_rec['reason']}.",
         ],
@@ -248,6 +375,14 @@ def demo() -> None:
     for s in out["suggestions"]:
         p = s["params"]
         assert _CACHE_RANK[p["cache_type_v"]] <= _CACHE_RANK[p["cache_type_k"]], p
+
+    # Threads and batch sizes are recommended and stay coherent.
+    for s in out["suggestions"]:
+        p = s["params"]
+        assert p.get("threads", 1) >= 1 and p.get("threads_batch", 1) >= p.get("threads", 1), p
+        assert p.get("ubatch_size", 1) <= p.get("batch_size", 1), p
+    # A roomy GPU should have grown the batch beyond the tiny starting point.
+    assert out["tuned_params"]["ubatch_size"] >= 512, out["tuned_params"]
 
     # Tiny VRAM with unknown capacity falls back to a safe pick or reports failure.
     tiny = {"primary_gpu": {}, "memory": {"total_bytes": 8 * 1024**3, "available_bytes": 2 * 1024**3},

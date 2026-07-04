@@ -132,6 +132,38 @@ class ManifestTests(unittest.TestCase):
             self.assertEqual(find_project_root(child), root)
 
 
+class RuntimeDetectionTests(unittest.TestCase):
+    def test_candidate_roots_include_enclosing_llama_install(self) -> None:
+        from lcc_core.paths import candidate_llama_roots
+
+        with tempfile.TemporaryDirectory() as tmp:
+            install_root = Path(tmp) / "llama.cpp-cuda"
+            app_root = install_root / "tools" / "llama-control-center-repo"
+            app_root.mkdir(parents=True)
+            (app_root / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+            (install_root / "llama-server.exe").write_bytes(b"")
+            (install_root / "llama-server").write_bytes(b"")
+
+            roots = [path.resolve() for path in candidate_llama_roots(app_root)]
+
+        self.assertIn(install_root.resolve(), roots)
+
+    def test_detect_llama_cpp_uses_configured_default_port(self) -> None:
+        import os
+        from unittest import mock
+
+        from lcc_core.backends import detect_llama_cpp
+
+        config = AppConfig(default_host="127.0.0.1", default_port=8081)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with mock.patch.dict(os.environ, {}, clear=True):
+                with mock.patch("lcc_core.backends._request_json", return_value=(False, None, "offline")):
+                    env = detect_llama_cpp(root, config=config)
+
+        self.assertEqual(env.details["probe_url"], "http://127.0.0.1:8081")
+
+
 class InventoryTests(unittest.TestCase):
     def test_inventory_is_json_serializable(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -698,8 +730,75 @@ class SmartTuneTests(unittest.TestCase):
                 _CACHE_RANK[p["cache_type_v"]], _CACHE_RANK[p["cache_type_k"]], p
             )
 
-    def test_quantized_kv_forces_flash_attention(self) -> None:
+    def test_bf16_ready_gpu_prefers_bf16_without_extra_quality_weight(self) -> None:
+        from lcc_core.smart_tune import auto_tune_fit, _CACHE_RANK, _cache_ladder
+
+        hw = self._hw(24)
+        hw["primary_gpu"]["name"] = "NVIDIA GeForce RTX 5090"
+        hw["primary_gpu"]["acceleration_backend"] = "CUDA"
+        self.assertEqual(_CACHE_RANK["bf16"], _CACHE_RANK["f16"])
+        self.assertEqual(_cache_ladder(hw)[0], "bf16")
+
+        model = {"name": "test-7B", "params_b": 7, "quant": "Q4_K_M"}
+        out = auto_tune_fit({"gpu_layers": 0, "ctx_size": 2048}, model, hw)
+        self.assertTrue(out["success"])
+        quality = next(s for s in out["suggestions"] if "max_quality" in s["intents"])
+        self.assertEqual(quality["params"]["cache_type_k"], "bf16")
+        self.assertEqual(quality["params"]["cache_type_v"], "bf16")
+
+    def test_non_bf16_gpu_falls_back_to_f16_ladder(self) -> None:
+        from lcc_core.smart_tune import _cache_ladder
+
+        hw = self._hw(24)
+        hw["primary_gpu"]["name"] = "NVIDIA GeForce GTX 1080"
+        hw["primary_gpu"]["acceleration_backend"] = "CUDA"
+        ladder = _cache_ladder(hw)
+        self.assertEqual(ladder[0], "f16")
+        self.assertNotIn("bf16", ladder)
+
+    def test_recommends_threads_from_cpu_info(self) -> None:
         from lcc_core.smart_tune import auto_tune_fit
+
+        model = {"name": "test-7B", "params_b": 7, "quant": "Q4_K_M"}
+        hw = self._hw(24)
+        hw["cpu"] = {"physical_cores": 12, "logical_cores": 24}
+        out = auto_tune_fit({"gpu_layers": 0, "ctx_size": 2048}, model, hw)
+        self.assertTrue(out["success"])
+        # 24 GB + 7B -> full offload, so decode threads use a small fixed pool.
+        tuned = out["tuned_params"]
+        self.assertEqual(tuned["threads"], 8)
+        self.assertEqual(tuned["threads_batch"], 8)
+        self.assertTrue(any(c["field"] == "threads" for c in out["changes"]))
+
+    def test_partial_offload_uses_physical_and_logical_cores(self) -> None:
+        from lcc_core.smart_tune import _recommend_threads
+
+        rec = _recommend_threads({"cpu": {"physical_cores": 12, "logical_cores": 24}}, 0.5)
+        self.assertEqual(rec, {"threads": 11, "threads_batch": 24})
+        # Only logical known: assume SMT, halve for physical.
+        rec = _recommend_threads({"cpu": {"logical_cores": 16}}, 0.0)
+        self.assertEqual(rec, {"threads": 7, "threads_batch": 16})
+        self.assertIsNone(_recommend_threads({"cpu": {}}, 1.0))
+
+    def test_batch_grows_into_headroom_but_never_shrinks(self) -> None:
+        from lcc_core.smart_tune import auto_tune_fit
+
+        model = {"name": "test-7B", "params_b": 7, "quant": "Q4_K_M"}
+        out = auto_tune_fit(
+            {"gpu_layers": 0, "ctx_size": 2048, "batch_size": 512, "ubatch_size": 128},
+            model, self._hw(24),
+        )
+        self.assertTrue(out["success"])
+        for s in out["suggestions"]:
+            p = s["params"]
+            self.assertGreaterEqual(p["ubatch_size"], 128)
+            self.assertGreaterEqual(p["batch_size"], p["ubatch_size"])
+            self.assertNotIn(s["fit_status"]["status"], {"near_limit", "unknown"})
+        # Roomy GPU: the balanced pick should have grown the physical batch.
+        self.assertGreaterEqual(out["tuned_params"]["ubatch_size"], 512)
+
+    def test_quantized_kv_forces_flash_attention(self) -> None:
+        from lcc_core.smart_tune import auto_tune_fit, _is_16bit_cache
 
         model = {"name": "test-7B", "params_b": 7, "quant": "Q4_K_M"}
         out = auto_tune_fit(
@@ -707,7 +806,8 @@ class SmartTuneTests(unittest.TestCase):
         )
         self.assertTrue(out["success"])
         for s in out["suggestions"]:
-            if str(s["params"].get("cache_type_k", "f16")).lower() != "f16":
+            p = s["params"]
+            if not _is_16bit_cache(p.get("cache_type_k", "f16")) or not _is_16bit_cache(p.get("cache_type_v", "f16")):
                 self.assertTrue(s["params"].get("flash_attn"), s["params"])
 
 
