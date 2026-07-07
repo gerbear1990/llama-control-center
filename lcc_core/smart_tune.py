@@ -8,11 +8,26 @@ from .estimates import estimate_memory_fit, estimate_tokens_per_second, _get_tot
 # No subprocess, no optimizer lib — ~100 cheap pure-Python fit evals. The ceiling
 # is the estimator's own accuracy; a real benchmark should override these picks.
 CTX_LADDER = [2048, 4096, 8192, 16384, 32768, 49152, 65536, 98304, 131072]
-CACHE_LADDER = ["f16", "q8_0", "q5_1", "q4_0"]  # highest quality -> most compact
+# KV-cache rungs, highest quality -> most compact. The mid-tier quants (q5_0,
+# q4_1) give the asymmetric K/V search finer memory/quality landing spots; iq4_nl
+# matches q4_0 in size but uses a non-linear codebook. The 4-bit float formats
+# (nvfp4, mxfp4) are NVIDIA/Blackwell-hardware-accelerated and are appended to
+# the ladder only on CUDA GPUs where they're fast (see _cache_ladder); elsewhere
+# they'd just slow the search with no speed benefit.
+CACHE_LADDER = ["f16", "q8_0", "q5_1", "q5_0", "q4_1", "q4_0", "iq4_nl"]
 _BF16_CACHE_LADDER = ["bf16", *CACHE_LADDER]
-# higher rank == better KV quality, used to weight/break ties toward fidelity
-_CACHE_RANK = {name: i for i, name in enumerate(reversed(CACHE_LADDER))}
-_CACHE_RANK["bf16"] = _CACHE_RANK["f16"]
+# NVIDIA 4-bit float KV cache: NVFP4 first (matches q4_0 byte rate but float),
+# then MXFP4 (slightly more compact). Prepended on CUDA GPUs known to accelerate
+# them so the tuner prefers hardware-accelerated 4-bit over integer q4_0.
+_NVIDIA_FP4_LADDER = ["nvfp4", "mxfp4"]
+# higher rank == better KV quality, used to weight/break ties toward fidelity.
+# Float formats rank at or above their integer siblings at the same byte rate:
+# nvfp4 (float E2M1, 0.5625) ranks just above q4_0/iq4_nl (int, 0.5625), and
+# mxfp4 (0.53125) sits below them since it's strictly more compact.
+_CACHE_RANK = {
+    "mxfp4": 0, "q4_0": 1, "iq4_nl": 1, "nvfp4": 2, "q4_1": 3, "q5_0": 4,
+    "q5_1": 5, "q8_0": 6, "f16": 7, "bf16": 7,
+}
 _MAX_CACHE_RANK = max(_CACHE_RANK.values())
 _MAX_CTX_INDEX = len(CTX_LADDER) - 1
 
@@ -31,6 +46,18 @@ _BF16_GPU_MARKERS = (
     "ada", "rtx 40", "rtx 4070", "rtx 4080", "rtx 4090",
     "h100", "h200", "h800", "h20",
     "b100", "b200", "gb200",
+    "a100", "a800",
+    "l4", "l40", "l40s",
+)
+# GPUs whose KV-cache kernels hardware-accelerate the 4-bit float formats.
+# Blackwell (RTX 50, B100/200) and Hopper (H100) have native FP4 support; Ada
+# (RTX 40, L4/L40) runs nvfp4/mxfp4 paths but without the same tensor-core
+# throughput, so they're still preferred over integer q4_0 for quality.
+_FP4_GPU_MARKERS = (
+    "blackwell", "rtx 50", "rtx 5070", "rtx 5080", "rtx 5090",
+    "h100", "h200", "h800", "h20",
+    "b100", "b200", "gb200",
+    "ada", "rtx 40", "rtx 4070", "rtx 4080", "rtx 4090",
     "a100", "a800",
     "l4", "l40", "l40s",
 )
@@ -58,8 +85,24 @@ def _prefers_bf16_kv(hardware: dict[str, Any] | None) -> bool:
     return any(marker in descriptor for marker in _BF16_GPU_MARKERS)
 
 
+def _prefers_fp4_kv(hardware: dict[str, Any] | None) -> bool:
+    """Return true when the GPU hardware-accelerates NVFP4/MXFP4 KV cache."""
+    descriptor = _gpu_descriptor(hardware)
+    if not descriptor:
+        return False
+    if not any(marker in descriptor for marker in _BF16_BACKEND_MARKERS):
+        return False
+    return any(marker in descriptor for marker in _FP4_GPU_MARKERS)
+
+
 def _cache_ladder(hardware: dict[str, Any] | None) -> list[str]:
-    return list(_BF16_CACHE_LADDER if _prefers_bf16_kv(hardware) else CACHE_LADDER)
+    base = list(_BF16_CACHE_LADDER if _prefers_bf16_kv(hardware) else CACHE_LADDER)
+    # On FP4-capable NVIDIA GPUs, offer the hardware-accelerated 4-bit float
+    # formats as compact-tier rungs (placed after iq4_nl so they're considered
+    # once the integer 4-bit options are exhausted, matching their byte rates).
+    if _prefers_fp4_kv(hardware):
+        base = [*base, *_NVIDIA_FP4_LADDER]
+    return base
 
 
 def _is_16bit_cache(cache: Any) -> bool:

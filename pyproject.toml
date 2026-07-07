@@ -13,6 +13,7 @@ dependencies = [
     "uvicorn",
     "pydantic",
     "gguf",
+    "psutil>=5.9.0",
 ]
 
 [tool.setuptools.packages.find]

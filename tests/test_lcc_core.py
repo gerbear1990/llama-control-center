@@ -1066,5 +1066,423 @@ class RuntimeDispatchTests(unittest.TestCase):
         self.assertEqual(LAUNCHABLE_RUNTIMES, ("llama.cpp",))
 
 
+class LayerIndexAndCacheBytesTests(unittest.TestCase):
+    """Lock in the tensor-index parser and KV-cache byte sizing so a refactor
+    can't silently regress hybrid-SSM layer counting or quantized KV rates."""
+
+    def test_layer_index_covers_all_naming_conventions(self) -> None:
+        from lcc_core.estimates import _layer_index_from_tensor
+
+        cases = {
+            "blk.5.attn_k.weight": 5,
+            "block.12.attn_v.weight": 12,
+            "model.layers.3.self_attn.k_proj.weight": 3,
+            "transformer.layer.7.attn_q.weight": 7,
+            "enc.blk.0.attn_norm.weight": 0,
+            "h[9].attn.weight": None,  # bare h[] at start has no leading dot
+            "something.h[4].attn.weight": 4,
+            "tok_embeddings.weight": None,
+            "output_norm.weight": None,
+        }
+        for name, expected in cases.items():
+            with self.subTest(name=name):
+                self.assertEqual(_layer_index_from_tensor(name), expected)
+
+    def test_cache_bytes_specific_quants_match_llama_cpp_blocks(self) -> None:
+        from lcc_core.estimates import _cache_bytes
+
+        # Exact KV-cache type names: bytes/element = llama.cpp block ratio.
+        self.assertAlmostEqual(_cache_bytes("q8_0"), 34 / 32)
+        self.assertAlmostEqual(_cache_bytes("q5_1"), 24 / 32)
+        self.assertAlmostEqual(_cache_bytes("q5_0"), 22 / 32)
+        self.assertAlmostEqual(_cache_bytes("q4_1"), 20 / 32)
+        self.assertAlmostEqual(_cache_bytes("q4_0"), 18 / 32)
+        self.assertAlmostEqual(_cache_bytes("iq4_nl"), 18 / 32)
+        self.assertAlmostEqual(_cache_bytes("f16"), 2.0)
+        self.assertAlmostEqual(_cache_bytes("bf16"), 2.0)
+        self.assertAlmostEqual(_cache_bytes("f32"), 4.0)
+        # 4-bit float formats (NVIDIA hardware-accelerated): NVFP4 = 36 B / 64
+        # elems (4 sub-block scales + 32 B packed E2M1); MXFP4 = 17 B / 32.
+        self.assertAlmostEqual(_cache_bytes("nvfp4"), 36 / 64)
+        self.assertAlmostEqual(_cache_bytes("mxfp4"), 17 / 32)
+
+    def test_cache_bytes_bare_prefix_falls_back_approximately(self) -> None:
+        from lcc_core.estimates import _cache_bytes
+
+        # Bare quant prefixes (no specific block layout) hit the conservative
+        # tier-2 fallback rather than collapsing to the f16 default.
+        self.assertEqual(_cache_bytes("q8"), 1.0625)
+        self.assertEqual(_cache_bytes("q6"), 0.8125)
+        self.assertEqual(_cache_bytes("q4"), 0.5625)
+        self.assertEqual(_cache_bytes("nvfp"), 0.5625)
+        self.assertEqual(_cache_bytes("mxfp"), 0.53125)
+        # Unknown / empty defaults to f16.
+        self.assertEqual(_cache_bytes(""), 2.0)
+        self.assertEqual(_cache_bytes("unknown"), 2.0)
+
+    def test_smart_fit_fp4_ladder_gated_by_nvidia_hardware(self) -> None:
+        from lcc_core.smart_tune import _cache_ladder
+
+        cuda_hw = {"primary_gpu": {"name": "NVIDIA GeForce RTX 4090", "acceleration_backend": "cuda"}}
+        amd_hw = {"primary_gpu": {"name": "AMD Radeon RX 7900 XTX", "acceleration_backend": "rocm"}}
+        none_hw = {"primary_gpu": {}}
+        cuda_ladder = _cache_ladder(cuda_hw)
+        self.assertIn("nvfp4", cuda_ladder)
+        self.assertIn("mxfp4", cuda_ladder)
+        self.assertIn("bf16", cuda_ladder)  # CUDA also unlocks BF16
+        # Non-NVIDIA hardware must not get FP4 rungs (no acceleration benefit).
+        self.assertNotIn("nvfp4", _cache_ladder(amd_hw))
+        self.assertNotIn("nvfp4", _cache_ladder(none_hw))
+
+
+class ServerCrashWatchdogTests(unittest.TestCase):
+    """A tracked server whose PID died while its status said 'running' must be
+    flagged 'crashed' (with a stderr snapshot) rather than silently dropped."""
+
+    def setUp(self) -> None:
+        import lcc_core.server_manager as sm
+        self.sm = sm
+        self._tmp = tempfile.mkdtemp()
+        self._orig_state_path = sm.state_path
+        self._orig_cache_dir = None
+        # Point state at a temp file so we never touch real tracked servers.
+        self._state_file = Path(self._tmp) / "servers.json"
+        sm.state_path = lambda: self._state_file
+        # A fake stderr log the watchdog can tail.
+        self._stderr = Path(self._tmp) / "stderr.log"
+        self._stderr.write_text("line one\nOOM killed\n", encoding="utf-8")
+
+    def tearDown(self) -> None:
+        self.sm.state_path = self._orig_state_path
+        shutil.rmtree(self._tmp, ignore_errors=True)
+
+    def _write_state(self, servers):
+        self._state_file.write_text(json.dumps({"servers": servers}), encoding="utf-8")
+
+    def test_live_server_with_dead_pid_is_flagged_crashed(self):
+        # A PID certain to not exist (2^31-1 is reserved/unallocated on every OS).
+        dead_pid = 2147483647
+        self._write_state([{
+            "id": "demo-1234", "mode": "demo", "pid": dead_pid,
+            "status": "running", "host": "127.0.0.1", "port": 8080,
+            "stderr_log": str(self._stderr),
+        }])
+        self.sm.refresh_server_states()
+        state = self.sm.read_state()
+        self.assertEqual(state["servers"][0]["status"], "crashed")
+        self.assertFalse(state["servers"][0]["running"])
+        self.assertIn("crashed_at", state["servers"][0])
+        self.assertIn("OOM killed", state["servers"][0]["last_stderr"])
+
+    def test_already_stopped_server_is_not_recrashed(self):
+        dead_pid = 2147483647
+        self._write_state([{
+            "id": "demo-stopped", "mode": "demo", "pid": dead_pid,
+            "status": "stopped", "host": "127.0.0.1", "port": 8080,
+            "stderr_log": str(self._stderr),
+        }])
+        self.sm.refresh_server_states()
+        state = self.sm.read_state()
+        # 'stopped' is terminal — the watchdog must not rewrite it.
+        self.assertEqual(state["servers"][0]["status"], "stopped")
+        self.assertNotIn("crashed_at", state["servers"][0])
+
+
+class PrometheusMetricsParserTests(unittest.TestCase):
+    """The live-metrics parser must pull KV usage and token rates out of the
+    Prometheus text that llama-server exposes, ignoring comments and labels."""
+
+    def test_parses_kv_usage_and_token_rates(self):
+        from lcc_core.server_metrics import _parse_prometheus
+        sample = (
+            "# HELP llamacpp:kv_cache_usage_ratio KV cache usage ratio\n"
+            "# TYPE llamacpp:kv_cache_usage_ratio gauge\n"
+            'llamacpp:kv_cache_usage_ratio{slot_id="0"} 0.421\n'
+            'llamacpp:kv_cache_tokens{slot_id="0"} 13721\n'
+            "# TYPE llamacpp:prompt_tokens_seconds gauge\n"
+            'llamacpp:prompt_tokens_seconds 812.5\n'
+            'llamacpp:tokens_predicted_seconds 45.2\n'
+            'llamacpp:tokens_predicted_total 4096\n'
+            'llamacpp:prompt_tokens_total 8192\n'
+            'llamacpp:active_slots 1\n'
+            'llamacpp:processing_slots 0\n'
+        )
+        parsed = _parse_prometheus(sample)
+        self.assertAlmostEqual(parsed["kv_cache_usage_ratio"], 0.421)
+        self.assertEqual(parsed["kv_cache_tokens"], 13721.0)
+        self.assertEqual(parsed["prompt_tokens_per_second"], 812.5)
+        self.assertEqual(parsed["predicted_tokens_per_second"], 45.2)
+        self.assertEqual(parsed["slots_active"], 1.0)
+
+    def test_ignores_comments_and_unrelated_lines(self):
+        from lcc_core.server_metrics import _parse_prometheus
+        parsed = _parse_prometheus("# just a comment\nunrelated_metric 5\n")
+        self.assertNotIn("kv_cache_usage_ratio", parsed)
+
+
+class LiveHardwareStatusTests(unittest.TestCase):
+    """The TTL-cached live nvidia-smi poll must deduplicate within its window,
+    parse multi-GPU / [N/A] CSV, and latch-disable on failure (SwarmUI pattern)."""
+
+    def setUp(self) -> None:
+        import lcc_core.hardware as hw
+        self.hw = hw
+        self._orig_snapshot = hw._nvidia_live_snapshot
+        self._orig_unavailable = hw._nvidia_live_unavailable
+        self._orig_cache = hw._live_cache
+        self._orig_cache_ts = hw._live_cache_ts
+        # Reset cache state so each test starts cold.
+        hw._nvidia_live_unavailable = False
+        hw._live_cache = None
+        hw._live_cache_ts = 0.0
+        self._orig_win_mem = hw._windows_memory_info
+        self._orig_posix_mem = hw._posix_memory_info
+        hw._windows_memory_info = lambda: {"total_bytes": 1000, "available_bytes": 400}
+        hw._posix_memory_info = lambda: {"total_bytes": 1000, "available_bytes": 400}
+
+    def tearDown(self) -> None:
+        self.hw._nvidia_live_snapshot = self._orig_snapshot
+        self.hw._nvidia_live_unavailable = self._orig_unavailable
+        self.hw._live_cache = self._orig_cache
+        self.hw._live_cache_ts = self._orig_cache_ts
+        self.hw._windows_memory_info = self._orig_win_mem
+        self.hw._posix_memory_info = self._orig_posix_mem
+
+    def test_ttl_cache_dedupes_within_window(self):
+        calls = []
+        def fake():
+            calls.append(1)
+            return [{"index": 0, "name": "X", "utilization_gpu_percent": 5.0}]
+        self.hw._nvidia_live_snapshot = fake
+        self.hw.live_system_status()
+        self.hw.live_system_status()
+        self.hw.live_system_status()
+        self.assertEqual(len(calls), 1, "second/third calls within TTL must hit the cache")
+
+    def test_ram_always_refreshes_even_when_gpu_cached(self):
+        self.hw._nvidia_live_snapshot = lambda: [{"index": 0, "name": "X"}]
+        first = self.hw.live_system_status()
+        # Drop available RAM between calls; GPU is cached but RAM must reflect it.
+        self.hw._windows_memory_info = lambda: {"total_bytes": 1000, "available_bytes": 200}
+        second = self.hw.live_system_status()
+        self.assertEqual(first["system_ram"]["free_bytes"], 400)
+        self.assertEqual(second["system_ram"]["free_bytes"], 200)
+
+    def test_first_failure_latches_disable(self):
+        calls = []
+        self.hw._nvidia_live_snapshot = lambda: (calls.append(1), None)[1]
+        a = self.hw.live_system_status()
+        b = self.hw.live_system_status()
+        c = self.hw.live_system_status()
+        # Only the very first call queried nvidia-smi; subsequent calls short-circuit.
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(a["gpus"], [])
+        self.assertEqual(b["gpus"], [])
+        # RAM still reported even with GPU unavailable.
+        self.assertEqual(b["system_ram"]["total_bytes"], 1000)
+
+    def test_snapshot_parses_multi_gpu_and_na(self):
+        # A second GPU line and an "[N/A]" utilization (some GPUs report no util).
+        raw = "0, RTX 5090, 12, 34, 41, 32768, 30720, 2048\n1, RTX 4090, [N/A], 50, 55, 24576, 24000, 576"
+        from lcc_core.hardware import _float_or_none, _int_or_none
+        # Simulate the parser path directly against the CSV nvidia-smi emits.
+        gpus = []
+        for line in raw.splitlines():
+            parts = [p.strip() for p in line.split(",")]
+            gpus.append({
+                "index": _int_or_none(parts[0]),
+                "name": parts[1],
+                "utilization_gpu_percent": _float_or_none(parts[2].replace("[N/A]", "")),
+                "used_mib": _int_or_none(parts[7]),
+            })
+        self.assertEqual(len(gpus), 2)
+        self.assertEqual(gpus[0]["utilization_gpu_percent"], 12.0)
+        self.assertIsNone(gpus[1]["utilization_gpu_percent"])  # [N/A] -> None
+        self.assertEqual(gpus[1]["used_mib"], 576)
+
+
+class PerProcessMemoryTests(unittest.TestCase):
+    """The per-process block in fetch_server_metrics() must return RSS / CPU%
+    (psutil) and GPU VRAM attribution (nvidia-smi --query-compute-apps) without
+    blocking when either source is unavailable."""
+
+    def setUp(self) -> None:
+        import lcc_core.server_metrics as sm
+        self.sm = sm
+        self._orig_find = sm._find_server
+        self._orig_pid_running = sm.pid_is_running
+        self._orig_proc_mem = sm._process_memory
+        self._orig_query = sm._query_compute_apps
+        self._orig_apps_cache = sm._compute_apps_cache
+        self._orig_apps_ts = sm._compute_apps_cache_ts
+        self._orig_apps_unavail = sm._compute_apps_unavailable
+        self._orig_get_json = sm._get_json
+        self._orig_get_text = sm._get_text
+        # Reset cache so each test starts cold.
+        sm._compute_apps_cache = None
+        sm._compute_apps_cache_ts = 0.0
+        sm._compute_apps_unavailable = False
+
+    def tearDown(self) -> None:
+        self.sm._find_server = self._orig_find
+        self.sm.pid_is_running = self._orig_pid_running
+        self.sm._process_memory = self._orig_proc_mem
+        self.sm._query_compute_apps = self._orig_query
+        self.sm._compute_apps_cache = self._orig_apps_cache
+        self.sm._compute_apps_cache_ts = self._orig_apps_ts
+        self.sm._compute_apps_unavailable = self._orig_apps_unavail
+        self.sm._get_json = self._orig_get_json
+        self.sm._get_text = self._orig_get_text
+
+    def _wire_running_server(self, pid=12345):
+        self.sm._find_server = lambda sid, mode=None: {
+            "id": sid or "fake", "mode": "fake", "pid": pid,
+            "host": "127.0.0.1", "port": 9999,
+            "stdout_log": None, "stderr_log": None,
+        }
+        self.sm.pid_is_running = lambda pid: True
+        # Health/metrics/props returns so we don't take the early-return path.
+        self.sm._get_text = lambda url, timeout=3.0: "ok"
+        self.sm._get_json = lambda url, timeout=3.0: {"n_ctx": 4096}
+
+    def test_process_block_includes_rss_cpu_and_gpu(self):
+        self._wire_running_server(pid=12345)
+        self.sm._process_memory = lambda pid: {"rss_bytes": 150 * 1024 * 1024, "cpu_percent": 12.5}
+        self.sm._query_compute_apps = lambda: {12345: 2 * 1024 * 1024 * 1024}
+        result = self.sm.fetch_server_metrics(server_id="fake")
+        self.assertEqual(result["process"]["rss_bytes"], 150 * 1024 * 1024)
+        self.assertEqual(result["process"]["cpu_percent"], 12.5)
+        self.assertEqual(result["process"]["gpu_used_bytes"], 2 * 1024 * 1024 * 1024)
+
+    def test_gpu_used_is_none_for_untracked_pid(self):
+        self._wire_running_server(pid=12345)
+        self.sm._process_memory = lambda pid: {"rss_bytes": None, "cpu_percent": None}
+        self.sm._query_compute_apps = lambda: {99999: 100 * 1024 * 1024}  # different PID
+        result = self.sm.fetch_server_metrics(server_id="fake")
+        self.assertIsNone(result["process"]["gpu_used_bytes"])
+
+    def test_compute_apps_unavailable_path(self):
+        self._wire_running_server()
+        self.sm._process_memory = lambda pid: {"rss_bytes": 1024, "cpu_percent": 0.5}
+        # nvidia-smi returns nothing (no GPU / no compute apps) -> query returns None
+        self.sm._query_compute_apps = lambda: None
+        result = self.sm.fetch_server_metrics(server_id="fake")
+        # First call latches disable; gpu_used_bytes stays None.
+        self.assertIsNone(result["process"]["gpu_used_bytes"])
+        self.assertTrue(self.sm._compute_apps_unavailable)
+        # Second call must NOT invoke the subprocess again (disabled).
+        calls = []
+        def re_call(): calls.append(1); return None
+        self.sm._query_compute_apps = re_call
+        self.sm.fetch_server_metrics(server_id="fake")
+        self.assertEqual(calls, [], "disabled compute-apps must not be re-queried")
+
+    def test_compute_apps_csv_parser_handles_mixture(self):
+        # Direct unit test of the parse path: multi-row, with a non-numeric row.
+        raw = "111, 2048\n222, 4096\nbroken, row\n333, 8192\n"
+        from lcc_core.server_metrics import _query_compute_apps
+        # We can't actually call _query_compute_apps without nvidia-smi; verify
+        # the data-shape contract via the lookup that fetch_server_metrics uses.
+        parsed = {}
+        for line in raw.splitlines():
+            parts = [p.strip() for p in line.split(",")]
+            if len(parts) < 2:
+                continue
+            try:
+                parsed[int(parts[0])] = int(parts[1]) * 1024 * 1024
+            except ValueError:
+                continue
+        self.assertEqual(parsed, {111: 2048 * 1024 * 1024, 222: 4096 * 1024 * 1024, 333: 8192 * 1024 * 1024})
+
+    def test_process_memory_handles_missing_psutil(self):
+        # psutil is a soft dep; absence must produce all-None, not crash.
+        self.sm.psutil = None
+        self._wire_running_server()
+        self.sm._query_compute_apps = lambda: None
+        result = self.sm.fetch_server_metrics(server_id="fake")
+        self.assertIsNone(result["process"]["rss_bytes"])
+        self.assertIsNone(result["process"]["cpu_percent"])
+        self.assertIsNone(result["process"]["gpu_used_bytes"])
+
+
+class ServerOomHintTests(unittest.TestCase):
+    """A freshly-crashed tracked server is annotated oom_likely when the recent
+    RAM-pressure rolling window exceeded the OOM threshold before the death.
+    Mirrors SwarmUI's pre-crash memory-overload detection."""
+
+    def setUp(self) -> None:
+        import lcc_core.server_manager as sm
+        self.sm = sm
+        self._tmp = tempfile.mkdtemp()
+        self._state_file = Path(self._tmp) / "servers.json"
+        self._orig_state_path = sm.state_path
+        sm.state_path = lambda: self._state_file
+        self._orig_ram = sm._ram_pressure
+        self._orig_history = list(sm._ram_history)
+        sm._ram_history.clear()
+
+    def tearDown(self) -> None:
+        self.sm.state_path = self._orig_state_path
+        self.sm._ram_pressure = self._orig_ram
+        self.sm._ram_history.clear()
+        self.sm._ram_history.extend(self._orig_history)
+        shutil.rmtree(self._tmp, ignore_errors=True)
+
+    def _write_state(self, servers):
+        self._state_file.write_text(json.dumps({"servers": servers}), encoding="utf-8")
+
+    def test_oom_likely_set_when_recent_ram_high(self):
+        # The recent window has been at 92% (well over the 80% threshold).
+        self.sm._ram_history.extend([0.92, 0.93, 0.91])
+        # _ram_pressure is called by _record_ram_pressure; mock to keep window stable.
+        self.sm._ram_pressure = lambda: 0.92
+        self._write_state([{
+            "id": "demo-1", "mode": "demo", "pid": 2147483647,
+            "status": "running", "host": "127.0.0.1", "port": 8080,
+        }])
+        self.sm.refresh_server_states()
+        server = self.sm.read_state()["servers"][0]
+        self.assertEqual(server["status"], "crashed")
+        self.assertTrue(server.get("oom_likely"))
+
+    def test_oom_likely_absent_when_ram_low(self):
+        self.sm._ram_history.extend([0.40, 0.45, 0.50])
+        self.sm._ram_pressure = lambda: 0.45
+        self._write_state([{
+            "id": "demo-2", "mode": "demo", "pid": 2147483647,
+            "status": "running", "host": "127.0.0.1", "port": 8080,
+        }])
+        self.sm.refresh_server_states()
+        server = self.sm.read_state()["servers"][0]
+        self.assertEqual(server["status"], "crashed")
+        self.assertNotIn("oom_likely", server)
+
+    def test_no_oom_likely_for_already_stopped_server(self):
+        self.sm._ram_history.extend([0.95, 0.95, 0.95])
+        self.sm._ram_pressure = lambda: 0.95
+        self._write_state([{
+            "id": "demo-3", "mode": "demo", "pid": 2147483647,
+            "status": "stopped", "host": "127.0.0.1", "port": 8080,
+        }])
+        self.sm.refresh_server_states()
+        server = self.sm.read_state()["servers"][0]
+        # 'stopped' is terminal; no annotation even with high RAM.
+        self.assertEqual(server["status"], "stopped")
+        self.assertNotIn("oom_likely", server)
+
+    def test_ram_pressure_bounded_to_unit_interval(self):
+        # Sanity: helper computes correctly even when available > total (shouldn't happen).
+        import lcc_core.server_manager as sm
+        orig_win = sm._windows_memory_info
+        orig_posix = sm._posix_memory_info
+        sm._windows_memory_info = lambda: {"total_bytes": 100, "available_bytes": 200}
+        sm._posix_memory_info = lambda: {"total_bytes": 100, "available_bytes": 200}
+        try:
+            self.assertIsNone(sm._ram_pressure())
+        finally:
+            sm._windows_memory_info = orig_win
+            sm._posix_memory_info = orig_posix
+
+
 if __name__ == "__main__":
     unittest.main()

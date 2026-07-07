@@ -7,6 +7,88 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Live server metrics.** A new `GET /api/servers/{server_id}/metrics` endpoint
+  polls a running llama-server's `/metrics` (Prometheus), `/health`, and `/props`
+  for ground-truth KV-cache usage ratio, KV tokens, active/processing slots, and
+  prompt/decode tokens-per-second — turning the pre-launch estimate into
+  measurable runtime numbers. Returns the stderr tail when the server is
+  unreachable so the dashboard can show why.
+  ([server_metrics.py](lcc_core/server_metrics.py), [app.py](lcc_api/app.py))
+- **Crash/exit watchdog.** A tracked server whose PID died while its status was
+  still "running"/"starting" is now flagged `status: "crashed"` with the last
+  stderr lines and an exit timestamp, instead of being silently pruned on the
+  next `GET /api/servers`. The dashboard can surface the failure and offer
+  restart; terminal entries still age out via the existing server-history limit.
+  ([server_manager.py](lcc_core/server_manager.py))
+- **Live host hardware panel.** A new `GET /api/system/live` endpoint polls
+  `nvidia-smi` (utilization.gpu, utilization.memory, temperature.gpu, memory
+  total/free/used) and system RAM on demand, TTL-cached behind a lock so a
+  dashboard polling every few seconds never fans out into overlapping
+  subprocesses. First-time failure latches a graceful disable so a faulted
+  driver doesn't spam. Shipped with a matching `#live-hardware` dashboard panel
+  that polls at 3s, pauses when the tab is hidden or the panel is collapsed,
+  and renders GPU util/temp/VRAM bars plus a system-RAM bar with green/amber/red
+  thresholds. Pattern ported from SwarmUI's `NvidiaUtil.QueryNvidia` +
+  request-driven equivalent of its `SystemStatusMonitor` tick.
+  ([hardware.py](lcc_core/hardware.py), [app.py](lcc_api/app.py),
+  [index.html](lcc_api/static/index.html), [app.js](lcc_api/static/app.js),
+  [styles.css](lcc_api/static/styles.css))
+- **Per-process memory gauge for tracked servers.** The existing
+  `GET /api/servers/{id}/metrics` endpoint now also returns a `process` block
+  with RSS / CPU% (portable, via `psutil`) and per-PID GPU VRAM attribution
+  (NVIDIA only, via shared TTL-cached `nvidia-smi --query-compute-apps`).
+  Closes the ROADMAP "Live process memory gauge" item. psutil is a soft
+  dependency: when missing, every per-process field is None instead of erroring.
+  ([server_metrics.py](lcc_core/server_metrics.py))
+- **Crash watchdog OOM hint.** `refresh_server_states()` now appends each
+  refresh's RAM used/total ratio to a short rolling window (10 samples,
+  ~30s at the 3s UI poll cadence) and annotates freshly-crashed servers with
+  `oom_likely: true` when the window peak exceeded 80%. The dashboard can
+  surface "your model likely OOM'd" without needing per-process VRAM
+  attribution, mirroring SwarmUI's `NetworkBackendUtils` pre-crash
+  memory-overload heuristic.
+  ([server_manager.py](lcc_core/server_manager.py))
+
+### Changed
+
+- **psutil added as a soft dependency** (>=5.9.0) in `requirements.txt` and
+  `pyproject.toml`. Server-level metrics work without it; only the per-process
+  block needs it.
+- **Expanded KV-cache quant ladder for Smart Fit.** The search now explores
+  `q5_0`, `q4_1`, and `iq4_nl` as rungs (in addition to `f16`/`q8_0`/`q5_1`/
+  `q4_0`), giving the asymmetric K/V tuner finer memory/quality landing spots.
+  The estimator already priced these; this is a search-space change only.
+  ([smart_tune.py](lcc_core/smart_tune.py))
+- **NVFP4 and MXFP4 KV-cache sizing + Smart Fit rungs.** The estimator now
+  prices the 4-bit float formats (NVFP4 = 36 B/64, MXFP4 = 17 B/32 per llama.cpp's
+  `block_nvfp4` / `block_mxfp4` layouts). On NVIDIA CUDA GPUs that
+  hardware-accelerate them (Blackwell, Hopper, Ada, A100, L4/L40), Smart Fit
+  adds `nvfp4`/`mxfp4` to the cache ladder and prefers the float format over
+  integer `q4_0` at the same byte rate. Non-NVIDIA hardware is unaffected.
+  ([estimates.py](lcc_core/estimates.py), [smart_tune.py](lcc_core/smart_tune.py))
+- **Hybrid-SSM attention-layer detection is more robust.** The tensor scan in
+  `_extract_n_attn_layers` now recognizes every layer-naming convention the
+  layer-count scan uses (`blk.`/`block.`/`model.layers.`/`transformer.layer.`/
+  `h[N]`), so KV-cache sizing for hybrid SSM+attention models (Qwen3.5, Jamba)
+  won't fall back to the full block count when a GGUF uses non-`blk.` naming.
+  Attention-tensor detection also matches HF-style `k_proj`/`v_proj` names.
+  ([estimates.py](lcc_core/estimates.py))
+
+### Fixed
+
+- **`_cache_bytes` two-tier logic is now documented and extends to FP4.** The
+  tier-2 bare-prefix fallback (for unqualified quants like `q8`/`q5`/`q4`) is
+  now clearly separated from the exact-name dict lookup, and handles `nvfp`/
+  `mxfp` prefixes. No behavior change for existing inputs.
+  ([estimates.py](lcc_core/estimates.py))
+- **Typo: `_estimate_gpu_gpu_speed` renamed.** The bandwidth-ceiling helper is
+  now `_estimate_gpu_bandwidth_speed` (private, no external callers).
+  ([estimates.py](lcc_core/estimates.py))
+- **Duplicate ROADMAP line removed**, and the stray `odysseus_comparison.md`
+  scratch doc moved under `docs/`.
+
 ## [0.13.0] - 2026-07-02
 
 ### Added

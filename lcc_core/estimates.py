@@ -19,8 +19,12 @@ QUANT_FACTORS = {
     "F32": 0.24,
 }
 
-# Bytes per element, from llama.cpp block sizes (block of 32 elements):
+# Bytes per element, from llama.cpp block sizes (block of 32 elements unless noted):
 # q8_0 = 34/32, q5_1 = 24/32, q5_0 = 22/32, q4_1 = 20/32, q4_0 = iq4_nl = 18/32.
+# nvfp4 = 36/64 (block of 64: 4 sub-block UE4M3 scales + 32 B packed E2M1),
+# mxfp4 = 17/32 (1 E8M0 block scale + 16 B packed E2M1). The two 4-bit float
+# formats are NVIDIA/Blackwell-hardware-accelerated for KV cache; NVFP4 matches
+# Q4_0's byte rate but with float values instead of integers.
 CACHE_BYTES = {
     "F32": 4.0,
     "F16": 2.0,
@@ -31,6 +35,8 @@ CACHE_BYTES = {
     "Q4_1": 0.625,
     "Q4_0": 0.5625,
     "IQ4_NL": 0.5625,
+    "NVFP4": 0.5625,
+    "MXFP4": 0.53125,
 }
 
 # Fallback KV-cache scaling when exact GGUF dims are unavailable. The exact
@@ -45,7 +51,9 @@ KV_FALLBACK_FACTOR = 0.012
 # NVIDIA consumer GPUs; folded into the accelerator estimate.
 _CUDA_CONTEXT_OVERHEAD_MIB = 300.0
 
-# GGUF tensor name patterns that reveal n_layer
+# GGUF tensor name patterns that reveal n_layer. Compiled into one alternation
+# so the layer-index scan and the attention-layer scan always agree on naming,
+# covering blk.N / block.N / model.layers.N / transformer.layer.N / h[N].
 _N_LAYER_PATTERNS = [
     r"\.h\[(\d+)\]\.",
     r"transformer\.layer\.(\d+)\.",
@@ -53,6 +61,24 @@ _N_LAYER_PATTERNS = [
     r"blk\.(\d+)\.",
     r"block\.(\d+)\.",
 ]
+_LAYER_INDEX_RE = re.compile("|".join(_N_LAYER_PATTERNS))
+
+
+def _layer_index_from_tensor(name: str) -> int | None:
+    """Extract the transformer-layer index from a tensor name, or None.
+
+    Works across every naming convention in ``_N_LAYER_PATTERNS`` so the
+    attention-layer count isn't silently lost on architectures that use
+    ``model.layers.N`` / ``h[N]`` instead of ``blk.N``. The combined regex
+    has one capture group per alternative, so we return the first that bound.
+    """
+    m = _LAYER_INDEX_RE.search(name)
+    if not m:
+        return None
+    for group in m.groups():
+        if group is not None:
+            return int(group)
+    return None
 
 
 def _gguf_field_value(field):
@@ -114,13 +140,9 @@ def _extract_n_layer(reader, arch: str | None) -> int | None:
     max_layer = -1
     for tensor in reader.tensors:
         name = tensor.name
-        for pattern in _N_LAYER_PATTERNS:
-            m = re.search(pattern, name)
-            if m:
-                idx = int(m.group(1))
-                if idx > max_layer:
-                    max_layer = idx
-                break
+        idx = _layer_index_from_tensor(name)
+        if idx is not None and idx > max_layer:
+            max_layer = idx
     if max_layer >= 0:
         return max_layer + 1
     return None
@@ -184,10 +206,24 @@ def _extract_n_attn_layers(reader, arch: str | None, n_layer: int | None) -> int
     attn_layers: set[int] = set()
     for tensor in reader.tensors:
         name = tensor.name
-        if name.endswith(".attn_k.weight") or name.endswith(".attn_v.weight"):
-            m = re.search(r"(?:blk|block)\.(\d+)\.", name)
-            if m:
-                attn_layers.add(int(m.group(1)))
+        # An attention layer exposes per-head K/V projections; an SSM/Mamba
+        # layer has a fixed recurrent state instead and lacks these. Match
+        # the standard ``.attn_k.weight`` / ``.attn_v.weight`` suffix plus the
+        # HF-style ``k_proj`` / ``v_proj`` names, so the layer count isn't
+        # undercounted on architectures that don't use ``blk.`` tensor naming.
+        is_attn = (
+            name.endswith(".attn_k.weight")
+            or name.endswith(".attn_v.weight")
+            or ".k_proj." in name
+            or ".v_proj." in name
+            or "attn_k" in name
+            or "attn_v" in name
+        )
+        if not is_attn:
+            continue
+        idx = _layer_index_from_tensor(name)
+        if idx is not None:
+            attn_layers.add(idx)
     if attn_layers:
         return len(attn_layers)
 
@@ -557,9 +593,17 @@ def _layer_fraction(params: dict[str, Any], model: dict[str, Any] | None = None)
 
 def _cache_bytes(cache_type: Any) -> float:
     value = str(cache_type or "f16").upper()
+    # Tier 1: exact KV-cache type names (Q8_0, Q5_0, Q5_1, ...). ``startswith``
+    # only matches when ``value`` is key or longer (e.g. "Q5_0" matches "Q5_0"),
+    # so bare prefixes like "Q5" do NOT hit this branch — they fall to tier 2.
     for key, bytes_per_value in CACHE_BYTES.items():
         if value == key or value.startswith(key):
             return bytes_per_value
+    # Tier 2: bare/generic quant prefixes (Q8, Q5, Q4, Q6) — a conservative
+    # approximation when the specific block layout isn't named. These intentionally
+    # shadow nothing in the dict (tier 1 already caught specific names); they only
+    # apply to unqualified prefixes, so a future dict addition can't be silently
+    # regressed by them.
     if value.startswith("Q8"):
         return 1.0625
     if value.startswith("Q6"):
@@ -568,6 +612,10 @@ def _cache_bytes(cache_type: Any) -> float:
         return 0.75
     if value.startswith("Q4") or value.startswith("IQ4"):
         return 0.5625
+    if value.startswith("NVFP"):
+        return 0.5625
+    if value.startswith("MXFP"):
+        return 0.53125
     return 2.0
 
 
@@ -809,7 +857,7 @@ def estimate_tokens_per_second(
     # actually binds — having the numbers present is not the same as using them.
     bandwidth_bound = False
     if layer_fraction >= 1.0 and gpu_bandwidth_gbps and gpu_bandwidth_gbps > 0:
-        ceiling = _estimate_gpu_gpu_speed(gpu_bandwidth_gbps, gpu_name, model_params_b, quant_factor, layer_fraction)
+        ceiling = _estimate_gpu_bandwidth_speed(gpu_bandwidth_gbps, gpu_name, model_params_b, quant_factor, layer_fraction)
         if ceiling > 0 and ceiling < blended:
             blended = ceiling
             bandwidth_bound = True
@@ -857,7 +905,7 @@ def estimate_tokens_per_second(
     }
 
 
-def _estimate_gpu_gpu_speed(gpu_bandwidth_gbps: float, gpu_name: str, model_params_b: float, quant_factor: float, layer_fraction: float) -> float:
+def _estimate_gpu_bandwidth_speed(gpu_bandwidth_gbps: float, gpu_name: str, model_params_b: float, quant_factor: float, layer_fraction: float) -> float:
     """Estimate TPS based on GPU memory bandwidth bound."""
     if model_params_b <= 0:
         return 0.0
@@ -885,7 +933,7 @@ def _estimate_ram_spill_speed(ram_bandwidth_gbps: float, model_params_b: float, 
     ram_bandwidth_gbps is GB/s (bytes). Each token must stream the spilled
     fraction of the weights through host RAM (the slow path that dominates),
     so tps_ceiling = (RAM bytes/s) / (spilled model bytes per token). Weight
-    size assumes ~4.8 bits/param (Q4-class), matching _estimate_gpu_gpu_speed.
+    size assumes ~4.8 bits/param (Q4-class), matching _estimate_gpu_bandwidth_speed.
     """
     if ram_bandwidth_gbps <= 0 or model_params_b <= 0:
         return 0.0

@@ -5,12 +5,14 @@ import os
 import subprocess
 import time
 import urllib.request
+from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from .backends import detect_llama_cpp, detect_runtime
 from .config import AppConfig
+from .hardware import _windows_memory_info, _posix_memory_info
 from .llama_args import LaunchCommand, build_llama_server_args
 from .paths import cache_dir, find_project_root, is_windows
 from .profile_resolver import ResolvedProfile, resolve_profiles
@@ -108,7 +110,7 @@ def tail_file(path: str | Path | None, lines: int = 120) -> str:
 
 
 def list_servers() -> list[dict[str, Any]]:
-    prune_stale_servers()
+    refresh_server_states()
     state = read_state()
     servers = []
     for server in state.get("servers", []):
@@ -118,13 +120,82 @@ def list_servers() -> list[dict[str, Any]]:
     return servers
 
 
-def prune_stale_servers() -> None:
-    """Remove entries for PIDs that are no longer running."""
+# A server is considered to have died unexpectedly when its recorded status says
+# it should be live (running/starting) but the OS reports the PID is gone. These
+# are flagged "crashed" (with the last stderr lines captured) so the dashboard
+# can surface the failure and offer restart, instead of silently dropping them.
+_LIVE_STATUSES = {"running", "starting", "ready"}
+
+# Threshold above which a freshly-crashed server is annotated as likely-OOM
+# based on the recent RAM-pressure rolling window. 0.80 mirrors SwarmUI's
+# NetworkBackendUtils pre-crash memory-overload detection heuristic.
+_OOM_RAM_THRESHOLD = 0.80
+_RAM_HISTORY_MAX = 10  # last ~10 refreshes (~30s at the 3s UI poll cadence)
+
+
+def _ram_pressure() -> float | None:
+    """Current RAM used/total ratio, or None when capacity is unknown."""
+    ram = _windows_memory_info() if is_windows() else _posix_memory_info()
+    total = ram.get("total_bytes")
+    available = ram.get("available_bytes")
+    if not total or available is None or total <= 0:
+        return None
+    used = total - available
+    if used < 0:
+        return None
+    return min(1.0, used / total)
+
+
+# Rolling window of recent RAM-pressure readings, drained by refresh_server_states
+# and inspected when a server transitions to "crashed" to surface a likely-OOM
+# annotation. Mirrors SwarmUI's HardwareInfoQueue of recent reports.
+_ram_history: deque[float] = deque(maxlen=_RAM_HISTORY_MAX)
+
+
+def _record_ram_pressure() -> None:
+    ratio = _ram_pressure()
+    if ratio is not None:
+        _ram_history.append(ratio)
+
+
+def _peak_recent_ram_pressure() -> float:
+    """Peak RAM-pressure ratio seen in the rolling window, or 0 when empty."""
+    return max(_ram_history) if _ram_history else 0.0
+
+
+def refresh_server_states() -> None:
+    """Detect crashed servers and prune only unsalvageable entries.
+
+    A tracked server whose PID disappeared while its status was still "live" is
+    marked ``crashed`` with a snapshot of its last stderr lines and the exit
+    time — once, so the dashboard can show it and offer a restart. Entries with
+    no PID, or already in a terminal state, are left for ``trim_server_history``
+    to age out by count.
+
+    On every refresh the current RAM pressure is appended to a short rolling
+    window; a fresh "crashed" transition also receives an ``oom_likely`` flag
+    when the window peak exceeded the OOM threshold. This gives the dashboard
+    a "your model likely OOM'd" hint without requiring per-process VRAM
+    attribution (which the per-server metrics endpoint already covers when the
+    server is alive).
+    """
+    _record_ram_pressure()
     state = read_state()
     servers = state.get("servers", [])
-    kept = [s for s in servers if pid_is_running(s.get("pid")) or not s.get("pid")]
-    if len(kept) != len(servers):
-        state["servers"] = kept
+    changed = False
+    for server in servers:
+        pid = server.get("pid")
+        if not pid:
+            continue
+        if server.get("status") in _LIVE_STATUSES and not pid_is_running(pid):
+            server["status"] = "crashed"
+            server["running"] = False
+            server["crashed_at"] = _now()
+            server["last_stderr"] = tail_file(server.get("stderr_log"), lines=40)
+            if _peak_recent_ram_pressure() >= _OOM_RAM_THRESHOLD:
+                server["oom_likely"] = True
+            changed = True
+    if changed:
         write_state(state)
 
 

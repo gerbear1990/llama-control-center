@@ -204,6 +204,12 @@ def get_system() -> dict[str, Any]:
     return detect_system_hardware()
 
 
+@app.get("/api/system/live")
+def get_system_live() -> dict[str, Any]:
+    from lcc_core.hardware import live_system_status
+    return live_system_status()
+
+
 @app.post("/api/profiles")
 def post_profiles(request: InventoryRequest) -> dict[str, Any]:
     payload = resolved_inventory(
@@ -230,12 +236,21 @@ def prepare_server(request: StartRequest) -> dict[str, Any]:
 
 @app.get("/api/servers")
 def get_servers() -> dict[str, Any]:
-    from lcc_core.server_manager import prune_stale_servers, trim_server_history
+    from lcc_core.server_manager import refresh_server_states, trim_server_history
     from lcc_core.config import AppConfig
-    prune_stale_servers()
+    refresh_server_states()
     config = AppConfig.load()
     trim_server_history(config.server_history_limit)
     return {"servers": list_servers()}
+
+
+@app.get("/api/servers/{server_id}/metrics")
+def get_server_metrics(server_id: str) -> dict[str, Any]:
+    from lcc_core.server_metrics import fetch_server_metrics
+    result = fetch_server_metrics(server_id=server_id)
+    if not result.get("success"):
+        raise HTTPException(status_code=400, detail=result)
+    return result
 
 
 @app.post("/api/servers/start")
