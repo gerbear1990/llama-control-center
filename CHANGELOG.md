@@ -7,8 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-07-08
+
 ### Added
 
+- **Smart Fit recommends threads and batch sizes.** `auto_tune_fit()` now sets
+  `-t`/`-tb` from detected CPU core counts (a small fixed pool for decode when
+  the model is fully offloaded, since decode is memory-bandwidth-bound and gains
+  nothing from extra threads; physical-cores-minus-one plus full logical cores
+  for prompt processing when layers stay on the CPU) and grows `-b`/`-ub` into
+  whatever memory headroom is left after context and KV-cache quality are
+  settled, without ever shrinking below the caller's starting batch.
+  ([smart_tune.py](lcc_core/smart_tune.py))
+- **Expanded KV-cache quant ladder for Smart Fit.** The search now explores
+  `q5_0`, `q4_1`, and `iq4_nl` as rungs (in addition to `f16`/`q8_0`/`q5_1`/
+  `q4_0`), giving the asymmetric K/V tuner finer memory/quality landing spots.
+  The estimator already priced these; this is a search-space change only.
+  ([smart_tune.py](lcc_core/smart_tune.py))
+- **NVFP4 and MXFP4 KV-cache sizing + Smart Fit rungs.** The estimator now
+  prices the 4-bit float formats (NVFP4 = 36 B/64, MXFP4 = 17 B/32 per llama.cpp's
+  `block_nvfp4` / `block_mxfp4` layouts). On NVIDIA CUDA GPUs that
+  hardware-accelerate them (Blackwell, Hopper, Ada, A100, L4/L40), Smart Fit
+  adds `nvfp4`/`mxfp4` to the cache ladder and prefers the float format over
+  integer `q4_0` at the same byte rate. Non-NVIDIA hardware is unaffected.
+  ([estimates.py](lcc_core/estimates.py), [smart_tune.py](lcc_core/smart_tune.py))
 - **Live server metrics.** A new `GET /api/servers/{server_id}/metrics` endpoint
   polls a running llama-server's `/metrics` (Prometheus), `/health`, and `/props`
   for ground-truth KV-cache usage ratio, KV tokens, active/processing slots, and
@@ -53,57 +75,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **psutil added as a soft dependency** (>=5.9.0) in `requirements.txt` and
-  `pyproject.toml`. Server-level metrics work without it; only the per-process
-  block needs it.
-- **Expanded KV-cache quant ladder for Smart Fit.** The search now explores
-  `q5_0`, `q4_1`, and `iq4_nl` as rungs (in addition to `f16`/`q8_0`/`q5_1`/
-  `q4_0`), giving the asymmetric K/V tuner finer memory/quality landing spots.
-  The estimator already priced these; this is a search-space change only.
-  ([smart_tune.py](lcc_core/smart_tune.py))
-- **NVFP4 and MXFP4 KV-cache sizing + Smart Fit rungs.** The estimator now
-  prices the 4-bit float formats (NVFP4 = 36 B/64, MXFP4 = 17 B/32 per llama.cpp's
-  `block_nvfp4` / `block_mxfp4` layouts). On NVIDIA CUDA GPUs that
-  hardware-accelerate them (Blackwell, Hopper, Ada, A100, L4/L40), Smart Fit
-  adds `nvfp4`/`mxfp4` to the cache ladder and prefers the float format over
-  integer `q4_0` at the same byte rate. Non-NVIDIA hardware is unaffected.
-  ([estimates.py](lcc_core/estimates.py), [smart_tune.py](lcc_core/smart_tune.py))
-- **Hybrid-SSM attention-layer detection is more robust.** The tensor scan in
-  `_extract_n_attn_layers` now recognizes every layer-naming convention the
-  layer-count scan uses (`blk.`/`block.`/`model.layers.`/`transformer.layer.`/
-  `h[N]`), so KV-cache sizing for hybrid SSM+attention models (Qwen3.5, Jamba)
-  won't fall back to the full block count when a GGUF uses non-`blk.` naming.
-  Attention-tensor detection also matches HF-style `k_proj`/`v_proj` names.
-  ([estimates.py](lcc_core/estimates.py))
-
-### Fixed
-
-- **`_cache_bytes` two-tier logic is now documented and extends to FP4.** The
-  tier-2 bare-prefix fallback (for unqualified quants like `q8`/`q5`/`q4`) is
-  now clearly separated from the exact-name dict lookup, and handles `nvfp`/
-  `mxfp` prefixes. No behavior change for existing inputs.
-  ([estimates.py](lcc_core/estimates.py))
-- **Typo: `_estimate_gpu_gpu_speed` renamed.** The bandwidth-ceiling helper is
-  now `_estimate_gpu_bandwidth_speed` (private, no external callers).
-  ([estimates.py](lcc_core/estimates.py))
-- **Duplicate ROADMAP line removed**, and the stray `odysseus_comparison.md`
-  scratch doc moved under `docs/`.
-
-## [0.13.0] - 2026-07-02
-
-### Added
-
-- **Smart Fit recommends threads and batch sizes.** `auto_tune_fit()` now sets
-  `-t`/`-tb` from detected CPU core counts (a small fixed pool for decode when
-  the model is fully offloaded, since decode is memory-bandwidth-bound and gains
-  nothing from extra threads; physical-cores-minus-one plus full logical cores
-  for prompt processing when layers stay on the CPU) and grows `-b`/`-ub` into
-  whatever memory headroom is left after context and KV-cache quality are
-  settled, without ever shrinking below the caller's starting batch.
-  ([smart_tune.py](lcc_core/smart_tune.py))
-
-### Changed
-
 - **KV-cache quant search leans harder toward V being more compact than K.**
   The K/V fidelity weighting moved from 0.6/0.4 to 0.7/0.3, so when memory is
   short the search sheds V-cache precision before K, freeing headroom for
@@ -114,6 +85,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   existing 16-bit-vs-quantized cache weighting is unchanged while CUDA GPUs
   known to run BF16 well get the better 16-bit KV default.
   ([smart_tune.py](lcc_core/smart_tune.py))
+- **Hybrid-SSM attention-layer detection is more robust.** The tensor scan in
+  `_extract_n_attn_layers` now recognizes every layer-naming convention the
+  layer-count scan uses (`blk.`/`block.`/`model.layers.`/`transformer.layer.`/
+  `h[N]`), so KV-cache sizing for hybrid SSM+attention models (Qwen3.5, Jamba)
+  won't fall back to the full block count when a GGUF uses non-`blk.` naming.
+  Attention-tensor detection also matches HF-style `k_proj`/`v_proj` names.
+  ([estimates.py](lcc_core/estimates.py))
+- **psutil added as a soft dependency** (>=5.9.0) in `requirements.txt` and
+  `pyproject.toml`. Server-level metrics work without it; only the per-process
+  block needs it.
 
 ### Fixed
 
@@ -130,6 +111,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `layer_fraction` between the two. A pure-CPU run (`gpu_layers: 0`) also now
   counts the compute buffer against RAM instead of nothing.
   ([estimates.py](lcc_core/estimates.py))
+- **`_cache_bytes` two-tier logic is now documented and extends to FP4.** The
+  tier-2 bare-prefix fallback (for unqualified quants like `q8`/`q5`/`q4`) is
+  now clearly separated from the exact-name dict lookup, and handles `nvfp`/
+  `mxfp` prefixes. No behavior change for existing inputs.
+  ([estimates.py](lcc_core/estimates.py))
+- **Typo: `_estimate_gpu_gpu_speed` renamed.** The bandwidth-ceiling helper is
+  now `_estimate_gpu_bandwidth_speed` (private, no external callers).
+  ([estimates.py](lcc_core/estimates.py))
+- **Duplicate ROADMAP line removed**, and the stray `odysseus_comparison.md`
+  scratch doc moved under `docs/`.
 
 ## [0.12.1] - 2026-06-28
 
