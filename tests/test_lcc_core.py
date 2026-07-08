@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import socket
 import tempfile
 import unittest
 from pathlib import Path
@@ -1504,6 +1505,108 @@ class ServerOomHintTests(unittest.TestCase):
         finally:
             sm._windows_memory_info = orig_win
             sm._posix_memory_info = orig_posix
+
+
+class PortAvailabilityTests(unittest.TestCase):
+    """Pre-launch TCP probe helpers in server_manager: _is_port_free,
+    _next_free_port, and _classify_launch_error."""
+
+    def test_port_free_returns_true_when_nothing_bound(self):
+        from lcc_core.server_manager import _is_port_free
+        # Find a port nothing is bound to. We pick a high random-ish port and
+        # trust the kernel not to have anything on it for the test run.
+        candidate = 19000
+        attempts = 0
+        while not _is_port_free("127.0.0.1", candidate) and attempts < 50:
+            candidate += 1
+            attempts += 1
+        self.assertTrue(_is_port_free("127.0.0.1", candidate))
+
+    def test_port_free_returns_false_when_listener_bound(self):
+        from lcc_core.server_manager import _is_port_free
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.bind(("127.0.0.1", 0))
+            port = sock.getsockname()[1]
+            sock.listen(1)
+            self.assertFalse(_is_port_free("127.0.0.1", port))
+        finally:
+            sock.close()
+
+    def test_port_free_handles_zero_and_negative(self):
+        from lcc_core.server_manager import _is_port_free
+        # An invalid port shouldn't raise; treat as "not free" so callers
+        # fail loud rather than silently spawning into a bad port.
+        self.assertFalse(_is_port_free("127.0.0.1", 0))
+        self.assertFalse(_is_port_free("127.0.0.1", -1))
+
+    def test_next_free_port_skips_bound_ports(self):
+        from lcc_core.server_manager import _next_free_port, _is_port_free
+        # Bind two consecutive ports so the search must skip past them.
+        first = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        second = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        first.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        second.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            first.bind(("127.0.0.1", 0))
+            p1 = first.getsockname()[1]
+            first.listen(1)
+            second.bind(("127.0.0.1", p1 + 1))
+            second.listen(1)
+            # The first free port at or above p1 must be p1+2.
+            self.assertEqual(_next_free_port("127.0.0.1", p1), p1 + 2)
+            self.assertFalse(_is_port_free("127.0.0.1", p1))
+            self.assertFalse(_is_port_free("127.0.0.1", p1 + 1))
+        finally:
+            first.close()
+            second.close()
+
+    def test_next_free_port_returns_none_when_all_bound(self):
+        from lcc_core.server_manager import _next_free_port
+        # Bind two consecutive ports; with max_tries=2 we probe only those
+        # two. Both are bound, so the search must give up and return None
+        # rather than picking a wildly high port.
+        first = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        second = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        first.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        second.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            first.bind(("127.0.0.1", 0))
+            port = first.getsockname()[1]
+            first.listen(1)
+            second.bind(("127.0.0.1", port + 1))
+            second.listen(1)
+            self.assertIsNone(_next_free_port("127.0.0.1", port, max_tries=2))
+        finally:
+            first.close()
+            second.close()
+
+    def test_classifier_recognises_port_in_use(self):
+        from lcc_core.server_manager import _classify_launch_error
+        self.assertIn("Port", _classify_launch_error(
+            "E srv  start: couldn't bind HTTP server socket, hostname: 127.0.0.1, port: 8081"
+        ))
+        self.assertIn("Port", _classify_launch_error(
+            "E bind: address already in use on 0.0.0.0:8081"
+        ))
+
+    def test_classifier_recognises_oom(self):
+        from lcc_core.server_manager import _classify_launch_error
+        hint = _classify_launch_error("E cudaMalloc failed: out of memory")
+        self.assertIsNotNone(hint)
+        self.assertIn("GPU out of memory", hint)
+
+    def test_classifier_recognises_missing_model(self):
+        from lcc_core.server_manager import _classify_launch_error
+        self.assertIn("Model file", _classify_launch_error(
+            "E failed to load model: No such file or directory"
+        ))
+
+    def test_classifier_returns_none_for_unknown_stderr(self):
+        from lcc_core.server_manager import _classify_launch_error
+        self.assertIsNone(_classify_launch_error(""))
+        self.assertIsNone(_classify_launch_error("some unrelated noise from llama-server"))
 
 
 if __name__ == "__main__":

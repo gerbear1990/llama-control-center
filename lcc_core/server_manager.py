@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 import subprocess
 import time
 import urllib.request
@@ -107,6 +108,142 @@ def tail_file(path: str | Path | None, lines: int = 120) -> str:
             return "".join(f.readlines()[-lines:])
     except OSError as exc:
         return f"Could not read {file_path}: {exc}"
+
+
+# Attempt to bind our own socket to ``host:port``. With ``SO_REUSEADDR`` off
+# (which we explicitly don't set on the probe), this fails fast with
+# ``EADDRINUSE``/``WSAEADDRINUSE`` when anything else is bound, and
+# succeeds when nothing is. Closing the probe socket immediately releases
+# the address — the kernel doesn't keep it bound because we never call
+# ``listen()`` on it.
+#
+# Why not a TCP connect probe? Exhausting the listener's accept() backlog
+# on a busy port can make subsequent probes return ``ECONNREFUSED``,
+# which a connect-based probe would misinterpret as "free". The bind
+# probe doesn't have that failure mode.
+def _is_port_free(host: str, port: int, *, timeout: float = 0.6) -> bool:
+    if not port or port <= 0:
+        return False
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        # No SO_REUSEADDR — we WANT bind() to fail on a busy port.
+        probe.settimeout(timeout)
+        probe.bind((host, int(port)))
+    except OSError:
+        return False
+    finally:
+        probe.close()
+    return True
+
+
+def _next_free_port(host: str, start: int, *, max_tries: int = 50) -> int | None:
+    """Find the next free TCP port at or above ``start`` by probing each.
+
+    Returns ``None`` when every port in the [start, start+max_tries) window
+    is bound; callers should fall back to letting llama-server report its
+    own bind error rather than suggesting an unbounded scan.
+    """
+    for offset in range(max_tries):
+        candidate = int(start) + offset
+        if _is_port_free(host, candidate):
+            return candidate
+    return None
+
+
+# Best-effort lookup of which process is listening on ``host:port``.
+# Returns a dict ``{pid, process_name}`` or ``None`` when nothing bound or
+# the platform tools (lsof / netstat) aren't available.
+def _port_in_use_info(host: str, port: int) -> dict[str, Any] | None:
+    if not port:
+        return None
+    try:
+        if is_windows():
+            result = subprocess.run(
+                ["netstat", "-ano", "-p", "TCP"],
+                capture_output=True, text=True, timeout=3, check=False,
+            )
+            if result.returncode != 0:
+                return None
+            target = f"  0.0.0.0:{int(port)}          "  # IPv4 wildcard
+            # Also accept the explicit loopback binding.
+            alt = f"  {host}:{int(port)}          "
+            for raw_line in result.stdout.splitlines():
+                line = raw_line.strip()
+                if not (line.startswith("TCP") and (target in line or alt in line)):
+                    continue
+                parts = line.split()
+                if len(parts) < 5 or parts[3] != "LISTENING":
+                    continue
+                pid = parts[-1]
+                if not pid.isdigit():
+                    continue
+                name = _tasklist_name(pid)
+                return {"pid": int(pid), "process_name": name}
+            return None
+        # POSIX: lsof is the most portable listener lookup.
+        result = subprocess.run(
+            ["lsof", "-nP", f"-iTCP:{int(port)}", "-sTCP:LISTEN", "-t"],
+            capture_output=True, text=True, timeout=3, check=False,
+        )
+        if result.returncode != 0:
+            return None
+        pid_text = result.stdout.strip().splitlines()
+        if not pid_text:
+            return None
+        pid = int(pid_text[0])
+        name = _ps_name(pid)
+        return {"pid": pid, "process_name": name}
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+
+
+def _tasklist_name(pid: str) -> str | None:
+    """Process name for a Windows PID via tasklist (best-effort)."""
+    try:
+        result = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+            capture_output=True, text=True, timeout=3, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
+    first = result.stdout.splitlines()[0].strip().strip('"')
+    return first or None
+
+
+def _ps_name(pid: int) -> str | None:
+    """Process name for a POSIX PID via /proc/<pid>/comm (no extra deps)."""
+    try:
+        with open(f"/proc/{int(pid)}/comm", encoding="ascii") as f:
+            return f.read().strip() or None
+    except (OSError, ValueError):
+        return None
+
+
+# Map llama-server stderr patterns to a single human-readable hint. Returns
+# ``None`` when the stderr doesn't match any known failure mode, so the caller
+# can fall back to the generic timeout message.
+_LAUNCH_ERROR_PATTERNS: tuple[tuple[str, str], ...] = (
+    ("couldn't bind HTTP server socket", "Port already in use. Stop the conflicting process or pick a different Port."),
+    ("bind: address already in use", "Port already in use. Stop the conflicting process or pick a different Port."),
+    ("address already in use", "Port already in use. Stop the conflicting process or pick a different Port."),
+    ("cudaMalloc failed", "GPU out of memory. Lower gpu_layers, switch to a smaller quant, or unload other GPU users."),
+    ("out of memory", "GPU out of memory. Lower gpu_layers, switch to a smaller quant, or unload other GPU users."),
+    ("failed to load model", "Model file not found or unreadable. Check the path in the Parameters panel."),
+    ("no such file or directory", "Model file not found or unreadable. Check the path in the Parameters panel."),
+    ("unknown model architecture", "Model file is corrupt or unsupported. Re-download the GGUF or check the version of llama-server."),
+)
+
+
+def _classify_launch_error(stderr: str) -> str | None:
+    if not stderr:
+        return None
+    lowered = stderr.lower()
+    for needle, hint in _LAUNCH_ERROR_PATTERNS:
+        if needle.lower() in lowered:
+            return hint
+    return None
 
 
 def list_servers() -> list[dict[str, Any]]:
@@ -454,6 +591,32 @@ def start_profile(
         cwd=prepared["command"]["cwd"],
         warnings=prepared["command"].get("warnings", []),
     )
+    # Pre-flight: refuse to spawn a process that will fail immediately on a
+    # bound port. The old code launched llama-server, waited 45 s for it to
+    # become ready, and only surfaced the error after the user had stared
+    # at the "starting…" spinner for the full timeout. Checking first turns
+    # the bind-fail into a single immediate error with an actionable hint.
+    host = str(prepared["params"].get("host", "127.0.0.1"))
+    port = int(prepared["params"].get("port", 8080))
+    if not _is_port_free(host, port):
+        info = _port_in_use_info(host, port) or {}
+        process_part = ""
+        if info.get("process_name") and info.get("pid"):
+            process_part = f" by {info['process_name']} (PID {info['pid']})"
+        elif info.get("process_name"):
+            process_part = f" by {info['process_name']}"
+        elif info.get("pid"):
+            process_part = f" by PID {info['pid']}"
+        suggested = _next_free_port(host, port + 1)
+        return {
+            "success": False,
+            "error": f"Port {port} is already bound{process_part}. Stop the conflicting process, or change the Port parameter and try again.",
+            "port_in_use": True,
+            "port": port,
+            "port_holder": info,
+            "suggested_port": suggested,
+            "prepared": prepared,
+        }
     mode_slug = "".join(ch if ch.isalnum() or ch in "-_" else "-" for ch in mode).strip("-") or "server"
     stdout_path = log_dir() / f"{mode_slug}-stdout.log"
     stderr_path = log_dir() / f"{mode_slug}-stderr.log"
@@ -490,8 +653,8 @@ def start_profile(
         "pid": proc.pid,
         "status": "starting",
         "running": True,
-        "host": str(params.get("host", "127.0.0.1")),
-        "port": int(params.get("port", 8080)),
+        "host": host,
+        "port": port,
         "model_path": prepared["profile"]["model"]["path"] if prepared["profile"].get("model") else None,
         "command_line": command.command_line,
         "stdout_log": str(stdout_path),
@@ -514,11 +677,19 @@ def start_profile(
             },
         )
         if not ready:
+            stderr_text = tail_file(stderr_path)
+            # Map common llama-server startup failures to a short hint the
+            # dashboard can surface alongside the (still long) raw stderr.
+            hint = _classify_launch_error(stderr_text)
+            message = "Server process started but did not become ready before timeout."
+            if hint:
+                message = f"{message} {hint}"
             return {
                 "success": False,
-                "error": "Server process started but did not become ready before timeout.",
+                "error": message,
+                "hint": hint,
                 "server": _find_server(server_id),
-                "stderr_tail": tail_file(stderr_path),
+                "stderr_tail": stderr_text,
             }
 
     return {"success": True, "server": _find_server(server_id), "prepared": prepared}

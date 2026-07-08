@@ -3493,3 +3493,48 @@ tr.profile-group-header td {
   background: var(--border);
   list-style: none;
 }
+
+/* Port-availability dot next to the Port field in the Parameters panel.
+   Uses existing palette tokens so light/dark themes stay in sync. */
+.port-status {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  margin-left: 8px;
+  background: var(--disabled-text);
+  cursor: pointer;
+  transition: background-color 0.2s ease;
+  flex-shrink: 0;
+  align-self: center;
+  outline: 2px solid transparent;
+  outline-offset: 2px;
+}
+
+.port-status.free { background: var(--green); }
+.port-status.busy { background: var(--red); }
+.port-status.checking { background: var(--muted); animation: port-status-pulse 1s ease-in-out infinite; }
+.port-status.unknown { background: var(--amber); }
+
+@keyframes port-status-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+/* Toast action button: short label shown to the right of the toast text
+   for the lifetime of the toast (5s). Used by 'Use port N' on launch failure. */
+.toast-action {
+  margin-left: 12px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.toast-action:hover {
+  background: var(--surface-3);
+}

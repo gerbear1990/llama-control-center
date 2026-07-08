@@ -165,12 +165,77 @@ function escapeHtml(value) {
     .replaceAll("'", '&#039;');
 }
 
-function toast(message) {
+// Toasts are short text snippets shown in the bottom-right. They may carry
+// a single optional action button (e.g. 'Use port 18100') that the user can
+// click while the toast is still visible. ``toast.action(message, action)`` is
+// the recommended form; ``toast(message)`` keeps the simple text-only path
+// so existing call sites are unchanged.
+function toast(message, action) {
   const el = $('#toast');
-  el.textContent = message;
+  el.innerHTML = '';
+  const text = document.createElement('span');
+  text.textContent = message;
+  el.appendChild(text);
+  if (action && action.label && typeof action.onClick === 'function') {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'toast-action';
+    button.textContent = action.label;
+    button.addEventListener('click', () => {
+      window.clearTimeout(toast.timer);
+      el.classList.remove('show');
+      action.onClick();
+    });
+    el.appendChild(button);
+  }
   el.classList.add('show');
   window.clearTimeout(toast.timer);
-  toast.timer = window.setTimeout(() => el.classList.remove('show'), 2800);
+  toast.timer = window.setTimeout(() => el.classList.remove('show'), 5000);
+}
+
+// Live port-availability indicator next to the Port field. Probes
+// /api/system/check-port on every edit (debounced 350ms) and renders a
+// green dot when the port is free, a red dot when something else is
+// bound there, and a grey dot while the probe is in flight.
+let portCheckTimer = null;
+let portCheckSeq = 0;
+
+async function checkPortNow(port, host) {
+  const seq = ++portCheckSeq;
+  const statusEl = $('#param-port-status');
+  if (!statusEl) return;
+  statusEl.className = 'port-status checking';
+  statusEl.title = 'Checking…';
+  try {
+    const qs = `port=${encodeURIComponent(port)}&host=${encodeURIComponent(host || '127.0.0.1')}`;
+    const data = await api(`/api/system/check-port?${qs}`);
+    if (seq !== portCheckSeq) return; // a newer probe has superseded us
+    if (data.free) {
+      statusEl.className = 'port-status free';
+      statusEl.title = `Port ${data.port} is free`;
+    } else {
+      const holder = data.port_holder;
+      const who = holder?.process_name && holder?.pid
+        ? `${holder.process_name} (PID ${holder.pid})`
+        : holder?.process_name || holder?.pid || 'another process';
+      statusEl.className = 'port-status busy';
+      statusEl.title = `Port ${data.port} is bound by ${who}. Suggested free port: ${data.suggested_port ?? 'none'}`;
+    }
+  } catch {
+    statusEl.className = 'port-status unknown';
+    statusEl.title = 'Could not check port';
+  }
+}
+
+function schedulePortCheck() {
+  window.clearTimeout(portCheckTimer);
+  portCheckTimer = window.setTimeout(() => {
+    const portInput = $('#param-port');
+    const port = numericValue(portInput);
+    if (!port) return;
+    const host = $('#param-host')?.value.trim() || '127.0.0.1';
+    checkPortNow(port, host);
+  }, 350);
 }
 
 async function withBusy(button, fn) {
@@ -379,7 +444,13 @@ async function api(path, options = {}) {
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
     const detail = data.detail || data.error || response.statusText;
-    throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail));
+    const err = new Error(typeof detail === 'string' ? detail : JSON.stringify(detail));
+    // Preserve the original structured detail (FastAPI wraps non-2xx bodies
+    // as {detail: ...}; keep it accessible so callers can branch on richer
+    // fields like ``port_in_use`` or ``suggested_port``).
+    err.detail = detail;
+    err.status = response.status;
+    throw err;
   }
   return data;
 }
@@ -657,6 +728,8 @@ function renderParameters() {
   setFieldValue('#param-port', params.port);
   setFieldValue('#param-acceleration', params.acceleration_backend || 'auto');
   setFieldValue('#param-device', params.device || 'auto');
+  // Probe the resolved port for the live status dot.
+  schedulePortCheck();
   setFieldValue('#param-ctx', params.ctx_size);
   setFieldValue('#param-threads', params.threads);
   setFieldValue('#param-threads-batch', params.threads_batch ?? params.threads);
@@ -1813,7 +1886,32 @@ async function startProfile(mode, trigger) {
     await refresh();
     renderProfiles();
   } catch (error) {
-    toast(`Start failed: ${error.message}`);
+    const detail = error.detail;
+    if (detail && detail.port_in_use) {
+      const suggested = detail.suggested_port;
+      const holder = detail.port_holder || {};
+      const who = holder.process_name && holder.pid
+        ? `${holder.process_name} (PID ${holder.pid})`
+        : holder.process_name || holder.pid || 'another process';
+      toast(
+        `Port ${detail.port} is already bound by ${who}.`,
+        suggested
+          ? {
+              label: `Use port ${suggested}`,
+              onClick: () => {
+                const portInput = $('#param-port');
+                if (portInput) {
+                  portInput.value = String(suggested);
+                  portInput.dispatchEvent(new Event('input', { bubbles: true }));
+                  portInput.focus();
+                }
+              },
+            }
+          : undefined,
+      );
+    } else {
+      toast(`Start failed: ${error.message}`);
+    }
   } finally {
     setActionsBusy(targetMode, false);
   }
@@ -2663,13 +2761,17 @@ function wireEvents() {
     state.paramPreviewHost = $('#param-host').value.trim() || '127.0.0.1';
     state.paramPreviewPort = numericValue('#param-port') || 8080;
     scheduleTpsEstimate();
+    schedulePortCheck();
   });
   $('#param-form').addEventListener('input', () => {
     saveCurrentOverrides();
     state.paramPreviewHost = $('#param-host').value.trim() || '127.0.0.1';
     state.paramPreviewPort = numericValue('#param-port') || 8080;
     scheduleTpsEstimate();
+    schedulePortCheck();
   });
+  // Click the dot to force an immediate re-probe (bypass the debounce).
+  $('#param-port-status')?.addEventListener('click', () => schedulePortCheck());
   // Preset picker writes into #param-ctx (the source of truth), then resets so it
   // always reads "Presets" and never filters its options by the current value.
   $('#param-ctx-preset').addEventListener('change', (event) => {

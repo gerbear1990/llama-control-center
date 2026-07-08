@@ -210,6 +210,33 @@ def get_system_live() -> dict[str, Any]:
     return live_system_status()
 
 
+@app.get("/api/system/check-port")
+def check_port(port: int, host: str = "127.0.0.1") -> dict[str, Any]:
+    """Probe a TCP port from the dashboard so the user sees a live status dot
+    next to the Port field, instead of waiting for the next launch attempt
+    to fail. Also returns the next free port so the dashboard can offer a
+    one-click 'use port X' suggestion when the chosen one is busy.
+    """
+    from lcc_core.server_manager import (
+        _is_port_free,
+        _next_free_port,
+        _port_in_use_info,
+    )
+
+    safe_host = host.strip() or "127.0.0.1"
+    safe_port = max(1, min(65535, int(port)))
+    free = _is_port_free(safe_host, safe_port)
+    payload: dict[str, Any] = {
+        "host": safe_host,
+        "port": safe_port,
+        "free": free,
+    }
+    if not free:
+        payload["port_holder"] = _port_in_use_info(safe_host, safe_port)
+        payload["suggested_port"] = _next_free_port(safe_host, safe_port + 1)
+    return payload
+
+
 @app.post("/api/profiles")
 def post_profiles(request: InventoryRequest) -> dict[str, Any]:
     payload = resolved_inventory(
