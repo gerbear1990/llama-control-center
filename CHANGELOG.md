@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-07-08
+
+### Fixed
+
+- **Stop button was a silent no-op once the server history filled up.**
+  `trim_server_history()` kept the *oldest* `limit` entries (`servers[:limit]`)
+  while `_upsert_server()` appends new servers to the end, so every freshly
+  launched server was trimmed out of tracked state the instant it started. The
+  running process was then invisible to `_find_server()`, and Stop reported
+  success while killing nothing. Trim now keeps the newest entries
+  (`servers[-limit:]`), and `_find_server(mode=)` prefers a running match (then
+  the most recent) so Stop targets the live process instead of a stale entry.
+  ([server_manager.py](lcc_core/server_manager.py))
+- **Smart Fit could silently recommend a CPU-only config.** When a GPU is
+  present but free VRAM is low (e.g. a server is still holding it), every
+  GPU-offload candidate is rejected and the only survivor is `gpu_layers=0`.
+  `auto_tune_fit()` returned that as a clean success, so a tuned launch could
+  land on the CPU with no warning. It now sets a `cpu_fallback` flag and prepends
+  a loud note telling the user to free VRAM (usually: stop the server still
+  holding it) and re-run Smart Fit. ([smart_tune.py](lcc_core/smart_tune.py))
+
+### Added
+
+- **Selectable context up to 256K, capped at the model's trained window.**
+  `CTX_LADDER` now extends to `196608`/`262144` so Smart Fit can recommend up to
+  256K, but `_ctx_ladder_for_model()` caps the offered ladder at the model's
+  trained context so it never suggests a window the model wasn't trained for
+  (the model's exact trained length is included even when it isn't a standard
+  rung). The trained context (`<arch>.context_length`) is read in the same single
+  GGUF header pass as the KV dims and cached (meta cache v2→v3); the fit badge
+  also warns when a manually chosen context exceeds the trained window, since the
+  extra tokens just waste VRAM and quality degrades past the trained length. Adds
+  `model_max_context()`. ([estimates.py](lcc_core/estimates.py),
+  [smart_tune.py](lcc_core/smart_tune.py))
+
 ## [0.13.0] - 2026-07-08
 
 ### Added
