@@ -500,19 +500,24 @@ def get_profile_names() -> dict[str, Any]:
 @app.post("/api/profiles/save")
 def save_profile(request: SaveProfileRequest) -> dict[str, Any]:
     from lcc_core.paths import find_project_root
+    from lcc_core.manifest import (
+        ManifestReadError,
+        load_manifest_safely,
+        write_manifest_atomic,
+    )
 
     root = find_project_root()
     if not root:
         return {"success": False, "message": "Could not find project root. Create a models.json file first."}
     manifest_path = root / "models.json"
-    if not manifest_path.is_file():
-        manifest = {"models": []}
-    else:
-        try:
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            manifest = {"models": []}
-    models = manifest.get("models", [])
+    # CRITICAL: never silently reset the manifest on a read failure. A
+    # transient parse error or antivirus lock would otherwise wipe every
+    # existing profile to a single empty list on the next save.
+    try:
+        manifest = load_manifest_safely(manifest_path)
+    except ManifestReadError as exc:
+        return {"success": False, "message": str(exc)}
+    models = manifest.setdefault("models", [])
     existing = next((m for m in models if m.get("mode") == request.mode), None)
     if existing is not None:
         existing["name"] = request.name
@@ -529,9 +534,10 @@ def save_profile(request: SaveProfileRequest) -> dict[str, Any]:
         message = f"Saved profile '{request.name}'."
 
     manifest["models"] = models
-    tmp_path = manifest_path.with_suffix(".json.tmp")
-    tmp_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
-    tmp_path.replace(manifest_path)
+    try:
+        write_manifest_atomic(manifest_path, manifest)
+    except OSError as exc:
+        return {"success": False, "message": f"Failed to write models.json: {exc}"}
     return {"success": True, "message": message}
 
 
@@ -551,6 +557,11 @@ def delete_profile(request: DeleteProfileRequest) -> dict[str, Any]:
     """
     from lcc_core.paths import find_project_root
     from lcc_core.server_manager import list_servers
+    from lcc_core.manifest import (
+        ManifestReadError,
+        load_manifest_safely,
+        write_manifest_atomic,
+    )
 
     root = find_project_root()
     if not root:
@@ -569,9 +580,9 @@ def delete_profile(request: DeleteProfileRequest) -> dict[str, Any]:
             }
 
     try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {"success": False, "message": "models.json is unreadable."}
+        manifest = load_manifest_safely(manifest_path)
+    except ManifestReadError as exc:
+        return {"success": False, "message": str(exc)}
 
     models = manifest.get("models", [])
     kept = [m for m in models if m.get("mode") != request.mode]
@@ -579,9 +590,10 @@ def delete_profile(request: DeleteProfileRequest) -> dict[str, Any]:
         return {"success": False, "message": f"Unknown profile mode: {request.mode}"}
 
     manifest["models"] = kept
-    tmp_path = manifest_path.with_suffix(".json.tmp")
-    tmp_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
-    tmp_path.replace(manifest_path)
+    try:
+        write_manifest_atomic(manifest_path, manifest)
+    except OSError as exc:
+        return {"success": False, "message": f"Failed to write models.json: {exc}"}
 
     # Also drop any custom name the user assigned for this mode.
     config = AppConfig.load()

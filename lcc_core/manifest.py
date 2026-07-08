@@ -53,6 +53,53 @@ def load_manifest(manifest_path: Path) -> dict[str, Any]:
         return json.load(f)
 
 
+class ManifestReadError(RuntimeError):
+    """Raised when models.json cannot be read or parsed safely.
+
+    Used by write paths (save/delete/profile-resolver) that must never
+    silently reset the manifest — losing existing profile entries on a
+    transient read failure (corrupt JSON, antivirus lock, partial write
+    from a prior crash) is a destructive data-loss bug.
+    """
+
+
+def load_manifest_safely(manifest_path: Path) -> dict[str, Any]:
+    """Read models.json; raise ManifestReadError on any read or parse failure.
+
+    A missing file is treated as an empty manifest (correct for fresh
+    setups). Anything else — JSON parse errors, OS errors, non-dict
+    payloads, a non-list ``models`` field — surfaces as ``ManifestReadError``
+    so callers can refuse to operate instead of silently overwriting
+    user data with an empty list.
+    """
+    if not manifest_path.is_file():
+        return {"models": []}
+    try:
+        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ManifestReadError(
+            f"models.json at {manifest_path} could not be read: {exc}"
+        ) from exc
+    if not isinstance(data, dict):
+        raise ManifestReadError(
+            f"models.json at {manifest_path} is not a JSON object (got {type(data).__name__})"
+        )
+    models = data.setdefault("models", [])
+    if not isinstance(models, list):
+        raise ManifestReadError(
+            f"models.json at {manifest_path} has a non-list 'models' field"
+        )
+    return data
+
+
+def write_manifest_atomic(manifest_path: Path, manifest: dict[str, Any]) -> None:
+    """Write models.json atomically via tmp+rename so a crash mid-write
+    can't corrupt the file. Raises OSError on filesystem failure."""
+    tmp = manifest_path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    tmp.replace(manifest_path)
+
+
 def load_profiles(
     project_root: Path | None = None,
     manifest_path: Path | None = None,

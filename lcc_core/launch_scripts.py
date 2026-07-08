@@ -41,6 +41,7 @@ from typing import Any
 
 from .config import AppConfig
 from .llama_args import build_llama_server_args
+from .manifest import ManifestReadError
 from .models import discover_models
 from .paths import (
     find_project_root,
@@ -158,29 +159,35 @@ def _manifest_path(root: Path | None) -> Path | None:
 
 
 def _load_manifest_doc(root: Path | None) -> dict[str, Any]:
+    """Read models.json for the autoscan. Refuses on a corrupt read.
+
+    Previously this silently returned ``{"models": []}`` on parse failure,
+    which meant a transient corrupt models.json (or an antivirus lock
+    during a previous save) would silently wipe every existing profile
+    the next time autoscan ran. Now propagates ManifestReadError so the
+    caller can surface the error and refuse to auto-register anything
+    until the file is repaired.
+    """
+    from .manifest import ManifestReadError, load_manifest_safely
+
     path = _manifest_path(root)
-    if not path or not path.is_file():
-        return {"models": []}
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {"models": []}
-    if not isinstance(data, dict):
-        return {"models": []}
-    data.setdefault("models", [])
-    if not isinstance(data["models"], list):
-        data["models"] = []
-    return data
+        return load_manifest_safely(path) if path else {"models": []}
+    except ManifestReadError:
+        raise
 
 
 def _save_manifest_doc(root: Path | None, manifest: dict[str, Any]) -> bool:
+    from .manifest import write_manifest_atomic
+
     path = _manifest_path(root)
     if not path:
         return False
-    tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
-    tmp.replace(path)
-    return True
+    try:
+        write_manifest_atomic(path, manifest)
+        return True
+    except OSError:
+        return False
 
 
 def _read_state() -> dict[str, Any]:
@@ -584,8 +591,17 @@ def generate_all_launch_scripts(
     handled_model_paths: set[str] = set()
 
     # Track models.json so we can repair broken script references and register
-    # newly discovered models as launchable profiles.
-    manifest_doc = _load_manifest_doc(root)
+    # newly discovered models as launchable profiles. A corrupt manifest
+    # surfaces as a result error and aborts the autoscan-with-registration
+    # step: we'd rather refuse to write than silently overwrite existing
+    # profiles with an empty list (the previous behaviour).
+    try:
+        manifest_doc = _load_manifest_doc(root)
+    except ManifestReadError as exc:
+        result.errors.append({"mode": "models.json", "error": str(exc)})
+        result.generated = []
+        result.skipped = []
+        return result
     manifest_models = manifest_doc["models"]
     manifest_by_mode = {str(entry.get("mode")): entry for entry in manifest_models if entry.get("mode")}
     manifest_dirty = False

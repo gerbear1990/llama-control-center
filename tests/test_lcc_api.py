@@ -246,5 +246,143 @@ class ProfileDeleteApiTests(unittest.TestCase):
         self.assertIn("to-remove", modes)
 
 
+class ProfileSaveSafetyTests(unittest.TestCase):
+    """Regression: /api/profiles/save used to silently reset models.json to
+    ``{"models": []}`` when the read raised any error, wiping every existing
+    profile in one transaction. It must now refuse with success=False and
+    leave the on-disk manifest untouched."""
+
+    def setUp(self) -> None:
+        from lcc_api import app as app_module
+        from lcc_core import paths as paths_module
+
+        self.client = TestClient(app_module.app)
+        self._tmp = tempfile.mkdtemp()
+        self.root = Path(self._tmp)
+        self.manifest_path = self.root / "models.json"
+        # Seed three profiles; two must survive any subsequent save.
+        self.manifest_path.write_text(
+            json.dumps(
+                {
+                    "models": [
+                        {"mode": "keep-a", "name": "A", "recommended_params": {"ctx_size": 4096}},
+                        {"mode": "keep-b", "name": "B", "recommended_params": {"ctx_size": 4096}},
+                        {"mode": "keep-c", "name": "C", "recommended_params": {"ctx_size": 4096}},
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        self._orig_find_root = paths_module.find_project_root
+        paths_module.find_project_root = lambda *a, **kw: self.root
+
+    def tearDown(self) -> None:
+        from lcc_core import paths as paths_module
+
+        paths_module.find_project_root = self._orig_find_root
+        import shutil
+
+        shutil.rmtree(self._tmp, ignore_errors=True)
+
+    def _read_modes(self) -> list[str]:
+        return [m.get("mode") for m in json.loads(self.manifest_path.read_text(encoding="utf-8")).get("models", [])]
+
+    def test_save_with_corrupt_manifest_refuses_and_preserves_existing_profiles(self) -> None:
+        # Simulate a transient corrupt models.json (antivirus lock, partial
+        # write from a prior crash, manual edit gone wrong).
+        self.manifest_path.write_bytes(b"{ this is not valid json }")
+        response = self.client.post(
+            "/api/profiles/save",
+            json={
+                "mode": "new-mode",
+                "name": "New",
+                "description": "",
+                "model_path": "",
+                "params": {"ctx_size": 4096},
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.json()["success"])
+        self.assertIn("could not be read", response.json()["message"].lower())
+        # The corrupt on-disk content must NOT have been overwritten.
+        self.assertEqual(self.manifest_path.read_bytes(), b"{ this is not valid json }")
+
+    def test_save_with_valid_manifest_still_works(self) -> None:
+        # Sanity: the fix doesn't break the happy path.
+        before = self._read_modes()
+        response = self.client.post(
+            "/api/profiles/save",
+            json={
+                "mode": "keep-a",
+                "name": "A renamed",
+                "description": "touched",
+                "model_path": "",
+                "params": {"ctx_size": 8192},
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["success"])
+        after = self._read_modes()
+        # No profiles were silently dropped; only the targeted one was updated.
+        self.assertEqual(set(after), set(before))
+        renamed = next(
+            m for m in json.loads(self.manifest_path.read_text(encoding="utf-8"))["models"] if m["mode"] == "keep-a"
+        )
+        self.assertEqual(renamed["name"], "A renamed")
+        self.assertEqual(renamed["recommended_params"]["ctx_size"], 8192)
+
+    def test_delete_with_corrupt_manifest_refuses_and_preserves_existing_profiles(self) -> None:
+        self.manifest_path.write_bytes(b"not json at all")
+        response = self.client.post(
+            "/api/profiles/delete", json={"mode": "keep-a"}
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.json()["success"])
+        self.assertIn("could not be read", response.json()["message"].lower())
+        self.assertEqual(self.manifest_path.read_bytes(), b"not json at all")
+
+
+class ManifestHelpersTests(unittest.TestCase):
+    """The shared manifest I/O helpers: load_manifest_safely must surface
+    unreadable files as ManifestReadError instead of resetting, and
+    write_manifest_atomic must write tmp+rename."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.mkdtemp()
+        self.path = Path(self._tmp) / "models.json"
+
+    def tearDown(self) -> None:
+        import shutil
+        shutil.rmtree(self._tmp, ignore_errors=True)
+
+    def test_load_safely_missing_file_is_empty_manifest(self) -> None:
+        from lcc_core.manifest import load_manifest_safely
+        self.assertEqual(load_manifest_safely(self.path), {"models": []})
+
+    def test_load_safely_corrupt_json_raises(self) -> None:
+        from lcc_core.manifest import ManifestReadError, load_manifest_safely
+        self.path.write_bytes(b"not json")
+        with self.assertRaises(ManifestReadError):
+            load_manifest_safely(self.path)
+
+    def test_load_safely_non_dict_payload_raises(self) -> None:
+        from lcc_core.manifest import ManifestReadError, load_manifest_safely
+        self.path.write_text(json.dumps([1, 2, 3]), encoding="utf-8")
+        with self.assertRaises(ManifestReadError):
+            load_manifest_safely(self.path)
+
+    def test_load_safely_non_list_models_raises(self) -> None:
+        from lcc_core.manifest import ManifestReadError, load_manifest_safely
+        self.path.write_text(json.dumps({"models": "not-a-list"}), encoding="utf-8")
+        with self.assertRaises(ManifestReadError):
+            load_manifest_safely(self.path)
+
+    def test_write_atomic_round_trip(self) -> None:
+        from lcc_core.manifest import load_manifest_safely, write_manifest_atomic
+        payload = {"models": [{"mode": "x", "name": "X"}]}
+        write_manifest_atomic(self.path, payload)
+        self.assertEqual(load_manifest_safely(self.path), payload)
+
+
 if __name__ == "__main__":
     unittest.main()
