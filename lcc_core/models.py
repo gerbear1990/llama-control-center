@@ -22,6 +22,18 @@ def _model_id(path: Path) -> str:
     return hashlib.sha1(raw).hexdigest()[:16]
 
 
+def _safe_mtime(path: Path) -> float | None:
+    """Unix mtime of ``path`` or None when the stat fails (race, permissions).
+
+    The gguf_meta_cache already keys on ``(size, mtime)`` so the dashboard's
+    Updated column piggybacks on a stat the backend is making anyway.
+    """
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return None
+
+
 def parse_quant(filename: str) -> str | None:
     match = QUANT_RE.search(filename)
     if not match:
@@ -137,6 +149,7 @@ def discover_models(
                         params_b=param_hint,
                         mmproj_path=_find_mmproj(parent),
                         split_total=split_total,
+                        mtime=_safe_mtime(path),
                         details={"primary_file": path.name, "root": str(root)},
                         warnings=warnings,
                     )

@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Llama Control Center</title>
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23098a96'/%3E%3Ctext x='16' y='22' font-family='Inter,Arial,sans-serif' font-size='16' font-weight='700' text-anchor='middle' fill='white'%3ELC%3C/text%3E%3C/svg%3E" />
-    <link rel="stylesheet" href="/static/styles.css" />
+    <link rel="stylesheet" href="/static/styles.css?v=0.13.0-ui-pass-8" />
   </head>
   <body>
     <div class="app-shell">
@@ -43,15 +43,30 @@
             <span class="nav-icon icon-logs" aria-hidden="true"></span>
             <span>Logs</span>
           </a>
-           <a class="nav-item" href="#portability" data-section="portability">
-             <span class="nav-icon icon-portability" aria-hidden="true"></span>
-             <span>Portability</span>
-           </a>
-           <a class="nav-item" href="#hf-tools" data-section="hf-tools">
-             <span class="nav-icon icon-hf" aria-hidden="true"></span>
-             <span>HF Tools</span>
-           </a>
+          <a class="nav-item" href="#portability" data-section="portability">
+            <span class="nav-icon icon-portability" aria-hidden="true"></span>
+            <span>Portability</span>
+          </a>
+          <a class="nav-item" href="#hf-tools" data-section="hf-tools">
+            <span class="nav-icon icon-hf" aria-hidden="true"></span>
+            <span>HF Tools</span>
+          </a>
+          <button class="nav-item nav-button" id="settings-nav-button" type="button">
+            <span class="nav-icon icon-settings-nav" aria-hidden="true"></span>
+            <span>Settings</span>
+          </button>
          </nav>
+        <section class="sidebar-live-hardware" id="sidebar-live-hardware" aria-label="Live hardware stats">
+          <header class="sidebar-live-head">
+            <span class="sidebar-live-title">Live Hardware</span>
+            <span class="live-source-badge" id="live-source-badge" hidden></span>
+          </header>
+          <div class="sidebar-live-body" id="sidebar-live-body">
+            <div class="live-gpu-grid" id="live-gpu-grid"></div>
+            <div class="live-ram-row" id="live-ram-row"></div>
+            <p class="live-empty" id="live-empty">Waiting for first sample…</p>
+          </div>
+        </section>
         <div class="sidebar-footer">
           <span class="status-dot" id="api-dot" aria-hidden="true"></span>
           <span id="api-status">Connecting</span>
@@ -62,7 +77,7 @@
       <main class="main">
         <header class="topbar">
           <div class="topbar-title">
-            <h2>Control Center</h2>
+            <h2>Llama Control Center</h2>
             <p id="summary-line">Loading local runtimes, profiles, and models.</p>
           </div>
           <div class="hardware-widget" id="hardware-widget" aria-label="Detected hardware">
@@ -87,7 +102,8 @@
             <label class="search-field">
               <span class="sr-only">Search models and profiles</span>
               <span class="toolbar-icon search-icon" aria-hidden="true"></span>
-              <input id="search-input" type="search" placeholder="Search models and profiles" autocomplete="off" aria-label="Search models and profiles" />
+              <input id="search-input" type="search" placeholder="Search..." autocomplete="off" aria-label="Search models and profiles" />
+              <kbd>Ctrl K</kbd>
             </label>
             <button class="button secondary" id="settings-button" type="button" title="Open general settings">
               <span class="toolbar-icon settings-icon" aria-hidden="true"></span>
@@ -106,20 +122,32 @@
 
         <section class="status-strip" aria-label="Inventory summary">
           <div class="metric">
-            <span class="metric-value" id="metric-runtimes">-</span>
-            <span class="metric-label">Runtimes</span>
+            <span class="metric-icon metric-icon-runtimes" aria-hidden="true"></span>
+            <span class="metric-copy">
+              <span class="metric-value" id="metric-runtimes">-</span>
+              <span class="metric-label">Runtimes</span>
+            </span>
           </div>
           <div class="metric">
-            <span class="metric-value" id="metric-launchable">-</span>
-            <span class="metric-label">Launchable</span>
+            <span class="metric-icon metric-icon-launchable" aria-hidden="true"></span>
+            <span class="metric-copy">
+              <span class="metric-value" id="metric-launchable">-</span>
+              <span class="metric-label">Launchable</span>
+            </span>
           </div>
           <div class="metric">
-            <span class="metric-value" id="metric-models">-</span>
-            <span class="metric-label">Models</span>
+            <span class="metric-icon metric-icon-models" aria-hidden="true"></span>
+            <span class="metric-copy">
+              <span class="metric-value" id="metric-models">-</span>
+              <span class="metric-label">Models</span>
+            </span>
           </div>
           <div class="metric warning">
-            <span class="metric-value" id="metric-setup">-</span>
-            <span class="metric-label">Needs setup</span>
+            <span class="metric-icon metric-icon-setup" aria-hidden="true"></span>
+            <span class="metric-copy">
+              <span class="metric-value" id="metric-setup">-</span>
+              <span class="metric-label">Needs setup</span>
+            </span>
           </div>
         </section>
 
@@ -143,29 +171,48 @@
               <div class="panel-heading">
                 <div>
                   <h3>Profiles</h3>
-                  <p>Runnable launch profiles resolved from local models.</p>
+                  <p>Manage and launch model configurations.</p>
                 </div>
-                <div class="segmented" aria-label="Profile filter">
-                  <button class="segment active" type="button" data-profile-filter="all">All</button>
-                  <button class="segment" type="button" data-profile-filter="launchable">Launchable</button>
-                  <button class="segment" type="button" data-profile-filter="setup">Needs setup</button>
+                <div class="profiles-toolbar" aria-label="Profile tools">
+                  <label class="profile-filter-field">
+                    <span class="toolbar-icon filter-icon" aria-hidden="true"></span>
+                    <input id="profile-filter-input" type="search" placeholder="Filter profiles..." autocomplete="off" aria-label="Filter profiles" />
+                  </label>
+                  <select id="profile-model-filter" aria-label="Filter by model">
+                    <option value="all">All models</option>
+                  </select>
+                  <label class="profile-availability-toggle" title="Hide profiles that are not launchable or do not resolve to an installed local model.">
+                    <input id="hide-unavailable-profiles" type="checkbox" />
+                    <span>Hide unavailable</span>
+                  </label>
+                  <button class="button primary profile-new-button" id="new-profile-button" type="button">
+                    <span aria-hidden="true">+</span>
+                    New profile
+                  </button>
+                  <button class="button primary icon-only" type="button" id="profile-menu-button" title="More profile actions" aria-label="More profile actions">⌄</button>
                 </div>
               </div>
               <div class="table-wrap">
                 <table>
                   <thead>
                     <tr>
-                      <th>Profile</th>
                       <th>Model</th>
+                      <th>Profile</th>
+                      <th>Runtime</th>
+                      <th>Context</th>
+                      <th>Threads</th>
+                      <th>GPU Layers</th>
+                      <th>Updated</th>
                       <th>Status</th>
-                      <th>Fit</th>
-                      <th>Ctx</th>
-                      <th>Port</th>
-                      <th>Action</th>
+                      <th>Actions</th>
                     </tr>
                   </thead>
                   <tbody id="profiles-table"></tbody>
                 </table>
+              </div>
+              <div class="table-footer">
+                <span id="profiles-count">Showing profiles</span>
+                <a href="#profiles" id="view-all-profiles">View all profiles <span aria-hidden="true">→</span></a>
               </div>
             </section>
 
@@ -302,7 +349,7 @@
                 <div class="param-section-title">Sampling</div>
                 <div class="sampling-suggest" title="Fill the sampling fields below from a task-tuned preset. These are starting points you can adjust.">
                   <select id="sampling-intent" aria-label="Sampling preset"></select>
-                  <button class="mini-button" type="button" id="sampling-suggest-button">Suggest sampling</button>
+                  <button class="mini-button" type="button" id="sampling-suggest-button">Edit sampling</button>
                 </div>
                 <div class="field-grid">
                   <label class="field" title="Controls how adventurous responses feel. Lower is steadier; higher is more varied.">
@@ -377,15 +424,24 @@
                   </div>
                   <small id="tps-detail">Waiting for model and hardware details.</small>
                 </div>
-                <div class="row-actions">
-                  <button class="mini-button" type="button" id="save-profile-button">Save Profile</button>
-                  <button class="mini-button" type="button" id="reset-params-button">Reset</button>
-                  <button class="mini-button" type="button" id="hf-info-button">HF info</button>
-                  <button class="mini-button" type="button" id="hf-update-button">HF update</button>
-                  <button class="mini-button" type="button" id="smart-fit-button" title="Auto-tune GPU layers, context, and KV cache to the best fit for your hardware.">Smart fit</button>
-                  <button class="mini-button" type="button" id="fit-button">Fit test</button>
-                  <button class="mini-button" type="button" id="benchmark-button">Benchmark</button>
-                  <button class="mini-button primary" type="button" id="prepare-selected-button">Prepare</button>
+                <div class="row-actions launch-actions">
+                  <button class="mini-button primary launch-primary" type="button" id="start-selected-button">
+                    <span aria-hidden="true">▷</span>
+                    Start server
+                  </button>
+                  <div class="launch-secondary">
+                    <button class="mini-button" type="button" id="prepare-selected-button">Prepare</button>
+                    <button class="mini-button danger launch-stop-button" type="button" id="stop-selected-button">Stop</button>
+                  </div>
+                  <div class="advanced-actions">
+                    <button class="mini-button" type="button" id="save-profile-button">Save Profile</button>
+                    <button class="mini-button" type="button" id="reset-params-button">Reset</button>
+                    <button class="mini-button" type="button" id="hf-info-button">HF info</button>
+                    <button class="mini-button" type="button" id="hf-update-button">HF update</button>
+                    <button class="mini-button" type="button" id="smart-fit-button" title="Auto-tune GPU layers, context, and KV cache to the best fit for your hardware.">Smart fit</button>
+                    <button class="mini-button" type="button" id="fit-button">Fit test</button>
+                    <button class="mini-button" type="button" id="benchmark-button">Benchmark</button>
+                  </div>
                 </div>
               </form>
             </section>
@@ -434,16 +490,15 @@
               <pre class="log-preview" id="log-preview">No tracked server selected.</pre>
             </section>
 
-         <section class="panel" id="portability">
-               <div class="panel-heading">
-                 <div>
-                   <h3>Portability</h3>
-                   <p>Setup issues before public release.</p>
-                 </div>
-                 <button class="mini-button" type="button" id="open-logs-button">Open logs</button>
-               </div>
-               <div class="issue-list" id="issue-list"></div>
-             </section>
+            <section class="panel" id="portability">
+              <div class="panel-heading">
+                <div>
+                  <h3>Portability</h3>
+                  <p>Setup issues before public release.</p>
+                </div>
+              </div>
+              <div class="issue-list" id="issue-list"></div>
+            </section>
 
              <section class="panel" id="hf-tools">
                <div class="panel-heading">
@@ -611,6 +666,6 @@
     </div>
 
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
-    <script src="/static/app.js" defer></script>
+    <script src="/static/app.js?v=0.13.0-ui-pass-8" defer></script>
   </body>
 </html>

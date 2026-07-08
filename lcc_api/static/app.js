@@ -17,6 +17,9 @@ const state = {
   paramPreviewPort: 8080,
   modelNotes: { hf: '', fit: '', benchmark: '' },
   profileFilter: 'all',
+  profileModelFilter: 'all',
+  hideUnavailableProfiles: localStorage.getItem('lcc-hide-unavailable-profiles') === '1',
+  showAllRuntimes: false,
   query: '',
   jinjaRecommended: false,
   theme: localStorage.getItem('lcc-theme') || 'light',
@@ -100,6 +103,30 @@ function formatMib(mib) {
   const value = Number(mib);
   if (Math.abs(value) >= 1024) return `${(value / 1024).toFixed(1)} GB`;
   return `${Math.round(value)} MiB`;
+}
+
+// Compact relative-time formatter for the profile Updated column. Unix
+// mtime in -> "Just now / Nm ago / Nh ago / N days ago / Mon DD" out.
+// Far-past dates fall back to a locale date so the cell never shows "NaN".
+function formatRelativeTime(mtime) {
+  if (mtime == null || !Number.isFinite(Number(mtime))) return '—';
+  const ms = Date.now() - Number(mtime) * 1000;
+  if (ms < 0) return 'Just now';
+  const sec = Math.floor(ms / 1000);
+  if (sec < 45) return 'Just now';
+  if (sec < 90) return '1 min ago';
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min} min ago`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr}h ago`;
+  const day = Math.floor(hr / 24);
+  if (day < 7) return `${day}d ago`;
+  const d = new Date(Number(mtime) * 1000);
+  // Older than a week: short "Mon DD" for the current year, else full date.
+  const sameYear = d.getFullYear() === new Date().getFullYear();
+  return d.toLocaleDateString(undefined, sameYear
+    ? { month: 'short', day: 'numeric' }
+    : { year: 'numeric', month: 'short', day: 'numeric' });
 }
 
 function fitStatusClass(status) {
@@ -445,15 +472,6 @@ function runtimeLocation(env) {
   return env.binary_path || env.details?.python_module || 'Not found on disk';
 }
 
-function runtimeLine(label, value, extraClass = '') {
-  return `
-    <div class="runtime-line ${extraClass}">
-      <span>${escapeHtml(label)}</span>
-      <code title="${escapeHtml(value || '-')}">${escapeHtml(value || '-')}</code>
-    </div>
-  `;
-}
-
 function renderSummary() {
   const summary = state.inventory?.summary || {};
   $('#metric-runtimes').textContent = `${summary.available_environment_count ?? 0}/${summary.environment_count ?? 0}`;
@@ -776,12 +794,11 @@ function renderRuntimes() {
       ? `${available} of ${envs.length} runtime${envs.length === 1 ? '' : 's'} available.${suffix}`
       : 'No runtimes detected.';
   }
-  $('#runtime-grid').innerHTML = envs.map((env) => {
+  const visibleEnvs = state.showAllRuntimes ? envs : envs.slice(0, 4);
+  const hiddenCount = Math.max(0, envs.length - visibleEnvs.length);
+  const rows = visibleEnvs.map((env) => {
     const url = runtimeUrl(env);
     const port = runtimePort(env);
-    // ponytail: only surface warnings for runtimes that were actually detected.
-    // An undetected runtime is an expected state, not an error worth showing.
-    const warning = env.available ? (env.warnings?.[0] || env.details?.probe_error || '') : '';
     const update = runtimeUpdateFor(env.id || env.kind);
     const isLlamaCpp = env.id === 'llama.cpp' || env.kind === 'local_binary';
     const previewHost = state.paramPreviewHost || '127.0.0.1';
@@ -793,44 +810,61 @@ function renderRuntimes() {
     const urlClass = isLlamaCpp && (url !== `http://${previewHost}:${previewPort}`) ? '' : (url ? '' : 'muted');
     const portClass = isLlamaCpp && (port !== String(previewPort)) ? '' : (port ? '' : 'muted');
     const updateBadge = update?.update_available
-      ? `<a class="badge update-badge" href="${escapeHtml(update.release_url || '#')}" target="_blank" rel="noopener noreferrer" title="Update available: ${escapeHtml(update.latest_version || '')} (you have ${escapeHtml(update.current_version || 'unknown')})">Update: v${escapeHtml(update.latest_version || '?')}</a>`
+      ? `<a class="mini-button icon-button update-badge" href="${escapeHtml(update.release_url || '#')}" target="_blank" rel="noopener noreferrer" title="Update available: ${escapeHtml(update.latest_version || '')} (you have ${escapeHtml(update.current_version || 'unknown')})">v${escapeHtml(update.latest_version || '?')}</a>`
       : '';
-    // Recheck button only for runtimes that actually support update checks
-    // (i.e. were checked and produced an update entry).
     const recheckButton = update
       ? `<button class="mini-button" type="button" data-action="recheck-runtime" data-runtime="${escapeHtml(update.runtime_id)}" title="Recheck this runtime for updates">Recheck</button>`
       : '';
-    return `
-      <article class="runtime-card">
-        <div class="runtime-card-top">
-          <span class="badge ${env.available ? 'ok' : 'warn'}">${env.available ? 'ready' : 'not found'}</span>
-          <span class="runtime-kind">${escapeHtml(env.kind || env.id || 'runtime')}</span>
-        </div>
-        <strong>${escapeHtml(env.name)}</strong>
-        ${env.version ? `<small>${escapeHtml(env.version)}</small>` : ''}
-        <div class="runtime-facts">
-          ${runtimeLine('Location', runtimeLocation(env), env.binary_path ? '' : 'muted')}
-          ${runtimeLine('URL', urlDisplay, urlClass)}
-          ${runtimeLine('Port', portDisplay, portClass)}
-        </div>
-        ${updateBadge || recheckButton ? `<div class="runtime-actions">${updateBadge}${recheckButton}</div>` : ''}
-        ${warning ? `<p class="runtime-warning">${escapeHtml(warning)}</p>` : ''}
-      </article>
+    const actions = `
+      <div class="runtime-actions">
+        <button class="mini-button icon-button" type="button" data-action="runtime-menu" title="Runtime actions" aria-label="Runtime actions">...</button>
+        ${updateBadge}${recheckButton}
+      </div>
     `;
-  }).join('') || '<div class="loading">No runtimes detected.</div>';
+    const name = isLlamaCpp && env.available ? `${env.name} (CUDA)` : env.name;
+    const version = env.version ? `<div class="runtime-version">${escapeHtml(env.version)}</div>` : '';
+    return `
+      <tr class="runtime-row ${env.available ? 'is-ready' : 'is-missing'}">
+        <td>
+          <strong>${escapeHtml(name)}</strong>
+          ${version}
+        </td>
+        <td><span class="badge ${env.available ? 'ok' : 'warn'}">${env.available ? 'ready' : 'not found'}</span></td>
+        <td>${escapeHtml(env.kind || env.id || 'runtime')}</td>
+        <td><code class="${env.binary_path ? '' : 'muted'}" title="${escapeHtml(runtimeLocation(env))}">${escapeHtml(runtimeLocation(env))}</code></td>
+        <td><code class="${urlClass}" title="${escapeHtml(urlDisplay)}">${escapeHtml(urlDisplay)}</code></td>
+        <td>${escapeHtml(portDisplay)}</td>
+        <td>${actions}</td>
+      </tr>
+    `;
+  }).join('');
+  const toggle = envs.length > 4
+    ? `<div class="runtime-footer"><button class="runtime-more" type="button" data-action="toggle-runtimes">${state.showAllRuntimes ? 'Show fewer runtimes' : `Show ${hiddenCount} more runtimes`} <span aria-hidden="true">${state.showAllRuntimes ? '⌃' : '⌄'}</span></button></div>`
+    : '';
+  $('#runtime-grid').innerHTML = rows ? `
+    <div class="runtime-table-wrap">
+      <table class="runtime-table">
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Status</th>
+            <th>Type</th>
+            <th>Location</th>
+            <th>URL</th>
+            <th>Port</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+    ${toggle}
+  ` : '<div class="loading">No runtimes detected.</div>';
 }
 
 function serverRunningForMode(mode) {
   const server = state.servers?.find((s) => s.mode === mode && s.running);
   return server || null;
-}
-
-function _profileActionButtons(profile) {
-  const runningServer = serverRunningForMode(profile.mode);
-  if (runningServer) {
-    return `<button class="mini-button danger" type="button" data-action="stop" data-mode="${escapeHtml(profile.mode)}">Stop</button>`;
-  }
-  return `<button class="mini-button primary" type="button" data-action="start" data-mode="${escapeHtml(profile.mode)}" ${profile.launchable ? '' : 'disabled'}>Start</button>`;
 }
 
 function statusBadge(profile) {
@@ -854,12 +888,21 @@ function fitBadge(profile) {
   return `<span class="badge ${fitStatusClass(status)}" title="${escapeHtml(title)}">${escapeHtml(fit.label || fitStatusLabel(status))}</span>`;
 }
 
+function profileIsUnavailable(profile) {
+  return !profile.launchable || !profile.model?.path;
+}
+
 function filteredProfiles() {
   return state.profiles
     .filter((profile) => {
       if (state.profileFilter === 'launchable') return profile.launchable;
       if (state.profileFilter === 'setup') return !profile.launchable;
       return true;
+    })
+    .filter((profile) => !state.hideUnavailableProfiles || !profileIsUnavailable(profile))
+    .filter((profile) => {
+      if (!state.profileModelFilter || state.profileModelFilter === 'all') return true;
+      return (profile.model?.name || 'Unresolved model') === state.profileModelFilter;
     })
     .filter(profileMatches);
 }
@@ -902,6 +945,47 @@ function toggleGroup(modelName) {
   }
   saveCollapsedGroups(collapsedGroups);
   renderProfiles();
+}
+
+function shortModelVariant(profile) {
+  const name = profile.model?.name || profile.mode || 'Unresolved model';
+  const quant = profile.model?.quant;
+  if (quant && !name.toLowerCase().includes(String(quant).toLowerCase())) {
+    return `${name.split(/[\\/]/).pop()} ${quant}`;
+  }
+  return name
+    .replace(/-gguf$/i, '')
+    .replace(/\.gguf$/i, '')
+    .replace(/[-_]+/g, ' ')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
+
+function profileRuntimeLabel(profile) {
+  const runtime = profile.params?.runtime || 'llama.cpp';
+  const acceleration = String(profile.params?.acceleration_backend || 'auto').toLowerCase();
+  if (runtime === 'llama.cpp' && (acceleration === 'cuda' || acceleration === 'auto')) return 'llama.cpp (CUDA)';
+  return runtime;
+}
+
+function updateProfileToolbar(filteredCount) {
+  const filterInput = $('#profile-filter-input');
+  if (filterInput && filterInput.value !== state.query) filterInput.value = state.query;
+  const modelSelect = $('#profile-model-filter');
+  if (modelSelect) {
+    const models = Array.from(new Set(state.profiles.map((profile) => profile.model?.name || 'Unresolved model'))).sort((a, b) => a.localeCompare(b));
+    if (state.profileModelFilter !== 'all' && !models.includes(state.profileModelFilter)) {
+      state.profileModelFilter = 'all';
+    }
+    modelSelect.innerHTML = '<option value="all">All models</option>' + models.map((model) => (
+      `<option value="${escapeHtml(model)}">${escapeHtml(model)}</option>`
+    )).join('');
+    modelSelect.value = state.profileModelFilter || 'all';
+  }
+  const availabilityToggle = $('#hide-unavailable-profiles');
+  if (availabilityToggle) availabilityToggle.checked = state.hideUnavailableProfiles;
+  const count = $('#profiles-count');
+  if (count) count.textContent = `Showing ${filteredCount} of ${state.profiles.length} profiles`;
 }
 
 function openRenameDialog(mode, currentName) {
@@ -952,44 +1036,144 @@ async function saveProfileName(mode, currentName) {
   }
 }
 
+// Open the row context menu for a profile. Triggered by the row's "..." button
+// (data-action="profile-menu"). The menu replaces the previous stub that only
+// triggered Rename — Delete is gated by a confirm modal and refuses while a
+// tracked server is still running (the backend enforces the same rule).
+function openProfileMenu(button, mode) {
+  const profile = state.profiles.find((p) => p.mode === mode);
+  if (!profile) return;
+  const serverRunning = state.servers?.some(
+    (server) => server.mode === mode && server.running,
+  );
+  showPopupMenu(button, [
+    {
+      label: 'Rename profile…',
+      onSelect: () => saveProfileName(mode, profile.name || profile.mode),
+    },
+    {
+      label: 'Save as copy…',
+      disabled: !profile.launchable,
+      title: profile.launchable
+        ? 'Save the current parameters under a new profile name.'
+        : 'Profile is not launchable; nothing to copy.',
+      onSelect: () => openSaveAsCopyModal(profile),
+    },
+    { separator: true },
+    {
+      label: 'Delete profile',
+      danger: true,
+      disabled: serverRunning,
+      title: serverRunning
+        ? 'A tracked server is still running for this profile. Stop it first.'
+        : 'Remove this profile from models.json.',
+      onSelect: () => deleteProfileConfirm(mode),
+    },
+  ]);
+}
+
+// Open the save-profile modal pre-filled with `<current-name> copy`. The save
+// endpoint matches on mode, so this updates the same entry with the new name
+// (effectively: "rename + snapshot current params"). Useful for keeping a
+// "tuned" variant alongside the original.
+function openSaveAsCopyModal(profile) {
+  const modal = $('#save-profile-modal');
+  const nameInput = $('#save-profile-name');
+  const descInput = $('#save-profile-desc');
+  if (!modal || !nameInput) return;
+  nameInput.value = `${profile.name || profile.mode} copy`.trim();
+  descInput.value = profile.description || '';
+  modal.hidden = false;
+  document.body.classList.add('modal-open');
+  nameInput.focus();
+  nameInput.select();
+}
+
+async function deleteProfileConfirm(mode) {
+  const profile = state.profiles.find((p) => p.mode === mode);
+  const displayName = profile?.name || mode;
+  const ok = await confirmAction({
+    title: 'Delete profile',
+    message: `Delete profile "${displayName}" (${mode})? This removes it from models.json. This cannot be undone.`,
+    confirmLabel: 'Delete',
+    confirmKind: 'danger',
+  });
+  if (!ok) return;
+  try {
+    const result = await api('/api/profiles/delete', {
+      method: 'POST',
+      body: JSON.stringify({ mode }),
+    });
+    if (result.success) {
+      toast(result.message || 'Profile deleted');
+      if (state.selectedProfileMode === mode) {
+        state.selectedProfileMode = null;
+      }
+      await refresh();
+    } else {
+      toast(result.message || 'Delete failed');
+    }
+  } catch (error) {
+    toast(`Delete failed: ${error.message}`);
+  }
+}
+
+// Open the row context menu for a runtime. Triggered by the runtime row's
+// "..." button. Currently exposes Recheck (the runtime's own refresh) — the
+// row already has the full update badge + Recheck button next to it, so this
+// menu is intentionally minimal but provides a future extension point.
+function openRuntimeMenu(button, runtimeId) {
+  if (!runtimeId) return;
+  showPopupMenu(button, [
+    {
+      label: 'Recheck for updates',
+      onSelect: () => recheckRuntime(runtimeId, button),
+    },
+  ]);
+}
+
 function renderProfiles() {
-  const groupedProfiles = groupProfilesByModel(filteredProfiles());
+  const profiles = filteredProfiles();
+  updateProfileToolbar(profiles.length);
+  const groupedProfiles = groupProfilesByModel(profiles);
   let html = '';
   groupedProfiles.forEach((group) => {
     const isCollapsed = collapsedGroups.has(group.model);
     html += `
-      <thead class="profile-group-header">
-        <tr>
-          <td colspan="7">
-            <span class="group-toggle" data-model="${escapeHtml(group.model)}" role="button" tabindex="0" aria-label="${isCollapsed ? 'Expand' : 'Collapse'} ${escapeHtml(group.model)}">${isCollapsed ? '▸' : '▾'} ${escapeHtml(group.model)}</span>
-          </td>
-        </tr>
-      </thead>
+      <tr class="profile-group-header">
+        <td colspan="9">
+          <button class="group-toggle" type="button" data-model="${escapeHtml(group.model)}" aria-expanded="${String(!isCollapsed)}" aria-label="${isCollapsed ? 'Expand' : 'Collapse'} ${escapeHtml(group.model)}">
+            <span aria-hidden="true">${isCollapsed ? '▸' : '▾'}</span>
+            <span>${escapeHtml(group.model)}</span>
+            <span class="profile-group-count">${group.profiles.length}</span>
+          </button>
+        </td>
+      </tr>
     `;
     if (!isCollapsed) {
       group.profiles.forEach((profile) => {
         const selected = profile.mode === state.selectedProfileMode;
-        const modelName = profile.model?.name || 'Unresolved model';
-        const warningText = profile.warnings?.[0] || profile.missing?.join(', ') || '';
         html += `
           <tr class="profile-row ${selected ? 'selected' : ''}" data-profile-mode="${escapeHtml(profile.mode)}" tabindex="0" role="button" aria-label="Select profile ${escapeHtml(profile.name || profile.mode)}">
+            <td>
+              <div class="cell-title">${escapeHtml(shortModelVariant(profile))}</div>
+            </td>
             <td>
               <div class="cell-title">${escapeHtml(profile.name || profile.mode)}</div>
               <div class="cell-subtitle">${escapeHtml(profile.mode)}</div>
             </td>
-            <td>
-              <div class="cell-title">${escapeHtml(modelName)}</div>
-              <div class="cell-subtitle">${escapeHtml(warningText || `${Math.round((profile.confidence || 0) * 100)}% match`)}</div>
-            </td>
-            <td>${statusBadge(profile)}</td>
-            <td>${fitBadge(profile)}</td>
+            <td>${escapeHtml(profileRuntimeLabel(profile))}</td>
             <td>${escapeHtml(profile.params?.ctx_size || '-')}</td>
-            <td>${escapeHtml(profile.params?.port || '-')}</td>
+            <td>${escapeHtml(profile.params?.threads || '-')}</td>
+            <td>${escapeHtml(profile.params?.gpu_layers ?? '-')}</td>
+            <td><span class="updated-cell" title="${escapeHtml(new Date((profile.model?.mtime || 0) * 1000).toISOString())}">${escapeHtml(formatRelativeTime(profile.model?.mtime))}</span></td>
+            <td>${statusBadge(profile)}</td>
             <td>
               <div class="row-actions">
-                <button class="mini-button" type="button" data-action="prepare" data-mode="${escapeHtml(profile.mode)}">Prepare</button>
-                <button class="mini-button" type="button" data-action="rename" data-mode="${escapeHtml(profile.mode)}" title="Rename profile">Rename</button>
-                ${_profileActionButtons(profile)}
+                ${serverRunningForMode(profile.mode)
+                  ? `<button class="mini-button icon-button danger" type="button" data-action="stop" data-mode="${escapeHtml(profile.mode)}" title="Stop server" aria-label="Stop server">■</button>`
+                  : `<button class="mini-button icon-button" type="button" data-action="start" data-mode="${escapeHtml(profile.mode)}" ${profile.launchable ? '' : 'disabled'} title="Start server" aria-label="Start server">▷</button>`}
+                <button class="mini-button icon-button" type="button" data-action="profile-menu" data-mode="${escapeHtml(profile.mode)}" title="More profile actions" aria-label="More profile actions">...</button>
               </div>
             </td>
           </tr>
@@ -997,7 +1181,7 @@ function renderProfiles() {
       });
     }
   });
-  $('#profiles-table').innerHTML = html || '<tr><td colspan="7"><div class="empty-state">No profiles match the current filter.</div></td></tr>';
+  $('#profiles-table').innerHTML = html || '<tr><td colspan="9"><div class="empty-state">No profiles match the current filter.</div></td></tr>';
 }
 
 function renderModels() {
@@ -2202,6 +2386,13 @@ function enhanceSidebar() {
   });
 }
 
+function syncSearchInputs(value) {
+  ['#search-input', '#profile-filter-input'].forEach((selector) => {
+    const input = $(selector);
+    if (input && input.value !== value) input.value = value;
+  });
+}
+
 function wireEvents() {
   applyTheme();
   enhanceTooltips();
@@ -2213,6 +2404,7 @@ function wireEvents() {
   $('#refresh-button').addEventListener('click', refresh);
   $('#check-updates-button').addEventListener('click', (event) => refreshRuntimeUpdates(event.currentTarget));
   $('#settings-button').addEventListener('click', openSettings);
+  $('#settings-nav-button')?.addEventListener('click', openSettings);
   $('#settings-close-button').addEventListener('click', closeSettings);
   $('#settings-cancel-button').addEventListener('click', closeSettings);
   $('#settings-modal').addEventListener('click', (event) => {
@@ -2232,8 +2424,42 @@ function wireEvents() {
   });
   $('#search-input').addEventListener('input', (event) => {
     state.query = event.target.value;
+    syncSearchInputs(state.query);
     renderProfiles();
     renderModels();
+  });
+  $('#profile-filter-input')?.addEventListener('input', (event) => {
+    state.query = event.target.value;
+    syncSearchInputs(state.query);
+    renderProfiles();
+    renderModels();
+  });
+  $('#profile-model-filter')?.addEventListener('change', (event) => {
+    state.profileModelFilter = event.target.value || 'all';
+    renderProfiles();
+  });
+  $('#hide-unavailable-profiles')?.addEventListener('change', (event) => {
+    state.hideUnavailableProfiles = event.target.checked;
+    localStorage.setItem('lcc-hide-unavailable-profiles', state.hideUnavailableProfiles ? '1' : '0');
+    renderProfiles();
+  });
+  $('#new-profile-button')?.addEventListener('click', () => $('#save-profile-button')?.click());
+  $('#profile-menu-button')?.addEventListener('click', () => {
+    const mode = state.selectedProfileMode;
+    if (!mode) {
+      toast('Select a profile row first');
+      return;
+    }
+    const profile = state.profiles.find((p) => p.mode === mode);
+    if (!profile) {
+      toast('Selected profile not found');
+      return;
+    }
+    if (!profile.launchable) {
+      toast('Selected profile is not launchable; nothing to save');
+      return;
+    }
+    openSaveAsCopyModal(profile);
   });
   $$('.segment').forEach((button) => {
     button.addEventListener('click', () => {
@@ -2281,6 +2507,10 @@ function wireEvents() {
       renderParameters();
     }
     if (action === 'download-model') downloadModelUpdate(repo, file, dest, target);
+    else if (action === 'toggle-runtimes') {
+      state.showAllRuntimes = !state.showAllRuntimes;
+      renderRuntimes();
+    }
     else if (action === 'recheck-runtime') recheckRuntime(runtime, target);
     else if (action === 'prepare') prepareProfile(mode, target);
     else if (action === 'start') startProfile(mode, target);
@@ -2289,6 +2519,8 @@ function wireEvents() {
       if (serverId) stopTracked(serverId, target);
       else if (mode) stopProfileByMode(mode, target);
     }
+    else if (action === 'profile-menu') openProfileMenu(target, mode);
+    else if (action === 'runtime-menu') openRuntimeMenu(target, runtime);
     else if (action === 'rename') {
       const profile = state.profiles.find((p) => p.mode === mode);
       if (profile) saveProfileName(mode, profile.name || profile.mode);
@@ -2311,6 +2543,8 @@ function wireEvents() {
     toast('Parameters reset');
   });
   $('#prepare-selected-button').addEventListener('click', (event) => prepareProfile(selectedMode(), event.currentTarget));
+  $('#start-selected-button')?.addEventListener('click', (event) => startProfile(selectedMode(), event.currentTarget));
+  $('#stop-selected-button')?.addEventListener('click', (event) => stopProfileByMode(selectedMode(), event.currentTarget));
   $('#smart-fit-button').addEventListener('click', runAutoTune);
   $('#model-info-box').addEventListener('click', (event) => {
     const button = event.target.closest('[data-tune-index]');
@@ -2448,6 +2682,13 @@ function wireEvents() {
     ctx.dispatchEvent(new Event('change', { bubbles: true }));
   });
   document.addEventListener('keydown', (event) => {
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
+      event.preventDefault();
+      const search = $('#search-input');
+      search?.focus();
+      search?.select();
+      return;
+    }
     if (event.key === 'Escape') {
       if (!$('#settings-modal').hidden) {
         closeSettings();
@@ -2482,6 +2723,244 @@ function wireEvents() {
   });
 }
 
+// ----- Popup menu component -------------------------------------------------
+// One shared <ul> element reused across the dashboard. Anchors to a trigger
+// element, positions itself below it, closes on outside click / Escape, and
+// supports keyboard arrow nav. Items: { id?, label, danger?, disabled?, onSelect }.
+let popupMenuEl = null;
+let popupMenuItems = [];
+let popupMenuActiveIndex = 0;
+let popupMenuOutsideHandler = null;
+let popupMenuKeyHandler = null;
+
+function closePopupMenu() {
+  if (popupMenuEl) {
+    popupMenuEl.remove();
+    popupMenuEl = null;
+  }
+  popupMenuItems = [];
+  document.removeEventListener('mousedown', popupMenuOutsideHandler, true);
+  document.removeEventListener('keydown', popupMenuKeyHandler, true);
+  popupMenuOutsideHandler = null;
+  popupMenuKeyHandler = null;
+}
+
+function showPopupMenu(trigger, items) {
+  closePopupMenu();
+  if (!Array.isArray(items) || items.length === 0) return;
+  popupMenuItems = items.filter((item) => !item.hidden);
+
+  const menu = document.createElement('ul');
+  menu.className = 'popup-menu';
+  menu.setAttribute('role', 'menu');
+  popupMenuItems.forEach((item, index) => {
+    if (item.separator) {
+      const sep = document.createElement('li');
+      sep.className = 'popup-menu-separator';
+      sep.setAttribute('role', 'separator');
+      menu.appendChild(sep);
+      return;
+    }
+    const li = document.createElement('li');
+    li.setAttribute('role', 'menuitem');
+    li.className = `popup-menu-item${item.danger ? ' danger' : ''}${item.disabled ? ' disabled' : ''}`;
+    li.tabIndex = -1;
+    li.textContent = item.label;
+    li.title = item.title || '';
+    li.dataset.index = String(index);
+    if (!item.disabled) {
+      li.addEventListener('click', (event) => {
+        event.stopPropagation();
+        closePopupMenu();
+        try { item.onSelect?.(); } catch (err) { console.error(err); }
+      });
+    }
+    menu.appendChild(li);
+  });
+  document.body.appendChild(menu);
+  popupMenuEl = menu;
+
+  // Position below the trigger, flipping above if it would overflow viewport.
+  const rect = trigger.getBoundingClientRect();
+  menu.style.visibility = 'hidden';
+  requestAnimationFrame(() => {
+    const menuRect = menu.getBoundingClientRect();
+    const fitsBelow = rect.bottom + menuRect.height + 8 <= window.innerHeight;
+    const top = fitsBelow
+      ? rect.bottom + window.scrollY + 4
+      : rect.top + window.scrollY - menuRect.height - 4;
+    const left = Math.min(
+      rect.left + window.scrollX,
+      window.scrollX + window.innerWidth - menuRect.width - 8,
+    );
+    menu.style.top = `${Math.max(top, window.scrollY + 4)}px`;
+    menu.style.left = `${Math.max(left, window.scrollX + 4)}px`;
+    menu.style.visibility = 'visible';
+    popupMenuActiveIndex = 0;
+    const first = menu.querySelector('.popup-menu-item:not(.disabled)');
+    first?.classList.add('active');
+    first?.focus();
+  });
+
+  popupMenuOutsideHandler = (event) => {
+    if (!popupMenuEl) return;
+    if (popupMenuEl.contains(event.target) || trigger.contains(event.target)) return;
+    closePopupMenu();
+  };
+  popupMenuKeyHandler = (event) => {
+    if (!popupMenuEl) return;
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      closePopupMenu();
+      trigger.focus();
+      return;
+    }
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault();
+      const step = event.key === 'ArrowDown' ? 1 : -1;
+      // Skip separators; only enabled non-separator items are focusable.
+      const enabled = popupMenuItems
+        .map((item, idx) => ({ item, idx }))
+        .filter(({ item }) => !item.disabled && !item.separator);
+      if (enabled.length === 0) return;
+      const pos = enabled.findIndex(({ idx }) => idx === popupMenuActiveIndex);
+      const next = enabled[(pos + step + enabled.length) % enabled.length];
+      popupMenuActiveIndex = next.idx;
+      menu.querySelectorAll('.popup-menu-item').forEach((el, idx) => {
+        el.classList.toggle('active', idx === popupMenuActiveIndex);
+      });
+      menu.querySelector(`.popup-menu-item[data-index="${popupMenuActiveIndex}"]`)?.focus();
+      return;
+    }
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      const current = popupMenuItems[popupMenuActiveIndex];
+      if (current && !current.disabled) {
+        closePopupMenu();
+        try { current.onSelect?.(); } catch (err) { console.error(err); }
+      }
+    }
+  };
+  // Use capture so the outside-click fires before any handler bound to the
+  // trigger element (e.g. our row-click listener).
+  setTimeout(() => {
+    document.addEventListener('mousedown', popupMenuOutsideHandler, true);
+    document.addEventListener('keydown', popupMenuKeyHandler, true);
+  }, 0);
+}
+
+// ----- Live Hardware polling (sidebar widget) -------------------------------
+// Polls /api/system/live every few seconds, pauses when the tab is hidden or
+// the sidebar is collapsed, and renders GPU util/temp/VRAM bars plus a RAM
+// bar inside the sidebar just above the API footer.
+const LIVE_HARDWARE_INTERVAL_MS = 3000;
+let liveHardwareTimer = null;
+
+function liveBarClass(percent) {
+  if (percent >= 90) return 'danger';
+  if (percent >= 70) return 'warn';
+  return '';
+}
+
+function renderLiveGpu(gpu) {
+  const usedPct = gpu.total_memory_bytes > 0
+    ? (gpu.used_memory_bytes / gpu.total_memory_bytes) * 100
+    : 0;
+  const utilPct = Number.isFinite(gpu.utilization_gpu_percent) ? gpu.utilization_gpu_percent : null;
+  const temp = Number.isFinite(gpu.temperature_c) ? `${Math.round(gpu.temperature_c)}°C` : '–';
+  const utilText = utilPct === null ? '–' : `${Math.round(utilPct)}%`;
+  // Shorten common GPU name prefixes so they fit the narrow sidebar column.
+  const displayName = String(gpu.name || '')
+    .replace(/^NVIDIA GeForce /, '')
+    .replace(/^NVIDIA /, '')
+    .replace(/^AMD Radeon /, '')
+    .replace(/^Intel /, '');
+  return `
+    <div class="live-gpu-card" data-gpu-index="${escapeHtml(gpu.index ?? '')}">
+      <div class="live-gpu-card-head">
+        <span class="gpu-name" title="${escapeHtml(gpu.name)}">${escapeHtml(displayName)}</span>
+        <span class="gpu-stats">${utilText} · ${temp}</span>
+      </div>
+      <div class="live-bar-label"><span>VRAM</span><span>${formatBytes(gpu.used_memory_bytes)} / ${formatBytes(gpu.total_memory_bytes)}</span></div>
+      <div class="live-bar"><div class="live-bar-fill ${liveBarClass(usedPct)}" style="width:${usedPct.toFixed(1)}%"></div></div>
+    </div>`;
+}
+
+function renderLiveRam(ram) {
+  if (!ram || ram.total_bytes == null) {
+    return '<p class="live-empty">System RAM not detected.</p>';
+  }
+  const used = ram.total_bytes - (ram.free_bytes ?? ram.total_bytes);
+  const pct = ram.total_bytes > 0 ? (used / ram.total_bytes) * 100 : 0;
+  return `
+    <div class="live-bar-label">
+      <span class="label-title">System RAM</span>
+      <span>${formatBytes(used)} / ${formatBytes(ram.total_bytes)}</span>
+    </div>
+    <div class="live-bar"><div class="live-bar-fill ${liveBarClass(pct)}" style="width:${pct.toFixed(1)}%"></div></div>`;
+}
+
+function renderLiveHardware(data) {
+  const gpuGrid = $('#live-gpu-grid');
+  const ramRow = $('#live-ram-row');
+  const empty = $('#live-empty');
+  const badge = $('#live-source-badge');
+  if (!gpuGrid) return;
+
+  const gpus = Array.isArray(data?.gpus) ? data.gpus : [];
+  if (gpus.length) {
+    gpuGrid.innerHTML = gpus.map(renderLiveGpu).join('');
+    empty.hidden = true;
+  } else {
+    gpuGrid.innerHTML = '';
+    empty.hidden = false;
+    empty.textContent = data?.source === 'none'
+      ? 'GPU data unavailable (no nvidia-smi detected).'
+      : 'Waiting for first sample…';
+  }
+  ramRow.innerHTML = renderLiveRam(data?.system_ram);
+
+  if (badge) {
+    const age = data?.cached_age_ms;
+    const label = gpus.length
+      ? `nvidia-smi · ${age != null ? `${age}ms` : 'live'}`
+      : 'RAM only';
+    badge.textContent = label;
+    badge.hidden = false;
+  }
+}
+
+async function pollLiveHardware() {
+  const widget = $('#sidebar-live-hardware');
+  // Pause when the tab is hidden or when the sidebar is collapsed to the icon
+  // rail. ``enhanceSidebar`` toggles ``.sidebar-collapsed`` on ``.app-shell``,
+  // so check there (the ``.sidebar`` element itself never gets that class).
+  if (!widget || document.hidden) return;
+  if (document.querySelector('.app-shell')?.classList.contains('sidebar-collapsed')) return;
+  try {
+    const data = await api('/api/system/live');
+    renderLiveHardware(data);
+  } catch {
+    // Transient — next tick will retry.
+  }
+}
+
+function startLiveHardwarePolling() {
+  if (liveHardwareTimer) return;
+  pollLiveHardware();
+  liveHardwareTimer = setInterval(pollLiveHardware, LIVE_HARDWARE_INTERVAL_MS);
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) pollLiveHardware();
+  });
+  // Note: a previous draft added a ``transitionend`` re-poll on the sidebar.
+  // That listener amplified polling ~7x because ``.live-bar-fill`` itself
+  // has ``transition: width 0.4s`` and every render restarts the bar from
+  // ``width: 0%`` — each transition bubbled ``transitionend`` back to the
+  // sidebar and fired another poll. Removed; the 3 s cadence is short enough
+  // that the worst-case post-expand wait is acceptable.
+}
+
 wireEvents();
 loadSamplingPresets();
 refresh();
+startLiveHardwarePolling();

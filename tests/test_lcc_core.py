@@ -93,6 +93,28 @@ class ModelDiscoveryTests(unittest.TestCase):
         self.assertEqual(models[0].quant, "Q4_K_M")
         self.assertTrue(models[0].mmproj_path.endswith("mmproj-Example.gguf"))
 
+    def test_discovered_model_carries_mtime(self) -> None:
+        # The dashboard's "Updated" column reads model.mtime; the discovery
+        # path must populate it from a real stat() so the UI doesn't have to.
+        import time as _time
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            model_dir = root / "models"
+            model_dir.mkdir()
+            target = model_dir / "Tiny-1B-Q8_0.gguf"
+            target.write_bytes(b"x" * 100)
+            before = _time.time()
+            models = discover_models([root / "models"])
+            after = _time.time()
+        self.assertEqual(len(models), 1)
+        mtime = models[0].mtime
+        self.assertIsNotNone(mtime)
+        # Allow a small clock skew window (the stat call uses real wall clock).
+        self.assertGreaterEqual(mtime, before - 2)
+        self.assertLessEqual(mtime, after + 2)
+        # to_dict() must surface it for the JS layer.
+        self.assertEqual(models[0].to_dict()["mtime"], mtime)
+
 
 class ManifestTests(unittest.TestCase):
     def test_manifest_profiles_flag_absolute_paths(self) -> None:

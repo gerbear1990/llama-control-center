@@ -535,6 +535,63 @@ def save_profile(request: SaveProfileRequest) -> dict[str, Any]:
     return {"success": True, "message": message}
 
 
+class DeleteProfileRequest(BaseModel):
+    mode: str
+
+
+@app.post("/api/profiles/delete")
+def delete_profile(request: DeleteProfileRequest) -> dict[str, Any]:
+    """Remove a profile entry from ``models.json``.
+
+    Uses the same atomic tmp+replace write as ``/api/profiles/save`` so a
+    partial write can't corrupt the manifest. Renamed profiles live in the
+    user config (``profile_names``); the user may rename or remove them
+    independently. Refuses to delete a profile whose tracked server is
+    still running so Stop always wins.
+    """
+    from lcc_core.paths import find_project_root
+    from lcc_core.server_manager import list_servers
+
+    root = find_project_root()
+    if not root:
+        return {"success": False, "message": "Could not find project root."}
+    manifest_path = root / "models.json"
+    if not manifest_path.is_file():
+        return {"success": False, "message": f"Unknown profile mode: {request.mode}"}
+
+    # Refuse if a tracked server is still running for this profile so the user
+    # can't accidentally lose the connection mid-generation.
+    for server in list_servers():
+        if server.get("mode") == request.mode and server.get("running"):
+            return {
+                "success": False,
+                "message": f"Profile '{request.mode}' has a tracked server running. Stop it before deleting.",
+            }
+
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"success": False, "message": "models.json is unreadable."}
+
+    models = manifest.get("models", [])
+    kept = [m for m in models if m.get("mode") != request.mode]
+    if len(kept) == len(models):
+        return {"success": False, "message": f"Unknown profile mode: {request.mode}"}
+
+    manifest["models"] = kept
+    tmp_path = manifest_path.with_suffix(".json.tmp")
+    tmp_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    tmp_path.replace(manifest_path)
+
+    # Also drop any custom name the user assigned for this mode.
+    config = AppConfig.load()
+    if request.mode in config.profile_names:
+        config.profile_names.pop(request.mode, None)
+        config.save()
+
+    return {"success": True, "message": f"Deleted profile '{request.mode}'.", "mode": request.mode}
+
+
 class GenerateLaunchScriptRequest(BaseModel):
     mode: str
     model_path: str

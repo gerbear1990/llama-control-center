@@ -138,5 +138,113 @@ class ApiSmokeTests(unittest.TestCase):
         self.assertIn("no running tracked server", str(response.json()).lower())
 
 
+class ProfileDeleteApiTests(unittest.TestCase):
+    """Round-trip: write a profile to a sandboxed models.json, delete it,
+    verify the entry is gone. Uses find_project_root monkeypatch to point
+    the endpoint at a temp directory so we never touch the real manifest."""
+
+    def setUp(self) -> None:
+        from lcc_api import app as app_module
+        from lcc_core import paths as paths_module
+
+        self.client = TestClient(app_module.app)
+        self._tmp = tempfile.mkdtemp()
+        self.root = Path(self._tmp)
+        self.manifest_path = self.root / "models.json"
+        self.manifest_path.write_text(
+            json.dumps(
+                {
+                    "models": [
+                        {
+                            "mode": "to-remove",
+                            "name": "Remove me",
+                            "recommended_params": {"ctx_size": 4096},
+                        },
+                        {
+                            "mode": "to-keep",
+                            "name": "Keep me",
+                            "recommended_params": {"ctx_size": 8192},
+                        },
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        self._orig_find_root = paths_module.find_project_root
+        paths_module.find_project_root = lambda *a, **kw: self.root
+
+    def tearDown(self) -> None:
+        from lcc_core import paths as paths_module
+
+        paths_module.find_project_root = self._orig_find_root
+        import shutil
+
+        shutil.rmtree(self._tmp, ignore_errors=True)
+
+    def test_delete_removes_only_target_entry(self) -> None:
+        response = self.client.post(
+            "/api/profiles/delete", json={"mode": "to-remove"}
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        self.assertTrue(payload["success"])
+        self.assertEqual(payload["mode"], "to-remove")
+
+        # The kept entry is untouched, the removed one is gone.
+        manifest = json.loads(self.manifest_path.read_text(encoding="utf-8"))
+        modes = [m.get("mode") for m in manifest.get("models", [])]
+        self.assertEqual(modes, ["to-keep"])
+
+    def test_delete_unknown_mode_returns_400(self) -> None:
+        # The endpoint reports validation failures with success=False and a 200
+        # response (matches /api/profiles/save). The 400 only fires when the
+        # server-running guard rejects the request.
+        response = self.client.post(
+            "/api/profiles/delete", json={"mode": "nope"}
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.json()["success"])
+        self.assertIn("unknown profile mode", response.json()["message"].lower())
+
+    def test_delete_refuses_when_tracked_server_running(self) -> None:
+        import lcc_core.server_manager as sm
+
+        # Inject a fake tracked entry that's still running. Monkeypatch
+        # ``list_servers`` itself (the endpoint imports it inside the handler,
+        # so the module-level rebind is what the endpoint sees). The fake
+        # entry must include ``running: True`` since ``list_servers`` normally
+        # fills that field from ``pid_is_running``.
+        fake = [
+            {
+                "id": "to-remove-running",
+                "mode": "to-remove",
+                "pid": 2147483647,
+                "host": "127.0.0.1",
+                "port": 8080,
+                "stdout_log": None,
+                "stderr_log": None,
+                "running": True,
+            }
+        ]
+        orig_list = sm.list_servers
+        sm.list_servers = lambda: fake
+        try:
+            response = self.client.post(
+                "/api/profiles/delete", json={"mode": "to-remove"}
+            )
+        finally:
+            sm.list_servers = orig_list
+        # The endpoint reports rejections with success=False (matching the
+        # other endpoints in this file); it never raises HTTPException for
+        # a delete-while-running guard.
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.json()["success"])
+        self.assertIn("tracked server running", response.json()["message"].lower())
+        # The manifest is unchanged.
+        manifest = json.loads(self.manifest_path.read_text(encoding="utf-8"))
+        modes = [m.get("mode") for m in manifest.get("models", [])]
+        self.assertIn("to-remove", modes)
+
+
 if __name__ == "__main__":
     unittest.main()
