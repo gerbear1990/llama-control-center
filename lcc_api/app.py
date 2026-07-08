@@ -214,26 +214,37 @@ def get_system_live() -> dict[str, Any]:
 def check_port(port: int, host: str = "127.0.0.1") -> dict[str, Any]:
     """Probe a TCP port from the dashboard so the user sees a live status dot
     next to the Port field, instead of waiting for the next launch attempt
-    to fail. Also returns the next free port so the dashboard can offer a
-    one-click 'use port X' suggestion when the chosen one is busy.
+    to fail. Returns ``port_in_use_reason`` ("reserved" vs "in_use") so the
+    UI can phrase the action button correctly — Windows machines with the
+    default netsh config exclude 8080/8081 from bind and need a port above
+    15200, not a kill-conflict suggestion.
     """
     from lcc_core.server_manager import (
-        _is_port_free,
         _next_free_port,
         _port_in_use_info,
+        _probe_port,
     )
 
     safe_host = host.strip() or "127.0.0.1"
     safe_port = max(1, min(65535, int(port)))
-    free = _is_port_free(safe_host, safe_port)
+    probe = _probe_port(safe_host, safe_port)
     payload: dict[str, Any] = {
         "host": safe_host,
         "port": safe_port,
-        "free": free,
+        "free": probe["free"],
     }
-    if not free:
-        payload["port_holder"] = _port_in_use_info(safe_host, safe_port)
-        payload["suggested_port"] = _next_free_port(safe_host, safe_port + 1)
+    if not probe["free"]:
+        reason = probe.get("reason", "in_use")
+        payload["port_in_use_reason"] = reason
+        if reason == "reserved":
+            payload["reserved_range"] = probe.get("range")
+            rng = probe.get("range") or {}
+            payload["suggested_port"] = _next_free_port(
+                safe_host, rng.get("end", safe_port) + 1,
+            )
+        else:
+            payload["port_holder"] = _port_in_use_info(safe_host, safe_port)
+            payload["suggested_port"] = _next_free_port(safe_host, safe_port + 1)
     return payload
 
 

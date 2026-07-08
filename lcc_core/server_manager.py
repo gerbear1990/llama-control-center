@@ -139,15 +139,154 @@ def _is_port_free(host: str, port: int, *, timeout: float = 0.6) -> bool:
 def _next_free_port(host: str, start: int, *, max_tries: int = 50) -> int | None:
     """Find the next free TCP port at or above ``start`` by probing each.
 
-    Returns ``None`` when every port in the [start, start+max_tries) window
-    is bound; callers should fall back to letting llama-server report its
-    own bind error rather than suggesting an unbounded scan.
+    On Windows, ``start`` is bumped past any ``netsh int ipv4 show
+    excludedportrange protocol=tcp`` block it happens to fall inside; that's
+    the failure mode that caught the default llama-server ports 8080/8081
+    on hosts where Hyper-V / Docker / a previous netsh invocation reserved
+    those ranges. Subsequent probes use the normal one-by-one walk.
+
+    Returns ``None`` when every candidate in the [start, start+max_tries)
+    window is busy; callers should fall back to letting llama-server
+    report its own bind error rather than suggesting an unbounded scan.
     """
+    start = int(start)
+    if is_windows():
+        for rng in _windows_excluded_port_ranges():
+            if rng["start"] <= start <= rng["end"]:
+                start = rng["end"] + 1
+                break
+        # Also treat the dynamic range as reserved.
+        dyn = _windows_dynamic_port_range()
+        if dyn and dyn["start"] <= start <= dyn["end"]:
+            start = dyn["end"] + 1
     for offset in range(max_tries):
-        candidate = int(start) + offset
+        candidate = start + offset
         if _is_port_free(host, candidate):
             return candidate
     return None
+
+
+# Best-effort lookup of ports Windows will refuse to bind for our user.
+# Returns a *list* of ``{start, end}`` ranges (both inclusive) covering
+# every excluded range `netsh int ipv4 show excludedportrange protocol=tcp`
+# reports. ``get_dynamicportrange`` is less reliable on hosts where
+# Hyper-V / Docker / a previous netsh command has carved out specific
+# sub-ranges; the exclusion list is the actual source of truth.
+def _windows_excluded_port_ranges() -> list[dict[str, int]]:
+    ranges: list[dict[str, int]] = []
+    try:
+        result = subprocess.run(
+            ["netsh", "int", "ipv4", "show", "excludedportrange",
+             "protocol=tcp"],
+            capture_output=True, text=True, timeout=3, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ranges
+    if result.returncode != 0 or not result.stdout:
+        return ranges
+    for raw_line in result.stdout.splitlines():
+        line = raw_line.strip()
+        if not line or line.lower().startswith(("protocol", "start port",
+                                                "----", "*-")):
+            continue
+        parts = line.split()
+        # Lines look like: "  8055        8154" — whitespace-separated ints.
+        if len(parts) < 2:
+            continue
+        try:
+            start, end = int(parts[0]), int(parts[1])
+        except ValueError:
+            continue
+        if end < start:
+            continue
+        ranges.append({"start": start, "end": end})
+    return ranges
+
+
+def _windows_dynamic_port_range() -> dict[str, int] | None:
+    try:
+        result = subprocess.run(
+            ["netsh", "int", "ipv4", "show", "dynamicportrange", "tcp"],
+            capture_output=True, text=True, timeout=3, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0 or not result.stdout:
+        return None
+    start: int | None = None
+    count: int | None = None
+    for raw_line in result.stdout.splitlines():
+        line = raw_line.strip()
+        low = line.lower()
+        if low.startswith("start port"):
+            try:
+                start = int(line.split(":", 1)[1].strip())
+            except (IndexError, ValueError):
+                pass
+        elif low.startswith("number of ports"):
+            try:
+                count = int(line.split(":", 1)[1].strip())
+            except (IndexError, ValueError):
+                pass
+    if start is None or count is None:
+        return None
+    return {"start": start, "end": start + count - 1}
+
+
+def _is_port_reserved_on_windows(port: int) -> bool:
+    """True when ``port`` falls inside *any* Windows-blessed reserved range.
+
+    Cheap path — used by the pre-launch port probe to distinguish a real
+    EADDRINUSE from an EACCES that the kernel returns for reserved ports.
+    """
+    if not is_windows() or not port or port <= 0:
+        return False
+    port = int(port)
+    for rng in _windows_excluded_port_ranges():
+        if rng["start"] <= port <= rng["end"]:
+            return True
+    dyn = _windows_dynamic_port_range()
+    if dyn and dyn["start"] <= port <= dyn["end"]:
+        return True
+    return False
+
+
+def _probe_port(host: str, port: int, *, timeout: float = 0.6) -> dict[str, Any]:
+    """Bind-probe that returns WHY a port is unusable.
+
+    Three outcomes:
+      - ``{"free": True}`` — caller can use ``port``.
+      - ``{"free": False, "reason": "reserved", "range": {start,end}}`` —
+        Windows refused bind for permission reasons (EACCES). The
+        offending range is reported so the UI can suggest a port outside
+        it.
+      - ``{"free": False, "reason": "in_use"}`` — another socket owns it
+        (real EADDRINUSE). The caller should run ``_port_in_use_info`` to
+        fill in pid/process_name when needed for the UI.
+    """
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        probe.settimeout(timeout)
+        probe.bind((host, int(port)))
+        return {"free": True}
+    except PermissionError:
+        # Linux: EACCES means low ports (1-1023) without privileges.
+        # Windows: EACCES means the port is in a kernel-managed range
+        # (either the dynamic range or a netsh excludedportrange block).
+        if is_windows():
+            port_int = int(port)
+            for rng in _windows_excluded_port_ranges():
+                if rng["start"] <= port_int <= rng["end"]:
+                    return {"free": False, "reason": "reserved",
+                            "range": rng}
+            dyn = _windows_dynamic_port_range()
+            if dyn and dyn["start"] <= port_int <= dyn["end"]:
+                return {"free": False, "reason": "reserved", "range": dyn}
+        return {"free": False, "reason": "in_use"}
+    except OSError:
+        return {"free": False, "reason": "in_use"}
+    finally:
+        probe.close()
 
 
 # Best-effort lookup of which process is listening on ``host:port``.
@@ -596,24 +735,61 @@ def start_profile(
     # become ready, and only surfaced the error after the user had stared
     # at the "starting…" spinner for the full timeout. Checking first turns
     # the bind-fail into a single immediate error with an actionable hint.
+    #
+    # There are two distinct bind-fail modes that get *different* error
+    # copy:
+    #
+    #   - ``reserved``: the port is inside Windows' reserved dynamic range
+    #     (e.g. 8080/8081 with the default netsh config). The bind fails
+    #     with EACCES, nothing is listening on the port, and the right
+    #     action is "pick a port outside the range" rather than "kill the
+    #     holder". This is the failure mode that the Qwen-AgentWorld
+    #     profile was hitting.
+    #   - ``in_use``: a real listener is on the port (or we don't know who).
+    #     Get the holder via ``_port_in_use_info`` so the UI can show a
+    #     process name.
     host = str(prepared["params"].get("host", "127.0.0.1"))
     port = int(prepared["params"].get("port", 8080))
-    if not _is_port_free(host, port):
-        info = _port_in_use_info(host, port) or {}
+    probe = _probe_port(host, port)
+    if not probe["free"]:
+        reason = probe.get("reason", "in_use")
+        info = None
         process_part = ""
-        if info.get("process_name") and info.get("pid"):
-            process_part = f" by {info['process_name']} (PID {info['pid']})"
-        elif info.get("process_name"):
-            process_part = f" by {info['process_name']}"
-        elif info.get("pid"):
-            process_part = f" by PID {info['pid']}"
-        suggested = _next_free_port(host, port + 1)
+        if reason == "in_use":
+            info = _port_in_use_info(host, port) or {}
+            if info.get("process_name") and info.get("pid"):
+                process_part = f" by {info['process_name']} (PID {info['pid']})"
+            elif info.get("process_name"):
+                process_part = f" by {info['process_name']}"
+            elif info.get("pid"):
+                process_part = f" by PID {info['pid']}"
+        # Suggest the next port above the reserved range when the issue is
+        # reservation; otherwise just port + 1 (which may itself be free,
+        # or may itself be reserved — the function handles the bump).
+        if reason == "reserved":
+            rng = probe.get("range") or {}
+            rng_start = rng.get("start", "?")
+            rng_end = rng.get("end", "?")
+            suggested = _next_free_port(host, port)
+            message = (
+                f"Port {port} is in a Windows-reserved range "
+                f"({rng_start}-{rng_end}); the OS denies bind. "
+                f"Pick a Port value above {rng_end} and try again."
+            )
+        else:
+            suggested = _next_free_port(host, port + 1)
+            message = (
+                f"Port {port} is already bound{process_part}. "
+                f"Stop the conflicting process, or change the Port parameter and try again."
+            )
         return {
             "success": False,
-            "error": f"Port {port} is already bound{process_part}. Stop the conflicting process, or change the Port parameter and try again.",
+            "error": message,
             "port_in_use": True,
+            "port_in_use_reason": reason,
             "port": port,
             "port_holder": info,
+            "reserved_range": probe.get("range"),
             "suggested_port": suggested,
             "prepared": prepared,
         }

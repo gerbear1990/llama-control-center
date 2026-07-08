@@ -213,6 +213,13 @@ async function checkPortNow(port, host) {
     if (data.free) {
       statusEl.className = 'port-status free';
       statusEl.title = `Port ${data.port} is free`;
+    } else if (data.port_in_use_reason === 'reserved') {
+      // The OS denies bind on this port even though nothing is listening.
+      // That's the failure mode Windows machines hit when the default
+      // dynamic port range (1024-15200) covers a profile's default port.
+      statusEl.className = 'port-status busy';
+      const rng = data.reserved_range || {};
+      statusEl.title = `Port ${data.port} is inside the Windows reserved range ${rng.start ?? '?'}-${rng.end ?? '?'}. Pick a port above ${rng.end ?? '?'}. Suggested free port: ${data.suggested_port ?? 'none'}`;
     } else {
       const holder = data.port_holder;
       const who = holder?.process_name && holder?.pid
@@ -1889,26 +1896,48 @@ async function startProfile(mode, trigger) {
     const detail = error.detail;
     if (detail && detail.port_in_use) {
       const suggested = detail.suggested_port;
-      const holder = detail.port_holder || {};
-      const who = holder.process_name && holder.pid
-        ? `${holder.process_name} (PID ${holder.pid})`
-        : holder.process_name || holder.pid || 'another process';
-      toast(
-        `Port ${detail.port} is already bound by ${who}.`,
-        suggested
-          ? {
-              label: `Use port ${suggested}`,
-              onClick: () => {
-                const portInput = $('#param-port');
-                if (portInput) {
-                  portInput.value = String(suggested);
-                  portInput.dispatchEvent(new Event('input', { bubbles: true }));
-                  portInput.focus();
-                }
-              },
-            }
-          : undefined,
-      );
+      if (detail.port_in_use_reason === 'reserved') {
+        // Windows-reserved-range case: no holder to report, but the
+        // suggested_port is already chosen above the range end.
+        const rng = detail.reserved_range || {};
+        toast(
+          `Port ${detail.port} is inside the Windows reserved range ${rng.start ?? '?'}-${rng.end ?? '?'}. Pick a port above ${rng.end ?? '?'}.`,
+          suggested
+            ? {
+                label: `Use port ${suggested}`,
+                onClick: () => {
+                  const portInput = $('#param-port');
+                  if (portInput) {
+                    portInput.value = String(suggested);
+                    portInput.dispatchEvent(new Event('input', { bubbles: true }));
+                    portInput.focus();
+                  }
+                },
+              }
+            : undefined,
+        );
+      } else {
+        const holder = detail.port_holder || {};
+        const who = holder.process_name && holder.pid
+          ? `${holder.process_name} (PID ${holder.pid})`
+          : holder.process_name || holder.pid || 'another process';
+        toast(
+          `Port ${detail.port} is already bound by ${who}.`,
+          suggested
+            ? {
+                label: `Use port ${suggested}`,
+                onClick: () => {
+                  const portInput = $('#param-port');
+                  if (portInput) {
+                    portInput.value = String(suggested);
+                    portInput.dispatchEvent(new Event('input', { bubbles: true }));
+                    portInput.focus();
+                  }
+                },
+              }
+            : undefined,
+        );
+      }
     } else {
       toast(`Start failed: ${error.message}`);
     }

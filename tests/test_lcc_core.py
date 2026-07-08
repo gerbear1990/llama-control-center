@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import shutil
 import socket
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -1543,13 +1544,17 @@ class PortAvailabilityTests(unittest.TestCase):
 
     def test_next_free_port_skips_bound_ports(self):
         from lcc_core.server_manager import _next_free_port, _is_port_free
-        # Bind two consecutive ports so the search must skip past them.
+        # Bind two consecutive ports OUTSIDE the Windows reserved dynamic
+        # range so the OS actually allows the bind; if we land inside the
+        # range, ``_is_port_free`` reports EACCES and the
+        # ``_next_free_port`` Windows skip changes the expected answer.
+        start = 20000 if sys.platform == "win32" else 0
         first = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         second = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         first.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         second.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
-            first.bind(("127.0.0.1", 0))
+            first.bind(("127.0.0.1", start))
             p1 = first.getsockname()[1]
             first.listen(1)
             second.bind(("127.0.0.1", p1 + 1))
@@ -1562,17 +1567,33 @@ class PortAvailabilityTests(unittest.TestCase):
             first.close()
             second.close()
 
+    def test_next_free_port_skips_windows_reserved_range(self):
+        if sys.platform != "win32":
+            self.skipTest("reserved-range skip is Windows-only")
+        from lcc_core.server_manager import _next_free_port, _windows_dynamic_port_range
+        rng = _windows_dynamic_port_range()
+        if rng is None:
+            self.skipTest("netsh not available")
+        # Start *inside* the reserved range. The first free port above it
+        # should land past the range end, not at ``start + 1``.
+        start = rng["start"] + 1000  # safely inside the range
+        chosen = _next_free_port("127.0.0.1", start)
+        self.assertIsNotNone(chosen)
+        self.assertGreater(chosen, rng["end"])
+
     def test_next_free_port_returns_none_when_all_bound(self):
         from lcc_core.server_manager import _next_free_port
-        # Bind two consecutive ports; with max_tries=2 we probe only those
-        # two. Both are bound, so the search must give up and return None
-        # rather than picking a wildly high port.
+        # Bind two consecutive ports OUTSIDE the Windows reserved dynamic
+        # range so the bind isn't rejected for EACCES; with max_tries=2
+        # we probe only those two. Both are bound, so the search must give
+        # up and return None rather than picking a wildly high port.
+        start = 20000 if sys.platform == "win32" else 0
         first = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         second = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         first.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         second.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
-            first.bind(("127.0.0.1", 0))
+            first.bind(("127.0.0.1", start))
             port = first.getsockname()[1]
             first.listen(1)
             second.bind(("127.0.0.1", port + 1))
@@ -1607,6 +1628,80 @@ class PortAvailabilityTests(unittest.TestCase):
         from lcc_core.server_manager import _classify_launch_error
         self.assertIsNone(_classify_launch_error(""))
         self.assertIsNone(_classify_launch_error("some unrelated noise from llama-server"))
+
+    def test_probe_port_returns_free_for_open_port(self):
+        # Skip on Windows: ports below ~15201 are reserved by default and
+        # the probe won't ever say "free" on those, so pick a port we
+        # know is well above the dynamic range.
+        from lcc_core.server_manager import _probe_port
+        if sys.platform == "win32":
+            port = 20000
+        else:
+            port = 1  # outside the catch on POSIX too; bind succeeds
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.bind(("127.0.0.1", port))
+        finally:
+            sock.close()
+        result = _probe_port("127.0.0.1", port)
+        self.assertTrue(result["free"])
+
+    def test_probe_port_returns_in_use_for_listener(self):
+        from lcc_core.server_manager import _probe_port
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.bind(("127.0.0.1", 0))
+            port = sock.getsockname()[1]
+            sock.listen(1)
+            result = _probe_port("127.0.0.1", port)
+            self.assertFalse(result["free"])
+            self.assertEqual(result["reason"], "in_use")
+            self.assertNotIn("range", result)
+        finally:
+            sock.close()
+
+    def test_windows_reserved_range_detected_via_probe(self):
+        # Skip this test on non-Windows hosts — the reserved range logic
+        # only fires when ``netsh int ipv4 show excludedportrange
+        # protocol=tcp`` reports the relevant ports.
+        if sys.platform != "win32":
+            self.skipTest("reserved-range check is Windows-only")
+        from lcc_core.server_manager import (
+            _probe_port,
+            _next_free_port,
+            _windows_excluded_port_ranges,
+        )
+        excl = _windows_excluded_port_ranges()
+        # Find an excluded range that covers a typical llama-server port.
+        # On hosts with Hyper-V / Docker installed, 8080/8081 are usually
+        # inside an exclusion range.
+        target = None
+        candidates = (8080, 8081, 9000, 9200, 5005)
+        for port in candidates:
+            for rng in excl:
+                if rng["start"] <= port <= rng["end"]:
+                    target = (port, rng)
+                    break
+            if target:
+                break
+        if target is None:
+            # No standard llama-server port inside an exclusion range on
+            # this host — choose a port inside the largest exclusion.
+            if not excl:
+                self.skipTest("no exclusion ranges reported by netsh")
+            rng = max(excl, key=lambda r: r["end"] - r["start"])
+            target = (rng["start"], rng)
+        port, rng = target
+        probe = _probe_port("127.0.0.1", port)
+        self.assertFalse(probe["free"])
+        self.assertEqual(probe["reason"], "reserved")
+        self.assertIn("range", probe)
+        # Suggested port must be above the range end, not just port + 1.
+        above = _next_free_port("127.0.0.1", port)
+        self.assertIsNotNone(above)
+        self.assertGreater(above, rng["end"])
 
 
 if __name__ == "__main__":
