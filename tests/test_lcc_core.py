@@ -618,7 +618,7 @@ class KvMetaProbeTests(unittest.TestCase):
 
         def fake_parse(path: str):
             self.parse_calls.append(path)
-            return (32, (256, 128, 128), True)
+            return (32, (256, 128, 128), True, 40960)
 
         est._parse_gguf_meta = fake_parse
         self.model_file = Path(self._tmp) / "model.gguf"
@@ -661,6 +661,15 @@ class KvMetaProbeTests(unittest.TestCase):
         self.assertEqual(len(self.parse_calls), 1)
         rec = self.est.recommend_jinja({"path": str(self.model_file)})
         self.assertTrue(rec["recommended"])
+
+    def test_context_length_parsed_and_cached(self) -> None:
+        # The trained context flows through the same single parse + cache as dims.
+        self.assertEqual(self.est.model_max_context(self.model), 40960)
+        self.assertEqual(len(self.parse_calls), 1)
+        self.est._gguf_meta_mem.clear()
+        # Cache-only read reuses the persisted value without re-parsing.
+        self.assertEqual(self.est.model_max_context(self.model, probe=False), 40960)
+        self.assertEqual(len(self.parse_calls), 1)
 
     def test_template_tool_markers(self) -> None:
         self.assertTrue(self.est._template_supports_tools("...{{ tool_call }}..."))
@@ -713,6 +722,49 @@ class SmartTuneTests(unittest.TestCase):
         # With no measurable VRAM, any surviving pick must keep layers off the GPU.
         if out["success"]:
             self.assertEqual(out["after"]["fit_status"]["inputs"]["gpu_layer_fraction"], 0)
+
+    def test_ctx_ladder_offers_256k_when_model_and_vram_allow(self) -> None:
+        # A model trained for 262144 on a big GPU should let the tuner reach 256K.
+        from lcc_core.smart_tune import _ctx_ladder_for_model
+        model = {"name": "big-ctx", "params_b": 7, "quant": "Q4_K_M", "context_length": 262144}
+        ladder = _ctx_ladder_for_model(model)
+        self.assertIn(262144, ladder)
+
+    def test_ctx_ladder_capped_at_trained_window(self) -> None:
+        # A 32K-trained model must never be offered a larger context.
+        from lcc_core.smart_tune import _ctx_ladder_for_model
+        model = {"name": "small-ctx", "params_b": 7, "quant": "Q4_K_M", "context_length": 32768}
+        ladder = _ctx_ladder_for_model(model)
+        self.assertEqual(max(ladder), 32768)
+        self.assertNotIn(262144, ladder)
+
+    def test_ctx_ladder_includes_exact_trained_non_rung(self) -> None:
+        # An odd trained window (40960) is offered exactly, capped there.
+        from lcc_core.smart_tune import _ctx_ladder_for_model
+        model = {"name": "odd-ctx", "params_b": 7, "quant": "Q4_K_M", "context_length": 40960}
+        ladder = _ctx_ladder_for_model(model)
+        self.assertEqual(max(ladder), 40960)
+        self.assertTrue(all(c <= 40960 for c in ladder))
+
+    def test_ctx_over_trained_window_warns(self) -> None:
+        from lcc_core.estimates import estimate_memory_fit
+        model = {"name": "small-ctx", "params_b": 7, "quant": "Q4_K_M", "context_length": 32768}
+        fit = estimate_memory_fit({"ctx_size": 262144, "gpu_layers": "all"}, model, self._hw(24))
+        self.assertTrue(any("trained window" in w for w in fit["warnings"]))
+
+    def test_cpu_fallback_flagged_when_gpu_present_but_vram_full(self) -> None:
+        # A GPU exists but only a sliver of VRAM is free (a stale server is still
+        # holding it). Every GPU-offload config is rejected, so the tuner can only
+        # land on a CPU-only pick — it must flag that loudly, not report a clean win.
+        from lcc_core.smart_tune import auto_tune_fit
+
+        hw = self._hw(24)
+        hw["primary_gpu"]["vram_free_bytes"] = int(0.3 * 1024**3)  # ~300 MiB free
+        model = {"name": "test-32B", "params_b": 32, "quant": "Q4_K_M"}
+        out = auto_tune_fit({"gpu_layers": "all", "ctx_size": 8192}, model, hw)
+        if out["success"] and out["after"]["fit_status"]["inputs"]["gpu_layer_fraction"] <= 0:
+            self.assertTrue(out["cpu_fallback"])
+            self.assertTrue(any("runs on the CPU" in note for note in out["notes"]))
 
     def test_reports_named_suggestions(self) -> None:
         from lcc_core.smart_tune import auto_tune_fit
@@ -1427,6 +1479,72 @@ class PerProcessMemoryTests(unittest.TestCase):
         self.assertIsNone(result["process"]["rss_bytes"])
         self.assertIsNone(result["process"]["cpu_percent"])
         self.assertIsNone(result["process"]["gpu_used_bytes"])
+
+
+class ServerHistoryTrimTests(unittest.TestCase):
+    """trim_server_history must keep the NEWEST servers, and _find_server(mode=)
+    must resolve to the running/most-recent entry. Regression: the trim kept the
+    oldest `limit` entries while new servers were appended to the end, so a
+    freshly launched server was dropped from state the instant it started — which
+    made the Stop button a silent no-op (it couldn't find the running PID)."""
+
+    def setUp(self) -> None:
+        import lcc_core.server_manager as sm
+        self.sm = sm
+        self._tmp = tempfile.mkdtemp()
+        self._orig_state_path = sm.state_path
+        self._orig_pid_running = sm.pid_is_running
+        self._state_file = Path(self._tmp) / "servers.json"
+        sm.state_path = lambda: self._state_file
+        # Default: nothing is "running" unless a test marks it so.
+        sm.pid_is_running = lambda pid: False
+
+    def tearDown(self) -> None:
+        self.sm.state_path = self._orig_state_path
+        self.sm.pid_is_running = self._orig_pid_running
+        shutil.rmtree(self._tmp, ignore_errors=True)
+
+    def _write_state(self, servers):
+        self._state_file.write_text(json.dumps({"servers": servers}), encoding="utf-8")
+
+    def test_trim_keeps_newest_not_oldest(self):
+        servers = [
+            {"id": f"demo-{i}", "mode": "demo", "pid": 1000 + i,
+             "status": "stopped", "started_at": f"2026-07-08T00:0{i}:00+00:00"}
+            for i in range(7)
+        ]
+        self._write_state(servers)
+        self.sm.trim_server_history(limit=5)
+        kept = [s["id"] for s in self.sm.read_state()["servers"]]
+        # The two OLDEST (demo-0, demo-1) are dropped; the newest survive.
+        self.assertEqual(kept, ["demo-2", "demo-3", "demo-4", "demo-5", "demo-6"])
+
+    def test_newly_started_server_survives_trim(self):
+        # A full history of old dead entries, then a brand-new server appended.
+        old = [
+            {"id": f"old-{i}", "mode": "demo", "pid": 1000 + i,
+             "status": "startup_timeout", "started_at": f"2026-07-08T00:0{i}:00+00:00"}
+            for i in range(5)
+        ]
+        self._write_state(old)
+        new_server = {"id": "demo-9999", "mode": "demo", "pid": 9999,
+                      "status": "starting", "started_at": "2026-07-08T12:00:00+00:00"}
+        self.sm._upsert_server(new_server)
+        self.sm.trim_server_history(limit=5)
+        ids = [s["id"] for s in self.sm.read_state()["servers"]]
+        self.assertIn("demo-9999", ids, "the just-started server must not be trimmed away")
+
+    def test_find_server_by_mode_prefers_running(self):
+        self._write_state([
+            {"id": "dead", "mode": "demo", "pid": 111,
+             "status": "startup_timeout", "started_at": "2026-07-08T00:00:00+00:00"},
+            {"id": "live", "mode": "demo", "pid": 222,
+             "status": "running", "started_at": "2026-07-08T01:00:00+00:00"},
+        ])
+        # Only PID 222 is alive.
+        self.sm.pid_is_running = lambda pid: pid == 222
+        found = self.sm._find_server(mode="demo")
+        self.assertEqual(found["id"], "live")
 
 
 class ServerOomHintTests(unittest.TestCase):

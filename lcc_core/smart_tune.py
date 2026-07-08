@@ -2,12 +2,16 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from .estimates import estimate_memory_fit, estimate_tokens_per_second, _get_total_layers, prime_model_meta, recommend_jinja
+from .estimates import estimate_memory_fit, estimate_tokens_per_second, _get_total_layers, model_max_context, prime_model_meta, recommend_jinja
 
 # ponytail: greedy grid scan over the existing estimator (layers x ctx x kv-cache).
 # No subprocess, no optimizer lib — ~100 cheap pure-Python fit evals. The ceiling
 # is the estimator's own accuracy; a real benchmark should override these picks.
-CTX_LADDER = [2048, 4096, 8192, 16384, 32768, 49152, 65536, 98304, 131072]
+# The top rungs (196608, 262144) are only reached on models trained for that much
+# context AND with the VRAM to hold the KV cache — `_ctx_ladder_for_model` caps the
+# ladder at the model's trained window so we never recommend a context the model
+# can't actually use (see model_max_context / <arch>.context_length in the GGUF).
+CTX_LADDER = [2048, 4096, 8192, 16384, 32768, 49152, 65536, 98304, 131072, 196608, 262144]
 # KV-cache rungs, highest quality -> most compact. The mid-tier quants (q5_0,
 # q4_1) give the asymmetric K/V search finer memory/quality landing spots; iq4_nl
 # matches q4_0 in size but uses a non-linear codebook. The 4-bit float formats
@@ -29,7 +33,6 @@ _CACHE_RANK = {
     "q5_1": 5, "q8_0": 6, "f16": 7, "bf16": 7,
 }
 _MAX_CACHE_RANK = max(_CACHE_RANK.values())
-_MAX_CTX_INDEX = len(CTX_LADDER) - 1
 
 # K and V are tuned independently. The K cache is more sensitive to quantization
 # than V (keys drive attention scores; values are just averaged), so we (a) never
@@ -242,6 +245,24 @@ def _candidate_params(base: dict[str, Any], layers: Any, ctx: int, cache_k: str,
     return cand
 
 
+def _ctx_ladder_for_model(model: dict[str, Any] | None) -> list[int]:
+    """CTX_LADDER capped at the model's trained context window.
+
+    Never offers a context larger than what the model was trained for — asking
+    llama.cpp for more just allocates a bigger KV cache the model can't use well.
+    The model's own max window is always included even if it isn't a ladder rung
+    (so e.g. a 40960-trained model can still be offered its exact 40960). When the
+    trained length is unknown, the full ladder is used unchanged.
+    """
+    trained = model_max_context(model)
+    if not trained or trained <= 0:
+        return list(CTX_LADDER)
+    rungs = [ctx for ctx in CTX_LADDER if ctx <= trained]
+    if trained not in rungs:
+        rungs.append(int(trained))
+    return rungs or [min(CTX_LADDER)]
+
+
 def _collect_candidates(
     base: dict[str, Any],
     model: dict[str, Any] | None,
@@ -250,8 +271,10 @@ def _collect_candidates(
     """Evaluate the grid once and keep every config the estimator says fits."""
     candidates: list[dict[str, Any]] = []
     cache_ladder = _cache_ladder(hardware)
+    ctx_ladder = _ctx_ladder_for_model(model)
+    max_ctx_index = max(len(ctx_ladder) - 1, 1)
     for layers in _layer_options(model):
-        for ctx in CTX_LADDER:
+        for ctx in ctx_ladder:
             for cache_k in cache_ladder:
                 for cache_v in cache_ladder:
                     # Never spend more bits on V than K — K carries more signal.
@@ -270,7 +293,7 @@ def _collect_candidates(
                         "cache_k": cache_k,
                         "cache_v": cache_v,
                         "lf": fit["inputs"]["gpu_layer_fraction"],
-                        "ctx_norm": CTX_LADDER.index(ctx) / _MAX_CTX_INDEX,
+                        "ctx_norm": ctx_ladder.index(ctx) / max_ctx_index,
                         "cache_norm": _cache_fidelity_norm(cache_k, cache_v),
                         "roomy": 1 if fit["status"] == "good" else 0,
                     })
@@ -368,23 +391,47 @@ def auto_tune_fit(
 
     primary = suggestions[0]  # balanced is listed first
     tuned, after_fit = primary["params"], primary["fit_status"]
+
+    notes = [
+        "Suggestions come from the memory estimator, not a live run — verify with a fit test or benchmark.",
+        "Priority: max GPU layers, then a balance of KV-cache fidelity and context (quality-leaning).",
+        "K and V caches are tuned independently; V sheds bits before K and is never more precise than K.",
+        "Batch/ubatch grow into leftover headroom after context and KV quality are settled.",
+        "Threads follow the CPU: physical cores for decode, logical cores for prompt batches.",
+        "Pick 'Max quality' or 'Max context' from the suggestions when your need leans one way.",
+        f"Jinja {'on' if jinja_rec['recommended'] else 'off'}: {jinja_rec['reason']}.",
+    ]
+
+    # Guard against the silent CPU fallback: when a GPU is present but every
+    # GPU-offload candidate was rejected for lack of *free* VRAM, the only
+    # survivors are pure-CPU (gpu_layers=0) configs. Returning that as a happy
+    # "success" is how a tuned launch ends up running on the CPU. Surface it
+    # loudly so the user knows to free VRAM (usually: stop the server that's
+    # still holding it) and re-tune rather than launching a CPU-bound config.
+    gpu_present = bool(_gpu_descriptor(hardware).strip())
+    tuned_lf = after_fit.get("inputs", {}).get("gpu_layer_fraction", 0)
+    cpu_fallback = gpu_present and (tuned_lf or 0) <= 0
+    if cpu_fallback:
+        cap = before_fit.get("estimated", {}).get("accelerator_capacity_mib")
+        cap_note = f" (only ~{int(cap)} MiB VRAM free)" if cap else ""
+        notes.insert(
+            0,
+            "⚠ A GPU was detected but no GPU-offload config fit in the free VRAM"
+            f"{cap_note}, so this recommendation runs on the CPU. Free VRAM "
+            "(stop any server still holding it) and re-run Smart Fit to offload "
+            "to the GPU.",
+        )
+
     return {
         "success": True,
         "tuned_params": tuned,
+        "cpu_fallback": cpu_fallback,
         "changes": primary["changes"],
         "suggestions": suggestions,
         "jinja": jinja_rec,
         "before": {"params": base, "fit_status": before_fit, "speed_estimate": before_speed},
         "after": {"params": tuned, "fit_status": after_fit, "speed_estimate": primary["speed_estimate"]},
-        "notes": [
-            "Suggestions come from the memory estimator, not a live run — verify with a fit test or benchmark.",
-            "Priority: max GPU layers, then a balance of KV-cache fidelity and context (quality-leaning).",
-            "K and V caches are tuned independently; V sheds bits before K and is never more precise than K.",
-            "Batch/ubatch grow into leftover headroom after context and KV quality are settled.",
-            "Threads follow the CPU: physical cores for decode, logical cores for prompt batches.",
-            "Pick 'Max quality' or 'Max context' from the suggestions when your need leans one way.",
-            f"Jinja {'on' if jinja_rec['recommended'] else 'off'}: {jinja_rec['reason']}.",
-        ],
+        "notes": notes,
     }
 
 

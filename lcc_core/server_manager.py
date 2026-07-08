@@ -480,17 +480,34 @@ def trim_server_history(limit: int = 5) -> None:
     servers = state.get("servers", [])
     if len(servers) <= limit:
         return
-    kept = servers[:limit]
+    # Keep the NEWEST entries. `_upsert_server` appends new servers to the end,
+    # so `servers[-limit:]` retains the most recently started ones. Trimming
+    # `servers[:limit]` (the oldest) instead silently dropped every freshly
+    # launched server once the history filled up, which made the running server
+    # invisible to `_find_server` — and made the Stop button a no-op.
+    kept = servers[-limit:]
     state["servers"] = kept
     write_state(state)
 
 
 def _find_server(server_id: str | None = None, mode: str | None = None) -> dict[str, Any] | None:
-    for server in list_servers():
-        if server_id and server.get("id") == server_id:
-            return server
-        if mode and server.get("mode") == mode:
-            return server
+    servers = list_servers()
+    if server_id:
+        for server in servers:
+            if server.get("id") == server_id:
+                return server
+        return None
+    if mode:
+        matches = [server for server in servers if server.get("mode") == mode]
+        if not matches:
+            return None
+        # A mode can have several tracked entries (old crashed/timed-out
+        # attempts plus the live one). Prefer a running server, and among ties
+        # the most recently started, so Stop targets the process that's actually
+        # up rather than the first stale corpse in the list.
+        running = [server for server in matches if server.get("running")]
+        pool = running or matches
+        return max(pool, key=lambda server: server.get("started_at") or "")
     return None
 
 
