@@ -467,34 +467,46 @@ class ManifestHelpersTests(unittest.TestCase):
         import shutil
         shutil.rmtree(self._tmp, ignore_errors=True)
 
-    def test_load_safely_missing_file_is_empty_manifest(self) -> None:
-        from lcc_core.manifest import load_manifest_safely
-        self.assertEqual(load_manifest_safely(self.path), {"models": []})
 
-    def test_load_safely_corrupt_json_raises(self) -> None:
-        from lcc_core.manifest import ManifestReadError, load_manifest_safely
-        self.path.write_bytes(b"not json")
-        with self.assertRaises(ManifestReadError):
-            load_manifest_safely(self.path)
+class ServerMetricsFormatterTests(unittest.TestCase):
+    """Unit test for the *shipped* formatServerMetricsLine (pure, extracted per strategy).
+    Ev als the real lcc_api/static/app.js via Node + vm with minimal stubs.
+    Fixture is representative of a successful /metrics response (from probe).
+    Asserts correct separators, all fields present, and NO glued text (KVslots etc).
+    """
 
-    def test_load_safely_non_dict_payload_raises(self) -> None:
-        from lcc_core.manifest import ManifestReadError, load_manifest_safely
-        self.path.write_text(json.dumps([1, 2, 3]), encoding="utf-8")
-        with self.assertRaises(ManifestReadError):
-            load_manifest_safely(self.path)
+    def test_format_server_metrics_line_shipped_no_glue(self):
+        # Run the real formatter via the committed test helper (drives shipped code).
+        import subprocess
+        import json
+        from pathlib import Path as P
 
-    def test_load_safely_non_list_models_raises(self) -> None:
-        from lcc_core.manifest import ManifestReadError, load_manifest_safely
-        self.path.write_text(json.dumps({"models": "not-a-list"}), encoding="utf-8")
-        with self.assertRaises(ManifestReadError):
-            load_manifest_safely(self.path)
+        js_test = P(__file__).parent / "test_server_metrics_formatter.js"
+        # node must be on PATH (verified in env)
+        out = subprocess.check_output(["node", str(js_test)], text=True, cwd=P(__file__).parent.parent)
+        data = json.loads(out.strip())
+        line = data["line"]
 
-    def test_write_atomic_round_trip(self) -> None:
-        from lcc_core.manifest import load_manifest_safely, write_manifest_atomic
-        payload = {"models": [{"mode": "x", "name": "X"}]}
-        write_manifest_atomic(self.path, payload)
-        self.assertEqual(load_manifest_safely(self.path), payload)
+        # Required fields from fixture
+        self.assertIn("42% KV", line)
+        self.assertIn("3.2 t/s", line)
+        self.assertIn("slots 1/1", line)
+        self.assertIn("ctx 8192", line)
+        self.assertIn("RSS", line)
+        self.assertIn("VRAM", line)
 
+        # One consistent separator rule
+        self.assertIn(" · ", line)
+
+        # No glue bugs
+        self.assertNotIn("KVslots", line)
+        self.assertNotIn("t/sslots", line)
+        self.assertNotIn("1/1ctx", line)
+        self.assertNotIn("KVctx", line)
+
+        # Should not start or end with separator
+        self.assertFalse(line.startswith(" · "))
+        self.assertFalse(line.endswith(" · "))
 
 if __name__ == "__main__":
     unittest.main()

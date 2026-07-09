@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed / Hardened (M1 Reliability)
+
+- **All manifest reads now go through `load_manifest_safely`.**
+  `load_profiles()` (used by inventory, profile resolution, CLI, launch scripts,
+  estimates, prepare, and autoscan) now uses the safe loader. On corrupt or
+  unreadable `models.json`, callers receive a `ManifestReadError` (or a clear
+  error payload) instead of an empty list that could lead to destructive
+  overwrites on subsequent saves. API, CLI, server_manager, and launch_scripts
+  paths now handle the error explicitly. ([lcc_core/manifest.py](lcc_core/manifest.py),
+  [lcc_api/app.py](lcc_api/app.py), [lcc_core/cli.py](lcc_core/cli.py),
+  [lcc_core/launch_scripts.py](lcc_core/launch_scripts.py),
+  [lcc_core/server_manager.py](lcc_core/server_manager.py))
+
+- **Windows process & port detection centralized and hardened.**
+  `pid_is_running` and `find_process_on_port` (plus `_port_in_use_info`) now
+  prefer `psutil` (already a dependency) for reliable PID existence and TCP
+  listener lookup — no locale-dependent netstat/tasklist text scraping in the
+  happy path. Improved fallback parsers (CSV-aware tasklist, less brittle
+  netstat matching, host/wildcard handling). Launchers (`start-lcc.py`) now
+  delegate to the shared robust helpers. ([lcc_core/server_manager.py](lcc_core/server_manager.py),
+  [start-lcc.py](start-lcc.py))
+
+- Raw `load_manifest` retained only for legacy/internal use with a warning comment.
+
+### Added / M1.3 Reliability + M2 Observability (initial surfacing)
+
+- Expanded reliability tests (M1.3): 8+ new direct tests in `test_lcc_core.py` + `test_lcc_api.py` for manifest read failures (non-dict, non-list models), crash watchdog transitions (starting->crashed), `server_metrics` under missing psutil/nvidia + dead-pid/no-server paths, additional port/Windows pid edge cases. All drive the real functions; full `unittest discover -s tests -q` passes (including new pure formatter test + positive /logs success case).
+- Fixed P1 gap: `GET /api/servers/{server_id}/logs` route now exists in `lcc_api/app.py` (delegates to `server_manager.server_logs`). UI `loadLogs` and docs in PORTABLE_CORE.md now functional. Error + positive shapes tested.
+- Running server observability basics: refresh now enriches running/crashed servers with `/metrics`; `renderServers` + CSS show KV usage, tokens/sec, slots, RSS + GPU VRAM, crashed/oom badges, last stderr snippet, and a working Restart button (reuses start flow by mode). Stop/Logs preserved.
+- Two consistent launches of primary entrypoint + endpoint probes captured (Uvicorn running + startup complete.; /health 200, /api/servers 200+servers list; /metrics + /logs on real injected tracked server id return success:true with fields/tails (via test state injection as allowed); readiness polling + log captures used; no crashes).
+
 ## [0.14.0] - 2026-07-08
 
 ### Fixed

@@ -1279,6 +1279,24 @@ function renderModels() {
   `).join('') || '<div class="loading">No models match the current search.</div>';
 }
 
+function formatServerMetricsLine(m) {
+  // Pure formatter for AC3: always join non-empty parts with ' · ' (single rule, no ad-hoc concat).
+  // Drives the shipped UI display of KV/tps/slots/context/memory.
+  if (!m) return '';
+  const sum = m.summary || m.metrics || {};
+  const proc = m.process || {};
+  const parts = [];
+  if (sum.kv_cache_usage_ratio != null) parts.push(`${(sum.kv_cache_usage_ratio * 100).toFixed(0)}% KV`);
+  if (sum.predicted_tokens_per_second != null) parts.push(`${sum.predicted_tokens_per_second.toFixed(1)} t/s`);
+  else if (sum.prompt_tokens_per_second != null) parts.push(`${sum.prompt_tokens_per_second.toFixed(1)} prompt t/s`);
+  if (sum.slots_active != null || sum.slots_processing != null) parts.push(`slots ${sum.slots_active || 0}/${sum.slots_processing || 0}`);
+  if (m.props && m.props.n_ctx != null) parts.push(`ctx ${m.props.n_ctx}`);
+  else if (sum.kv_cache_tokens != null) parts.push(`kv ${sum.kv_cache_tokens}`);
+  if (proc.rss_bytes) parts.push(`RSS ${formatBytes(proc.rss_bytes)}`);
+  if (proc.gpu_used_bytes) parts.push(`VRAM ${formatBytes(proc.gpu_used_bytes)}`);
+  return parts.filter(Boolean).join(' · ');
+}
+
 function renderServers() {
   const servers = state.servers || [];
   if (!servers.length) {
@@ -1291,19 +1309,7 @@ function renderServers() {
     const status = server.status || (isRunning ? 'running' : 'stopped');
     const isCrashed = status === 'crashed' || (!isRunning && server.last_stderr);
     const oom = server.oom_likely ? ' <span class="badge error" title="Likely OOM">OOM</span>' : '';
-    const m = server.metrics || {};
-    const sum = m.summary || m.metrics || {};
-    const proc = m.process || {};
-    const kv = sum.kv_cache_usage_ratio != null ? `${(sum.kv_cache_usage_ratio * 100).toFixed(0)}% KV` : '';
-    const tps = sum.predicted_tokens_per_second != null ? ` · ${sum.predicted_tokens_per_second.toFixed(1)} t/s` : (sum.prompt_tokens_per_second != null ? ` · ${sum.prompt_tokens_per_second.toFixed(1)} prompt t/s` : '');
-    const slots = (sum.slots_active != null || sum.slots_processing != null) ? `slots ${sum.slots_active || 0}/${sum.slots_processing || 0}` : '';
-    const ctx = (m.props && m.props.n_ctx != null) ? `ctx ${m.props.n_ctx}` : (sum.kv_cache_tokens != null ? `kv ${sum.kv_cache_tokens}` : '');
-    const memParts = [];
-    if (proc.rss_bytes) memParts.push(`RSS ${formatBytes(proc.rss_bytes)}`);
-    if (proc.gpu_used_bytes) memParts.push(`VRAM ${formatBytes(proc.gpu_used_bytes)}`);
-    const mem = memParts.length ? ` · ${memParts.join(' / ')}` : '';
-    const extra = [slots, ctx].filter(Boolean).join(' · ');
-    const metricsLine = (kv || tps || extra || mem) ? `<div class="server-metrics">${[kv, tps, extra, mem].filter(Boolean).join('')}</div>` : '';
+    const metricsLine = formatServerMetricsLine(server.metrics) ? `<div class="server-metrics">${formatServerMetricsLine(server.metrics)}</div>` : '';
     const stderrSnippet = (isCrashed && server.last_stderr) ? `<pre class="server-stderr" title="Last stderr (truncated)">${escapeHtml(String(server.last_stderr).slice(0, 300))}</pre>` : '';
     // Restart visible for crashed/stopped (not for live running)
     const restartBtn = !isRunning ? `<button class="mini-button" type="button" data-action="restart" data-server-id="${escapeHtml(server.id)}">Restart</button>` : '';
