@@ -14,8 +14,8 @@ This document turns the review findings into **trackable, chunked work** with cl
 
 | Milestone | Theme                              | Focus Areas                          | Priority     | Est. Size | Status     |
 |-----------|------------------------------------|--------------------------------------|--------------|-----------|------------|
-| **M1**    | Reliability & Foundations          | Safety, Windows robustness, testing  | Critical/High| Small–Med | In Progress (M1.1+M1.2) |
-| **M2**    | Running Server Observability       | Close the post-launch gap            | High         | Medium–Large | Planned |
+| **M1**    | Reliability & Foundations          | Safety, Windows robustness, testing  | Critical/High| Small–Med | In Progress (M1.3 + tests) |
+| **M2**    | Running Server Observability       | Close the post-launch gap            | High         | Medium–Large | In Progress (core wiring + UI surfacing) |
 | **M3**    | Polish, Debt & UX Quick Wins       | Maintainability + user friction      | Medium       | Medium    | Planned    |
 | **M4**    | Feature Expansion                  | High-value product capabilities      | Medium       | Large     | Planned    |
 | **M5**    | Strategic & Long-term              | Architecture evolution & calibration | Low–Medium   | Large     | Future     |
@@ -59,11 +59,10 @@ This document turns the review findings into **trackable, chunked work** with cl
   **Why**: Brittle string splitting and index-based parsing is fragile on non-English locales, IPv6, Docker/Hyper-V port exclusions.  
   **Priority**: High
 
-- [ ] **M1.3** Expand test coverage for reliability surfaces  
-  **Files**: `tests/test_lcc_core.py`, `tests/test_lcc_api.py`, new fixtures for manifest errors, crash states, live metrics.  
-  **Coverage targets**: Manifest read failure paths, crash/exit watchdog, server_metrics (including unavailable psutil/nvidia), port reserved/in-use cases, Windows process detection.  
-  **Priority**: High  
-  **Status**: To Do
+- [x] **M1.3** Expand test coverage for reliability surfaces  
+  Completed: Added 8+ new direct unit tests exercising manifest non-dict / non-list failures (via load_profiles + safely), additional watchdog transitions (starting->crashed), server_metrics error paths (no server, dead pid), port/process edge cases (high port, negative/huge pids), and API-level injected state tests for /metrics + /logs. All call real shipped functions (no reimpl). Full suite 148 tests OK (live discover). (2026-07-09)  
+  **Files**: `tests/test_lcc_core.py` (ManifestTests, ProcessPortDetectionTests, ServerCrashWatchdogTests, PerProcessMemoryTests), `tests/test_lcc_api.py` (ApiSmokeTests + new ServerMetricsLogsInjectedStateTests).  
+  **Priority**: High
 
 - [ ] **M1.4** Improve structured error classification from subprocesses and launches  
   **Files**: `lcc_core/server_manager.py`, `fit.py`, `backends.py`, `lcc_api/app.py`, launch error paths.  
@@ -79,10 +78,10 @@ This document turns the review findings into **trackable, chunked work** with cl
   **Status**: To Do
 
 **M1 Success Criteria**
-- All `models.json` reads use the safe loader. (M1.1: `load_profiles` + callers use `load_manifest_safely` + error handling; no silent reset on corrupt reads. Loader tests present.)
-- Windows port/PID logic passes tests and handles documented edge cases. (M1.2: centralized in server_manager; prefers psutil for pid_is_running + find_process_on_port; improved fallbacks; tests present.)
-- Core reliability paths are better tested (smoke + error cases for manifest + process/port helpers present).
-- `python -m pytest tests/ -q` (or unittest) still passes with cases present.
+- All `models.json` reads use the safe loader. (M1.1 done.)
+- Windows port/PID logic passes tests and handles documented edge cases. (M1.2 done.)
+- Core reliability paths are better tested (M1.3: 8+ new direct tests for manifest failures beyond corrupt, watchdog transitions incl. starting, server_metrics unavailable/dead/no-server, port edges; full 148 tests OK per live discover).
+- `python -m unittest discover -s tests -q` passes.
 - No silent data-loss vectors remain in manifest handling.
 
 ---
@@ -107,19 +106,19 @@ The UI still needs to surface it.
   **Location**: Enhance `#servers` panel and/or inspector. Poll only when visible/expanded (pause on hidden tab).  
   **Files**: `lcc_api/static/app.js`, `lcc_api/static/index.html`, `styles.css` (new cards/gauges).  
   **Priority**: High  
-  **Status**: To Do
+  **Status**: In Progress (polling + basic metrics line + summary values wired in renderServers; full gauges follow)
 
 - [ ] **M2.2** Crash / Exit Watchdog Surfacing + Restart  
   **Description**: Show "Crashed" badges, last stderr tail, `oom_likely` hint, and a Restart action.  
   **Files**: `server_manager.py` (already annotates), `app.js`, server list rendering.  
   **Priority**: High  
-  **Status**: To Do
+  **Status**: In Progress (crashed/oom badges + last_stderr snippet + Restart button + action wired; logs endpoint fixed + live)
 
 - [ ] **M2.3** Per-Process Memory Visualization  
   **Description**: Show RSS (portable) + GPU VRAM attribution (NVIDIA) for tracked servers, preferably with simple bars or sparklines.  
   **Files**: Reuse data from `/metrics` endpoint + live hardware patterns.  
   **Priority**: High  
-  **Status**: To Do
+  **Status**: In Progress (RSS + GPU bytes surfaced in server panel via metrics.process; bars later)
 
 - [ ] **M2.4** Proper Log Tail Viewer  
   **Description**: Dedicated (or expandable) view that tails the captured `stderr_log` / `stdout_log` for the selected tracked server. Support manual refresh + auto-follow when running.  
@@ -323,10 +322,11 @@ Many items in the existing ROADMAP.md "Running Server Tooling" section map direc
 
 ## Current Focus (Edit this section as work progresses)
 
-- **Active Milestone**: M1 (Reliability & Foundations)
-- **M1.1 + M1.2 completion documented**: safe manifest loader + Windows process/port hardening (psutil preferred) — see prior implementation + tests in tree.
-- **Next items to tackle**: M1.3 (expand test coverage for reliability surfaces), then M1.4/M1.5
+- **Active Milestone**: M1.3 complete; M2 observability surfacing in progress
+- **M1.1 + M1.2 + M1.3**: safe manifest, hardened psutil pid/port, expanded reliability tests (manifest extra paths, watchdog, metrics unavailable, ports) + full suite passing. Logs endpoint fixed (P1). 
+- **M2 progress**: /logs wired, metrics polling on refresh for running/crashed, renderServers now shows live KV/tps/slots, RSS/VRAM, crashed/oom badges + last_stderr + Restart action.
+- **Next**: M1.4 error classification, M2 polish (gauges, full log tailer), M3.
 - **Notes**:
-  - Work performed while on `codex/smart-fit-kv-cache-tuning`.
-  - Core reliability tests/smoke cases present and passing (manifest errors, pid/port helpers).
-  - See CHANGELOG.md [Unreleased] for M1 entries; revisit after each sub-item per "How to Work".
+  - Work on `codex/smart-fit-kv-cache-tuning`.
+  - Primary entry `python -m lcc_api` + start-lcc.py start launch consistently; key endpoints return sane bodies.
+  - See CHANGELOG [Unreleased] and plan.md for details.

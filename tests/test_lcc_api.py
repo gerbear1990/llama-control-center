@@ -508,5 +508,106 @@ class ServerMetricsFormatterTests(unittest.TestCase):
         self.assertFalse(line.startswith(" · "))
         self.assertFalse(line.endswith(" · "))
 
+# Lifted from scratch launch_and_probe.py for committed test (per strategy)
+# Provides representative state success for /metrics (AC3) inside the test suite.
+from http.server import BaseHTTPRequestHandler, HTTPServer
+import threading
+import json as _json  # avoid name clash if any
+
+class _DummyLlamaHandler(BaseHTTPRequestHandler):
+    def _send(self, code, ctype, body):
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.end_headers()
+        if isinstance(body, str):
+            body = body.encode("utf-8")
+        self.wfile.write(body)
+
+    def do_GET(self):
+        if self.path == "/health":
+            self._send(200, "text/plain", "ok")
+            return
+        if self.path == "/props":
+            self._send(200, "application/json", _json.dumps({"n_ctx": 8192, "model_name": "probe-dummy"}))
+            return
+        if self.path == "/metrics":
+            prom = (
+                "# TYPE llamacpp_kv_cache_usage_ratio gauge\n"
+                "llamacpp_kv_cache_usage_ratio 0.42\n"
+                "llamacpp_kv_cache_tokens 1234\n"
+                "llamacpp_prompt_tokens_seconds 10.5\n"
+                "llamacpp_tokens_predicted_seconds 3.2\n"
+                "llamacpp_active_slots 1\n"
+                "llamacpp_processing_slots 1\n"
+            )
+            self._send(200, "text/plain", prom)
+            return
+        self._send(404, "text/plain", "not found")
+
+    def log_message(self, format, *args):
+        return  # quiet
+
+
+class MetricsSuccessWithStubTests(unittest.TestCase):
+    """test_metrics_success_with_http_stub_and_injected_state (lifted per strategist rec).
+    Uses dummy HTTP + patched state to exercise success path for /metrics on representative state.
+    This is now in committed tests (replaces sole reliance on scratch probe).
+    """
+
+    def setUp(self):
+        self.client = TestClient(app)
+
+    def test_metrics_success_with_http_stub_and_injected_state(self):
+        import lcc_core.server_manager as sm
+        import os
+        import tempfile
+        import shutil
+        from pathlib import Path as P
+
+        tmp = tempfile.mkdtemp()
+        httpd = None
+        try:
+            state_file = P(tmp) / "servers.json"
+            dummy_port = 19099
+            dummy_pid = os.getpid()
+            httpd = HTTPServer(("127.0.0.1", dummy_port), _DummyLlamaHandler)
+            t = threading.Thread(target=httpd.serve_forever, daemon=True)
+            t.start()
+            entry = {
+                "id": "success-metrics",
+                "mode": "success-test",
+                "pid": dummy_pid,
+                "status": "running",
+                "running": True,
+                "host": "127.0.0.1",
+                "port": dummy_port,
+                "stdout_log": None,
+                "stderr_log": None,
+            }
+            state_file.write_text(_json.dumps({"servers": [entry]}), encoding="utf-8")
+            orig_state = sm.state_path
+            sm.state_path = lambda: state_file
+            orig_pid = sm.pid_is_running
+            sm.pid_is_running = lambda p: True if p == dummy_pid else orig_pid(p)
+            try:
+                resp = self.client.get("/api/servers/success-metrics/metrics")
+                self.assertEqual(resp.status_code, 200)
+                body = resp.json()
+                self.assertTrue(body.get("success"))
+                self.assertIn("summary", body)
+                self.assertIn("props", body)
+                self.assertIn("process", body)
+            finally:
+                sm.state_path = orig_state
+                sm.pid_is_running = orig_pid
+                if httpd:
+                    try:
+                        httpd.shutdown()
+                    except Exception:
+                        pass
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
 if __name__ == "__main__":
     unittest.main()

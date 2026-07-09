@@ -33,10 +33,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added / M1.3 Reliability + M2 Observability (initial surfacing)
 
-- Expanded reliability tests (M1.3): 8+ new direct tests in `test_lcc_core.py` + `test_lcc_api.py` for manifest read failures (non-dict, non-list models), crash watchdog transitions (starting->crashed), `server_metrics` under missing psutil/nvidia + dead-pid/no-server paths, additional port/Windows pid edge cases. All drive the real functions; full `unittest discover -s tests -q` passes (including new pure formatter test + positive /logs success case).
+- Expanded reliability tests (M1.3): 8+ new direct tests in `test_lcc_core.py` + `test_lcc_api.py` for manifest read failures (non-dict, non-list models), crash watchdog transitions (starting->crashed), `server_metrics` under missing psutil/nvidia + dead-pid/no-server paths, additional port/Windows pid edge cases. All drive the real functions; full `unittest discover -s tests -q` passes (148 tests in this run, including new pure formatter test + positive /logs success case).
 - Fixed P1 gap: `GET /api/servers/{server_id}/logs` route now exists in `lcc_api/app.py` (delegates to `server_manager.server_logs`). UI `loadLogs` and docs in PORTABLE_CORE.md now functional. Error + positive shapes tested.
 - Running server observability basics: refresh now enriches running/crashed servers with `/metrics`; `renderServers` + CSS show KV usage, tokens/sec, slots, RSS + GPU VRAM, crashed/oom badges, last stderr snippet, and a working Restart button (reuses start flow by mode). Stop/Logs preserved.
-- Two consistent launches of primary entrypoint + endpoint probes captured (Uvicorn running + startup complete.; /health 200, /api/servers 200+servers list; /metrics + /logs on real injected tracked server id return success:true with fields/tails (via test state injection as allowed); readiness polling + log captures used; no crashes).
+- Two consistent launches of primary entrypoint + endpoint probes captured (Uvicorn running + startup complete.; /health 200, /api/servers 200+servers list (originals preserved + probe-live, count=5); /metrics + /logs on real injected id return success:true (test state injection as allowed by verif plan); readiness polling + log captures used; no crashes). Full discover = 148 tests.
 
 ## [0.14.0] - 2026-07-08
 
