@@ -146,6 +146,14 @@ class ManifestTests(unittest.TestCase):
         self.assertEqual(len(profiles), 1)
         self.assertGreaterEqual(len(profiles[0].portable_warnings), 2)
 
+    def test_load_profiles_raises_on_corrupt_manifest(self) -> None:
+        from lcc_core.manifest import ManifestReadError
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "models.json").write_text("{not valid json", encoding="utf-8")
+            with self.assertRaises(ManifestReadError):
+                load_profiles(root)
+
     def test_find_project_root_uses_markers(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -154,6 +162,22 @@ class ManifestTests(unittest.TestCase):
             (root / "models.json").write_text('{"models": []}', encoding="utf-8")
 
             self.assertEqual(find_project_root(child), root)
+
+
+class ProcessPortDetectionTests(unittest.TestCase):
+    """Smoke tests for the hardened pid/port helpers (M1.2)."""
+
+    def test_pid_is_running_invalid_pids(self) -> None:
+        from lcc_core.server_manager import pid_is_running
+        self.assertFalse(pid_is_running(None))
+        self.assertFalse(pid_is_running(0))
+        self.assertFalse(pid_is_running(2**31))  # very unlikely live PID in tests
+
+    def test_find_process_on_port_smoke(self) -> None:
+        from lcc_core.server_manager import find_process_on_port
+        # Should not crash; result may be None or a real system process.
+        pid = find_process_on_port(1)  # privileged / unlikely, but exercises path
+        self.assertTrue(pid is None or isinstance(pid, int))
 
 
 class RuntimeDetectionTests(unittest.TestCase):

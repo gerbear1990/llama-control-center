@@ -49,6 +49,12 @@ def _parse_model_path(script_path: Path | None) -> str | None:
 
 
 def load_manifest(manifest_path: Path) -> dict[str, Any]:
+    """Raw loader (bypasses safety). Internal / legacy only.
+
+    All production read paths must go through load_manifest_safely (or
+    load_profiles which now delegates to it) to avoid data-loss on corrupt
+    models.json.
+    """
     with manifest_path.open("r", encoding="utf-8") as f:
         return json.load(f)
 
@@ -109,7 +115,7 @@ def load_profiles(
     if not path or not path.is_file():
         return []
 
-    manifest = load_manifest(path)
+    manifest = load_manifest_safely(path)
     profiles: list[ModelProfile] = []
     for entry in manifest.get("models", []) or []:
         script_name = entry.get("script")

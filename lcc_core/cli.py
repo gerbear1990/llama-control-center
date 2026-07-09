@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 from .inventory import build_inventory
+from .manifest import ManifestReadError
 from .profile_resolver import resolved_inventory, resolve_profiles
 from .server_manager import list_servers, prepare_launch_command, server_logs, stop_server
 
@@ -23,21 +24,29 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
 
 
 def inventory_command(args: argparse.Namespace) -> int:
-    payload = build_inventory(
-        project_root=args.project_root,
-        model_dirs=[Path(path) for path in args.model_dir] or None,
-        include_manifest=not args.no_manifest,
-        max_files=args.max_files,
-    )
+    try:
+        payload = build_inventory(
+            project_root=args.project_root,
+            model_dirs=[Path(path) for path in args.model_dir] or None,
+            include_manifest=not args.no_manifest,
+            max_files=args.max_files,
+        )
+    except ManifestReadError as exc:
+        print(json.dumps({"error": "manifest_read_error", "message": str(exc)}))
+        return 1
     print(json.dumps(payload, indent=2 if args.pretty else None, sort_keys=args.pretty))
     return 0
 
 
 def profiles_command(args: argparse.Namespace) -> int:
-    profiles = resolve_profiles(
-        project_root=args.project_root,
-        model_dirs=[Path(path) for path in args.model_dir] or None,
-    )
+    try:
+        profiles = resolve_profiles(
+            project_root=args.project_root,
+            model_dirs=[Path(path) for path in args.model_dir] or None,
+        )
+    except ManifestReadError as exc:
+        print(json.dumps({"error": "manifest_read_error", "message": str(exc)}))
+        return 1
     payload = {
         "profiles": [profile.to_dict() for profile in profiles],
         "launchable_count": len([profile for profile in profiles if profile.launchable]),
@@ -47,10 +56,14 @@ def profiles_command(args: argparse.Namespace) -> int:
 
 
 def resolved_inventory_command(args: argparse.Namespace) -> int:
-    payload = resolved_inventory(
-        project_root=args.project_root,
-        model_dirs=[Path(path) for path in args.model_dir] or None,
-    )
+    try:
+        payload = resolved_inventory(
+            project_root=args.project_root,
+            model_dirs=[Path(path) for path in args.model_dir] or None,
+        )
+    except ManifestReadError as exc:
+        print(json.dumps({"error": "manifest_read_error", "message": str(exc)}))
+        return 1
     print(json.dumps(payload, indent=2 if args.pretty else None, sort_keys=args.pretty))
     return 0
 

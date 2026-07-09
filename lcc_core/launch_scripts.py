@@ -577,7 +577,18 @@ def generate_all_launch_scripts(
     else:
         parsed_model_dirs = None
 
-    resolved_profiles = resolve_profiles(project_root=root, model_dirs=parsed_model_dirs)
+    try:
+        resolved_profiles = resolve_profiles(project_root=root, model_dirs=parsed_model_dirs)
+    except ManifestReadError as exc:
+        result = ScanResult(
+            scanned_model_count=0,
+            profile_count=0,
+            scanned_at=_now(),
+        )
+        result.errors.append({"mode": "models.json", "error": str(exc)})
+        result.generated = []
+        result.skipped = []
+        return result
     discovered_models = discover_models(parsed_model_dirs, root)
     binary, _binary_warnings = _binary_path_for_script(root, app_config)
 

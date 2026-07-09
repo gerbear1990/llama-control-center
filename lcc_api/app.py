@@ -33,6 +33,7 @@ from lcc_core.launch_scripts import (
 )
 from lcc_core.profile_resolver import resolved_inventory, resolve_profiles
 from lcc_core.hf_metadata import fetch_model_info, check_model_update
+from lcc_core.manifest import ManifestReadError
 from lcc_core.runtime_updates import check_runtime_updates
 from lcc_core.sampling import list_sampling_intents, suggest_sampling
 from lcc_core.server_manager import list_servers, prepare_launch_command, start_profile, stop_server
@@ -149,15 +150,21 @@ def save_config(config: ConfigRequest) -> dict[str, Any]:
 @app.get("/api/inventory")
 def get_inventory() -> dict[str, Any]:
     config = AppConfig.load()
-    return build_inventory(model_dirs=[Path(path) for path in config.model_dirs] or None)
+    try:
+        return build_inventory(model_dirs=[Path(path) for path in config.model_dirs] or None)
+    except ManifestReadError as exc:
+        return {"error": "manifest_read_error", "message": str(exc), "profiles": [], "models": []}
 
 
 @app.post("/api/inventory")
 def post_inventory(request: InventoryRequest) -> dict[str, Any]:
-    return build_inventory(
-        project_root=request.project_root,
-        model_dirs=[Path(path) for path in request.model_dirs] or None,
-    )
+    try:
+        return build_inventory(
+            project_root=request.project_root,
+            model_dirs=[Path(path) for path in request.model_dirs] or None,
+        )
+    except ManifestReadError as exc:
+        return {"error": "manifest_read_error", "message": str(exc), "profiles": [], "models": []}
 
 
 @app.get("/api/runtime-updates")
@@ -187,7 +194,10 @@ def refresh_runtime_updates(runtime: str | None = None) -> dict[str, Any]:
 def get_profiles() -> dict[str, Any]:
     config = AppConfig.load()
     hardware = detect_system_hardware()
-    profiles = [profile.to_dict() for profile in resolve_profiles(model_dirs=[Path(path) for path in config.model_dirs] or None)]
+    try:
+        profiles = [profile.to_dict() for profile in resolve_profiles(model_dirs=[Path(path) for path in config.model_dirs] or None)]
+    except ManifestReadError as exc:
+        return {"profiles": [], "launchable_count": 0, "error": "manifest_read_error", "message": str(exc)}
     profiles = enrich_profiles_with_fit_status(profiles, hardware)
     for profile in profiles:
         mode = profile.get("mode")
@@ -326,7 +336,10 @@ def fit_profile(request: FitRequest) -> dict[str, Any]:
 def auto_tune_profile(request: EstimateRequest) -> dict[str, Any]:
     config = AppConfig.load()
     model_dirs = [Path(path) for path in request.model_dirs] or [Path(path) for path in config.model_dirs] or None
-    profiles = resolve_profiles(project_root=request.project_root, model_dirs=model_dirs)
+    try:
+        profiles = resolve_profiles(project_root=request.project_root, model_dirs=model_dirs)
+    except ManifestReadError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     profile = next((item for item in profiles if item.mode == request.mode), None)
     if not profile:
         raise HTTPException(status_code=400, detail=f"Unknown profile mode: {request.mode}")
@@ -349,7 +362,10 @@ def sampling_presets() -> dict[str, Any]:
 def estimate_tps(request: EstimateRequest) -> dict[str, Any]:
     config = AppConfig.load()
     model_dirs = [Path(path) for path in request.model_dirs] or [Path(path) for path in config.model_dirs] or None
-    profiles = resolve_profiles(project_root=request.project_root, model_dirs=model_dirs)
+    try:
+        profiles = resolve_profiles(project_root=request.project_root, model_dirs=model_dirs)
+    except ManifestReadError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     profile = next((item for item in profiles if item.mode == request.mode), None)
     if not profile:
         raise HTTPException(status_code=400, detail=f"Unknown profile mode: {request.mode}")
@@ -371,7 +387,10 @@ def estimate_tps(request: EstimateRequest) -> dict[str, Any]:
 def estimate_launch(request: EstimateRequest) -> dict[str, Any]:
     config = AppConfig.load()
     model_dirs = [Path(path) for path in request.model_dirs] or [Path(path) for path in config.model_dirs] or None
-    profiles = resolve_profiles(project_root=request.project_root, model_dirs=model_dirs)
+    try:
+        profiles = resolve_profiles(project_root=request.project_root, model_dirs=model_dirs)
+    except ManifestReadError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     profile = next((item for item in profiles if item.mode == request.mode), None)
     if not profile:
         raise HTTPException(status_code=400, detail=f"Unknown profile mode: {request.mode}")

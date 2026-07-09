@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import json
 import os
 import socket
@@ -15,8 +16,16 @@ from .backends import detect_llama_cpp, detect_runtime
 from .config import AppConfig
 from .hardware import _windows_memory_info, _posix_memory_info
 from .llama_args import LaunchCommand, build_llama_server_args
+from .manifest import ManifestReadError
 from .paths import cache_dir, find_project_root, is_windows
 from .profile_resolver import ResolvedProfile, resolve_profiles
+
+# psutil is a declared dependency; treat as hard for process introspection
+# but keep defensive checks in case of partial envs.
+try:
+    import psutil  # type: ignore
+except Exception:  # pragma: no cover
+    psutil = None  # type: ignore[assignment]
 
 
 STATE_FILENAME = "servers.json"
@@ -58,12 +67,34 @@ def write_state(state: dict[str, Any]) -> None:
 
 
 def pid_is_running(pid: int | None) -> bool:
+    """Return True if a process with the given PID is currently running.
+
+    Prefers psutil (robust, cross-platform, no output parsing). Falls back
+    to OS signals + platform-specific checks (tasklist on Windows, /proc
+    zombie detection on Linux).
+    """
     if not pid:
         return False
+    p = int(pid)
+    if psutil is not None:
+        try:
+            proc = psutil.Process(p)
+            # status() will raise NoSuchProcess if gone
+            status = proc.status()
+            # Treat zombies as not-running for our purposes (matches prior Linux logic)
+            if status == psutil.STATUS_ZOMBIE:
+                return False
+            return True
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            return False
+        except Exception:
+            # Fall through to legacy checks on unexpected psutil errors
+            pass
+
     if is_windows():
         try:
             result = subprocess.run(
-                ["tasklist", "/FI", f"PID eq {int(pid)}", "/FO", "CSV", "/NH"],
+                ["tasklist", "/FI", f"PID eq {p}", "/FO", "CSV", "/NH"],
                 capture_output=True,
                 text=True,
                 timeout=5,
@@ -71,18 +102,15 @@ def pid_is_running(pid: int | None) -> bool:
             )
         except (OSError, subprocess.SubprocessError):
             return False
-        return str(int(pid)) in result.stdout
+        return str(p) in result.stdout
+
     try:
-        os.kill(int(pid), 0)
+        os.kill(p, 0)
     except OSError:
         return False
-    # A killed-but-unreaped child becomes a zombie; os.kill(pid, 0) still
-    # succeeds for it. Treat zombies as dead so Stop reports success and the
-    # server list doesn't show a corpse as running. Linux /proc only; elsewhere
-    # we keep the os.kill result.
-    # ponytail: /proc check, fine until this needs to run on macOS.
+    # Linux zombie detection (best effort)
     try:
-        with open(f"/proc/{int(pid)}/stat", encoding="ascii") as f:
+        with open(f"/proc/{p}/stat", encoding="ascii") as f:
             return f.read().rpartition(")")[2].split()[0] != "Z"
     except (OSError, IndexError):
         return True
@@ -293,8 +321,45 @@ def _probe_port(host: str, port: int, *, timeout: float = 0.6) -> dict[str, Any]
 # Returns a dict ``{pid, process_name}`` or ``None`` when nothing bound or
 # the platform tools (lsof / netstat) aren't available.
 def _port_in_use_info(host: str, port: int) -> dict[str, Any] | None:
+    """Return info about the process listening on host:port if any.
+
+    Strongly prefers psutil.net_connections() for robust, locale-independent,
+    IPv4/IPv6 aware results (no fragile text parsing of netstat/lsof).
+    Falls back to subprocess parsing when psutil is unavailable.
+    """
     if not port:
         return None
+    p = int(port)
+    h = host or "127.0.0.1"
+
+    if psutil is not None:
+        try:
+            conns = psutil.net_connections(kind="tcp")
+            for conn in conns:
+                if conn.status != psutil.CONN_LISTEN:
+                    continue
+                # conn.laddr can be (ip, port) or addr obj
+                laddr = conn.laddr
+                lport = laddr.port if hasattr(laddr, "port") else laddr[1]
+                if lport != p:
+                    continue
+                lip = str(laddr.ip if hasattr(laddr, "ip") else laddr[0])
+                # Match requested host or common wildcards
+                if lip in ("", "0.0.0.0", "::", h, "127.0.0.1", "::1"):
+                    pid = conn.pid
+                    if pid:
+                        name = None
+                        try:
+                            name = psutil.Process(pid).name()
+                        except Exception:
+                            name = _tasklist_name(str(pid)) if is_windows() else _ps_name(pid)
+                        return {"pid": int(pid), "process_name": name}
+            return None
+        except Exception:
+            # fall through to legacy parsing
+            pass
+
+    # Legacy fallback (text parsing) — improved but still best-effort
     try:
         if is_windows():
             result = subprocess.run(
@@ -303,25 +368,33 @@ def _port_in_use_info(host: str, port: int) -> dict[str, Any] | None:
             )
             if result.returncode != 0:
                 return None
-            target = f"  0.0.0.0:{int(port)}          "  # IPv4 wildcard
-            # Also accept the explicit loopback binding.
-            alt = f"  {host}:{int(port)}          "
+            target = f":{int(p)}"
             for raw_line in result.stdout.splitlines():
                 line = raw_line.strip()
-                if not (line.startswith("TCP") and (target in line or alt in line)):
+                if not line.startswith("TCP"):
                     continue
+                # netstat lines: Proto Local Foreign State PID
                 parts = line.split()
-                if len(parts) < 5 or parts[3] != "LISTENING":
+                if len(parts) < 5:
                     continue
-                pid = parts[-1]
-                if not pid.isdigit():
+                local = parts[1]
+                state = parts[3]
+                pid_str = parts[4]
+                if state != "LISTENING":
                     continue
-                name = _tasklist_name(pid)
-                return {"pid": int(pid), "process_name": name}
+                if target not in local:
+                    continue
+                # Also consider host-specific match if provided
+                if h not in ("127.0.0.1", "0.0.0.0") and h not in local:
+                    continue
+                if not pid_str.isdigit():
+                    continue
+                name = _tasklist_name(pid_str)
+                return {"pid": int(pid_str), "process_name": name}
             return None
-        # POSIX: lsof is the most portable listener lookup.
+        # POSIX fallback
         result = subprocess.run(
-            ["lsof", "-nP", f"-iTCP:{int(port)}", "-sTCP:LISTEN", "-t"],
+            ["lsof", "-nP", f"-iTCP:{int(p)}", "-sTCP:LISTEN", "-t"],
             capture_output=True, text=True, timeout=3, check=False,
         )
         if result.returncode != 0:
@@ -336,8 +409,19 @@ def _port_in_use_info(host: str, port: int) -> dict[str, Any] | None:
         return None
 
 
+def find_process_on_port(port: int) -> int | None:
+    """Find a process PID bound to the given port (best effort, cross platform).
+
+    Prefers psutil for correctness. Exposed for use by launch scripts and tests.
+    """
+    info = _port_in_use_info("127.0.0.1", port)
+    if info and isinstance(info.get("pid"), int):
+        return info["pid"]
+    return None
+
+
 def _tasklist_name(pid: str) -> str | None:
-    """Process name for a Windows PID via tasklist (best-effort)."""
+    """Process name for a Windows PID via tasklist (best-effort, CSV aware)."""
     try:
         result = subprocess.run(
             ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
@@ -347,8 +431,17 @@ def _tasklist_name(pid: str) -> str | None:
         return None
     if result.returncode != 0 or not result.stdout.strip():
         return None
-    first = result.stdout.splitlines()[0].strip().strip('"')
-    return first or None
+    try:
+        # /NH + CSV: first line is data row. Columns: Image Name, PID, ...
+        reader = csv.reader(result.stdout.splitlines())
+        row = next(reader, None)
+        if row and row[0]:
+            return row[0].strip() or None
+    except Exception:
+        pass
+    # Fallback
+    line = result.stdout.splitlines()[0].strip()
+    return line.strip('"').split('","')[0] or None
 
 
 def _ps_name(pid: int) -> str | None:
@@ -663,7 +756,10 @@ def prepare_launch_command(
 ) -> dict[str, Any]:
     root = Path(project_root).expanduser().resolve() if project_root else find_project_root()
     app_config = config or AppConfig.load()
-    resolved = _profile_by_mode(mode, root, model_dirs or app_config.model_dirs)
+    try:
+        resolved = _profile_by_mode(mode, root, model_dirs or app_config.model_dirs)
+    except ManifestReadError as exc:
+        return {"success": False, "error": f"Manifest read error: {exc}"}
     if not resolved:
         return {"success": False, "error": f"Unknown profile mode: {mode}"}
     if not resolved.launchable or not resolved.model:
