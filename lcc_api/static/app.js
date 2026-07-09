@@ -19,6 +19,7 @@ const state = {
   profileFilter: 'all',
   profileModelFilter: 'all',
   hideUnavailableProfiles: localStorage.getItem('lcc-hide-unavailable-profiles') === '1',
+  hideNotInstalledRuntimes: localStorage.getItem('lcc-hide-not-installed-runtimes') === '1',
   showAllRuntimes: false,
   query: '',
   jinjaRecommended: false,
@@ -560,6 +561,23 @@ function renderSummary() {
   $('#summary-line').textContent = `${state.profiles.length} profiles, ${summary.model_count ?? 0} models, ${summary.legacy_portability_issue_count ?? 0} portability issues.`;
 }
 
+// Clicking the Needs setup metric filters the Profiles table to show only items needing attention.
+const setupWrapper = $('#metric-setup-wrapper');
+if (setupWrapper) {
+  setupWrapper.style.cursor = 'pointer';
+  setupWrapper.addEventListener('click', () => {
+    state.profileFilter = 'setup';
+    // Also unhide unavailable so user sees the problems
+    state.hideUnavailableProfiles = false;
+    const toggle = $('#hide-unavailable-profiles');
+    if (toggle) toggle.checked = false;
+    renderProfiles();
+    // Scroll to profiles
+    const profilesPanel = $('#profiles');
+    if (profilesPanel) profilesPanel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
+}
+
 function primaryGpu() {
   return state.hardware?.primary_gpu || state.hardware?.gpus?.[0] || null;
 }
@@ -874,8 +892,12 @@ function renderRuntimes() {
       ? `${available} of ${envs.length} runtime${envs.length === 1 ? '' : 's'} available.${suffix}`
       : 'No runtimes detected.';
   }
-  const visibleEnvs = state.showAllRuntimes ? envs : envs.slice(0, 4);
-  const hiddenCount = Math.max(0, envs.length - visibleEnvs.length);
+  let filteredEnvs = envs;
+  if (state.hideNotInstalledRuntimes) {
+    filteredEnvs = filteredEnvs.filter((env) => env.available);
+  }
+  const visibleEnvs = state.showAllRuntimes ? filteredEnvs : filteredEnvs.slice(0, 4);
+  const hiddenCount = Math.max(0, filteredEnvs.length - visibleEnvs.length);
   const rows = visibleEnvs.map((env) => {
     const url = runtimeUrl(env);
     const port = runtimePort(env);
@@ -1302,22 +1324,28 @@ function renderServers() {
   if (!servers.length) {
     $('#server-box').innerHTML = '<div class="empty-state">No tracked servers. Start a launchable profile to track one here.</div>';
     $('#log-preview').textContent = 'No tracked server selected.';
+    renderActiveServers([]); // keep main panel in sync
     return;
   }
-  $('#server-box').innerHTML = servers.map((server) => {
-    const isRunning = !!server.running;
-    const status = server.status || (isRunning ? 'running' : 'stopped');
-    const isCrashed = status === 'crashed' || (!isRunning && server.last_stderr);
-    const oom = server.oom_likely ? ' <span class="badge error" title="Likely OOM">OOM</span>' : '';
-    const metricsLine = formatServerMetricsLine(server.metrics) ? `<div class="server-metrics">${formatServerMetricsLine(server.metrics)}</div>` : '';
-    const stderrSnippet = (isCrashed && server.last_stderr) ? `<pre class="server-stderr" title="Last stderr (truncated)">${escapeHtml(String(server.last_stderr).slice(0, 300))}</pre>` : '';
-    // Restart visible for crashed/stopped (not for live running)
-    const restartBtn = !isRunning ? `<button class="mini-button" type="button" data-action="restart" data-server-id="${escapeHtml(server.id)}">Restart</button>` : '';
-    const stopBtn = `<button class="mini-button" type="button" data-action="stop" data-server-id="${escapeHtml(server.id)}" ${isRunning ? '' : 'disabled'}>Stop</button>`;
-    const badgeClass = isCrashed ? 'error' : (isRunning ? 'ok' : 'warn');
-    const badgeText = isCrashed ? 'crashed' : (isRunning ? 'running' : status);
-    return `
-    <article class="server-item" data-server-id="${escapeHtml(server.id)}">
+  const html = servers.map((server) => buildServerItemHtml(server)).join('');
+  $('#server-box').innerHTML = html;
+  renderActiveServers(servers);
+}
+
+function buildServerItemHtml(server) {
+  const isRunning = !!server.running;
+  const status = server.status || (isRunning ? 'running' : 'stopped');
+  const isCrashed = status === 'crashed' || (!isRunning && server.last_stderr);
+  const oom = server.oom_likely ? ' <span class="badge error" title="Likely OOM">OOM</span>' : '';
+  const metricsLine = formatServerMetricsLine(server.metrics) ? `<div class="server-metrics">${formatServerMetricsLine(server.metrics)}</div>` : '';
+  const stderrSnippet = (isCrashed && server.last_stderr) ? `<pre class="server-stderr" title="Last stderr (truncated)">${escapeHtml(String(server.last_stderr).slice(0, 300))}</pre>` : '';
+  const restartBtn = !isRunning ? `<button class="mini-button" type="button" data-action="restart" data-server-id="${escapeHtml(server.id)}">Restart</button>` : '';
+  const stopBtn = `<button class="mini-button" type="button" data-action="stop" data-server-id="${escapeHtml(server.id)}" ${isRunning ? '' : 'disabled'}>Stop</button>`;
+  const badgeClass = isCrashed ? 'error' : (isRunning ? 'ok' : 'warn');
+  const badgeText = isCrashed ? 'crashed' : (isRunning ? 'running' : status);
+  const selectAttr = `data-server-id="${escapeHtml(server.id)}"`;
+  return `
+    <article class="server-item" ${selectAttr}>
       <span class="badge ${badgeClass}">${badgeText}</span>${oom}
       <strong>${escapeHtml(server.mode)}</strong>
       <p>PID ${escapeHtml(server.pid || '-')} on ${escapeHtml(server.host || '127.0.0.1')}:${escapeHtml(server.port || '-')}</p>
@@ -1329,10 +1357,47 @@ function renderServers() {
         ${stopBtn}
       </div>
     </article>`;
+}
+
+function renderActiveServers(servers) {
+  const container = $('#active-servers-list');
+  if (!container) return;
+  const active = (servers || state.servers || []).filter((s) => s.running || (s.status && s.status !== 'stopped'));
+  if (!active.length) {
+    container.innerHTML = '<div class="empty-state">No active or recent tracked servers. Launch a profile to see one here (and in the side pane under Servers).</div>';
+    return;
+  }
+  container.innerHTML = active.map((server) => {
+    const isRunning = !!server.running;
+    const status = server.status || (isRunning ? 'running' : 'stopped');
+    const isCrashed = status === 'crashed' || (!isRunning && server.last_stderr);
+    const oom = server.oom_likely ? ' <span class="badge error">OOM</span>' : '';
+    const metrics = formatServerMetricsLine(server.metrics);
+    const metricsHtml = metrics ? `<div class="server-metrics">${metrics}</div>` : '';
+    const badgeClass = isCrashed ? 'error' : (isRunning ? 'ok' : 'warn');
+    const badgeText = isCrashed ? 'crashed' : (isRunning ? 'running' : status);
+    const stopBtn = isRunning ? `<button class="mini-button danger" data-action="stop" data-server-id="${escapeHtml(server.id)}">Stop</button>` : '';
+    const logsBtn = `<button class="mini-button" data-action="logs" data-server-id="${escapeHtml(server.id)}">Logs</button>`;
+    const restartBtn = !isRunning ? `<button class="mini-button" data-action="restart" data-server-id="${escapeHtml(server.id)}">Restart</button>` : '';
+    return `
+      <article class="active-server-row" data-server-id="${escapeHtml(server.id)}">
+        <div class="active-server-head">
+          <span class="badge ${badgeClass}">${badgeText}</span>${oom}
+          <strong>${escapeHtml(server.mode)}</strong>
+          <span class="muted">· PID ${escapeHtml(server.pid || '-')} · ${escapeHtml(server.host || '127.0.0.1')}:${escapeHtml(server.port || '-')}</span>
+        </div>
+        ${metricsHtml}
+        <div class="row-actions">
+          ${logsBtn}
+          ${restartBtn}
+          ${stopBtn}
+        </div>
+      </article>`;
   }).join('');
 }
 
 function renderIssues() {
+  // Legacy combined feed for small lists (kept for compatibility).
   const profileIssues = state.profiles
     .filter((profile) => !profile.launchable || profile.warnings?.length)
     .slice(0, 5)
@@ -1354,6 +1419,26 @@ function renderIssues() {
       <p>${escapeHtml(issue.text)}</p>
     </article>
   `).join('') || '<div class="empty-state">No setup issues detected.</div>';
+}
+
+function renderPortability() {
+  // Richer view for the reworked Portability & Paths panel.
+  const summaryEl = $('#portability-summary');
+  if (!summaryEl) return;
+  const inv = state.inventory || {};
+  const roots = (inv.scan_roots || []).map((r) => escapeHtml(r)).join('<br>') || 'Using defaults';
+  const cfg = state.config || {};
+  const rtRoots = (cfg.runtime_dirs && cfg.runtime_dirs.length ? cfg.runtime_dirs : (inv.runtime_dirs || [])).map((r) => escapeHtml(r)).join('<br>') || 'Auto (PATH + detected)';
+  const issueCount = (inv.portability_issues || []).length + state.profiles.filter((p) => !p.launchable).length;
+  summaryEl.innerHTML = `
+    <div class="portability-roots">
+      <div><strong>Model scan roots</strong><br><span class="mono">${roots}</span></div>
+      <div><strong>Runtime search</strong><br><span class="mono">${rtRoots}</span></div>
+      <div><strong>Issues surfaced</strong><br><span class="badge ${issueCount ? 'warn' : 'ok'}">${issueCount}</span></div>
+    </div>
+  `;
+  // Also refresh the compact issue list underneath
+  renderIssues();
 }
 
 // Model Notes keeps HF info, fit-test, and benchmark results in separate slots
@@ -1622,6 +1707,11 @@ function renderSettings() {
   $('#settings-update-channel').value = config.update_channel || 'stable';
   $('#settings-server-history-limit').value = config.server_history_limit || 5;
   $('#settings-extra-args').value = listToLines(config.extra_llama_args);
+  // New/expanded toggles
+  const autoScripts = $('#settings-auto-scripts');
+  if (autoScripts) autoScripts.checked = config.auto_generate_launch_scripts !== false;
+  const autoScan = $('#settings-auto-scan');
+  if (autoScan) autoScan.checked = config.auto_scan_on_startup !== false;
 }
 
 function openSettings() {
@@ -1679,6 +1769,8 @@ function collectSettings() {
     update_channel: $('#settings-update-channel').value || 'stable',
     server_history_limit: Number($('#settings-server-history-limit').value) || 5,
     extra_llama_args: linesToList($('#settings-extra-args').value),
+    auto_generate_launch_scripts: $('#settings-auto-scripts') ? $('#settings-auto-scripts').checked : true,
+    auto_scan_on_startup: $('#settings-auto-scan') ? $('#settings-auto-scan').checked : true,
   };
 }
 
@@ -1696,6 +1788,150 @@ async function saveSettings(event) {
   } catch (error) {
     toast(`Settings failed: ${error.message}`);
   }
+}
+
+// Pure, side-effect free export snapshot builder (for AC2 + testability).
+// Takes plain config + optional inventory; returns pretty JSON string.
+// No DOM, no state mutation, no network. Directly callable from tests (via vm) and handlers.
+function buildPortableExportSnapshot(config, inventory) {
+  const c = config || {};
+  const inv = inventory || {};
+  const snap = {
+    schema_version: "lcc-portable-export-v1",
+    exported_at: new Date().toISOString(),
+    // Core portable roots (the main thing for reproducibility)
+    model_dirs: Array.isArray(c.model_dirs) ? [...c.model_dirs] : [],
+    runtime_dirs: Array.isArray(c.runtime_dirs) ? [...c.runtime_dirs] : [],
+    // Selected direct overrides and defaults (no secrets, no per-profile state)
+    llama_server_path: c.llama_server_path || "",
+    llama_fit_params_path: c.llama_fit_params_path || "",
+    default_host: c.default_host || "127.0.0.1",
+    default_port: Number(c.default_port) || 8080,
+    default_backend: c.default_backend || "llama.cpp",
+    update_channel: c.update_channel || "stable",
+    server_history_limit: Number(c.server_history_limit) || 5,
+    auto_generate_launch_scripts: c.auto_generate_launch_scripts !== false,
+    auto_scan_on_startup: c.auto_scan_on_startup !== false,
+    // Discovered scan roots for context (read-only snapshot)
+    scan_roots: Array.isArray(inv.scan_roots) ? [...inv.scan_roots] : [],
+    // Note: extra_llama_args omitted from minimal portable to keep clean; add if needed
+  };
+  return JSON.stringify(snap, null, 2);
+}
+
+// Plain command registry (pure mapping of id -> real shipped handler fn).
+// Directly testable; no DOM creation here. Used by palette and shortcuts (AC3).
+const COMMAND_REGISTRY = {
+  'focus-search': () => {
+    const s = $('#search-input');
+    if (s) { s.focus(); s.select(); }
+  },
+  'open-settings': () => openSettings(),
+  'refresh': () => { refresh(); },
+  // Future: add 'start-server' etc but keep to the required three + palette infra
+};
+
+function getCommands() {
+  return [
+    { id: 'focus-search', label: 'Focus search', shortcut: 'Ctrl+K' },
+    { id: 'open-settings', label: 'Open Settings', shortcut: 'via button / palette' },
+    { id: 'refresh', label: 'Refresh inventory', shortcut: 'via button / palette' },
+  ];
+}
+
+function executeCommand(id) {
+  const fn = COMMAND_REGISTRY[id];
+  if (typeof fn === 'function') {
+    fn();
+    return true;
+  }
+  return false;
+}
+
+async function exportPortableConfig(trigger) {
+  try {
+    const json = buildPortableExportSnapshot(state.config, state.inventory);
+    // Use clipboard API (modern browsers); fallback to toast with text if blocked
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(json);
+      toast('Portable config copied to clipboard');
+    } else {
+      // Rare fallback: show in toast + console for manual copy
+      toast('Export ready (clipboard unavailable) — see console');
+      console.log('LCC portable export:\n' + json);
+    }
+    // Also briefly show a hint in model notes or just rely on toast
+  } catch (err) {
+    toast('Export failed: ' + (err && err.message ? err.message : err));
+  }
+}
+
+let paletteVisible = false;
+function showCommandPalette() {
+  const back = $('#command-palette');
+  if (!back) return;
+  back.hidden = false;
+  document.body.classList.add('modal-open');
+  paletteVisible = true;
+  renderPaletteList('');
+  const filter = $('#palette-filter');
+  if (filter) {
+    filter.value = '';
+    filter.focus();
+    filter.oninput = () => renderPaletteList(filter.value);
+    // Basic keyboard nav for palette list (up/down/enter)
+    filter.onkeydown = (ev) => {
+      const items = Array.from($('#palette-list').querySelectorAll('li[data-cmd]'));
+      let sel = items.findIndex(i => i.classList.contains('selected'));
+      if (ev.key === 'ArrowDown') {
+        ev.preventDefault();
+        if (sel >= 0) items[sel].classList.remove('selected');
+        sel = (sel + 1) % items.length;
+        items[sel].classList.add('selected');
+        items[sel].scrollIntoView({block:'nearest'});
+      } else if (ev.key === 'ArrowUp') {
+        ev.preventDefault();
+        if (sel >= 0) items[sel].classList.remove('selected');
+        sel = (sel - 1 + items.length) % items.length;
+        items[sel].classList.add('selected');
+        items[sel].scrollIntoView({block:'nearest'});
+      } else if (ev.key === 'Enter') {
+        ev.preventDefault();
+        const chosen = items[sel >=0 ? sel : 0];
+        if (chosen) {
+          const id = chosen.dataset.cmd;
+          hideCommandPalette();
+          executeCommand(id);
+        }
+      }
+    };
+  }
+}
+function hideCommandPalette() {
+  const back = $('#command-palette');
+  if (back) back.hidden = true;
+  document.body.classList.remove('modal-open');
+  paletteVisible = false;
+}
+function renderPaletteList(filterText) {
+  const list = $('#palette-list');
+  if (!list) return;
+  const q = (filterText || '').toLowerCase().trim();
+  const cmds = getCommands().filter(c => !q || c.label.toLowerCase().includes(q) || c.id.includes(q));
+  list.innerHTML = cmds.map((c, idx) => `
+    <li data-cmd="${escapeHtml(c.id)}" class="${idx===0 ? 'selected' : ''}">
+      <span>${escapeHtml(c.label)}</span>
+      <kbd>${escapeHtml(c.shortcut || '')}</kbd>
+    </li>
+  `).join('') || '<li class="empty">No matching commands</li>';
+  // click to execute
+  list.querySelectorAll('li[data-cmd]').forEach(li => {
+    li.addEventListener('click', () => {
+      const id = li.dataset.cmd;
+      hideCommandPalette();
+      executeCommand(id);
+    });
+  });
 }
 
 function updateHfCliUi(hfData) {
@@ -1793,8 +2029,8 @@ function reconcileSelectedMode() {
 const DASHBOARD_RESOURCES = [
   { label: 'profiles', path: '/api/profiles', apply: (d) => { state.profiles = d.profiles || []; }, render: () => { reconcileSelectedMode(); renderProfiles(); renderParameters(); renderSummary(); } },
   { label: 'servers', path: '/api/servers', apply: (d) => { state.servers = d.servers || []; }, render: renderServers },
-  { label: 'inventory', path: '/api/inventory', apply: (d) => { state.inventory = d; }, render: () => { renderSummary(); renderModels(); renderIssues(); renderRuntimes(); renderRuntimeOptions($('#param-runtime')?.value); } },
-  { label: 'settings', path: '/api/config', apply: (d) => { state.config = d; }, render: () => { renderSettings(); renderParameters(); } },
+  { label: 'inventory', path: '/api/inventory', apply: (d) => { state.inventory = d; }, render: () => { renderSummary(); renderModels(); renderIssues(); renderRuntimes(); renderRuntimeOptions($('#param-runtime')?.value); renderPortability(); } },
+  { label: 'settings', path: '/api/config', apply: (d) => { state.config = d; }, render: () => { renderSettings(); renderParameters(); renderPortability(); } },
   { label: 'hardware', path: '/api/system', apply: (d) => { state.hardware = d; }, render: () => { renderHardware(); renderParameters(); } },
   { label: 'meta', path: '/api/meta', apply: (d) => { state.meta = d; }, render: renderVersion },
   { label: 'runtime-updates', path: '/api/runtime-updates', apply: (d) => { state.runtimeUpdates = d; }, render: renderRuntimes },
@@ -2517,6 +2753,23 @@ async function loadLogs(serverId, trigger) {
   });
 }
 
+async function purgeServers(onlyNonRunning = true, trigger = null, clearAll = false) {
+  const label = clearAll ? 'Clear all server history' : (onlyNonRunning ? 'Purge stopped/crashed servers' : 'Purge servers');
+  const ok = await confirmAction({ title: label, message: clearAll ? 'This will remove every tracked server entry (running or not). Continue?' : 'Remove non-running server entries from history?', confirmLabel: 'Purge', confirmKind: clearAll ? 'danger' : 'primary' });
+  if (!ok) return;
+  await withBusy(trigger, async () => {
+    try {
+      const params = clearAll ? { all: 'true' } : { only_non_running: onlyNonRunning ? 'true' : 'false' };
+      const qs = new URLSearchParams(params).toString();
+      const res = await api(`/api/servers/purge?${qs}`, { method: 'POST' });
+      toast(res.message || 'Server history purged');
+      await refresh();
+    } catch (error) {
+      toast(`Purge failed: ${error.message}`);
+    }
+  });
+}
+
 const PANEL_COLLAPSE_KEY = 'lcc-collapsed-panels';
 const DEFAULT_COLLAPSED_PANELS = ['test-prompt', 'logs', 'portability', 'hf-tools'];
 
@@ -2628,6 +2881,31 @@ function wireEvents() {
   $('#settings-use-runtime-roots').addEventListener('click', () => {
     $('#settings-runtime-dirs').value = listToLines(detectedRuntimeRoots());
   });
+  $('#settings-reset-defaults')?.addEventListener('click', () => {
+    // Reset the form fields to sensible portable defaults (does not save until user clicks Save)
+    $('#settings-model-dirs').value = '';
+    $('#settings-runtime-dirs').value = '';
+    $('#settings-llama-server').value = '';
+    $('#settings-llama-fit').value = '';
+    $('#settings-default-host').value = '127.0.0.1';
+    $('#settings-default-port').value = '8080';
+    $('#settings-default-backend').value = 'llama.cpp';
+    $('#settings-update-channel').value = 'stable';
+    $('#settings-server-history-limit').value = '5';
+    $('#settings-extra-args').value = '';
+    const a1 = $('#settings-auto-scripts'); if (a1) a1.checked = true;
+    const a2 = $('#settings-auto-scan'); if (a2) a2.checked = true;
+    toast('Form reset to defaults (click Save to apply)');
+  });
+  $('#settings-export-button')?.addEventListener('click', async (e) => {
+    await exportPortableConfig(e.currentTarget);
+  });
+  $('#portability-export')?.addEventListener('click', async (e) => {
+    await exportPortableConfig(e.currentTarget);
+  });
+  // Palette backdrop close
+  const palBack = $('#command-palette');
+  if (palBack) palBack.addEventListener('click', (e) => { if (e.target.id === 'command-palette') hideCommandPalette(); });
   $('#theme-button').addEventListener('click', () => {
     state.theme = state.theme === 'dark' ? 'light' : 'dark';
     localStorage.setItem('lcc-theme', state.theme);
@@ -2654,6 +2932,15 @@ function wireEvents() {
     localStorage.setItem('lcc-hide-unavailable-profiles', state.hideUnavailableProfiles ? '1' : '0');
     renderProfiles();
   });
+  const hideNotInstalled = $('#hide-not-installed-runtimes');
+  if (hideNotInstalled) {
+    hideNotInstalled.checked = !!state.hideNotInstalledRuntimes;
+    hideNotInstalled.addEventListener('change', (event) => {
+      state.hideNotInstalledRuntimes = event.target.checked;
+      localStorage.setItem('lcc-hide-not-installed-runtimes', state.hideNotInstalledRuntimes ? '1' : '0');
+      renderRuntimes();
+    });
+  }
   $('#new-profile-button')?.addEventListener('click', () => $('#save-profile-button')?.click());
   $('#profile-menu-button')?.addEventListener('click', () => {
     const mode = state.selectedProfileMode;
@@ -2710,6 +2997,21 @@ function wireEvents() {
     }
   });
   document.body.addEventListener('click', (event) => {
+    // Server selection (clicking the card itself, not action buttons inside)
+    const serverCard = event.target.closest('.server-item, .active-server-row');
+    if (serverCard && !event.target.closest('button')) {
+      const sid = serverCard.dataset.serverId;
+      if (sid) {
+        state.selectedServerId = sid;
+        // If logs pane is visible, optionally auto-load; for now just remember selection.
+        // User can hit "Open logs" or the per-item Logs button.
+        const preview = $('#log-preview');
+        if (preview && preview.textContent.includes('No tracked')) {
+          preview.textContent = `Selected server ${sid}. Use Logs button or Open logs for details.`;
+        }
+      }
+    }
+
     const target = event.target.closest('button');
     if (!target) return;
     const { action, mode, serverId, runtime, repo, file, dest } = target.dataset;
@@ -2745,6 +3047,11 @@ function wireEvents() {
     if (serverId) loadLogs(serverId);
     else toast('No tracked server to open logs for');
   });
+  // Active Servers main panel + side pane purge controls
+  $('#active-servers-purge-stopped')?.addEventListener('click', (e) => purgeServers(true, e.currentTarget));
+  $('#active-servers-purge-all')?.addEventListener('click', (e) => purgeServers(false, e.currentTarget, true));
+  $('#servers-purge-stopped')?.addEventListener('click', (e) => purgeServers(true, e.currentTarget));
+  $('#servers-clear-history')?.addEventListener('click', (e) => purgeServers(false, e.currentTarget, true));
   $('#param-profile').addEventListener('change', (event) => {
     state.selectedProfileMode = event.target.value;
     renderParameters();
@@ -2772,6 +3079,14 @@ function wireEvents() {
     if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') sendTestPrompt();
   });
   $('#hf-info-button').addEventListener('click', fetchHFInfo);
+  // Portability reworked panel actions
+  $('#portability-open-settings')?.addEventListener('click', () => openSettings());
+  $('#portability-rescan')?.addEventListener('click', async (e) => {
+    await withBusy(e.currentTarget, async () => {
+      await refresh();
+      toast('Rescanned inventory and portability issues');
+    });
+  });
   $('#hf-update-button').addEventListener('click', checkModelUpdate);
   $('#hf-check-updates-button').addEventListener('click', (event) => {
     event.preventDefault();
@@ -2907,9 +3222,19 @@ function wireEvents() {
       search?.select();
       return;
     }
+    // AC3: Ctrl+Shift+K (or Cmd+Shift+K) opens command palette
+    if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === 'k') {
+      event.preventDefault();
+      if (paletteVisible) hideCommandPalette(); else showCommandPalette();
+      return;
+    }
     if (event.key === 'Escape') {
       if (!$('#settings-modal').hidden) {
         closeSettings();
+        return;
+      }
+      if (paletteVisible) {
+        hideCommandPalette();
         return;
       }
     }

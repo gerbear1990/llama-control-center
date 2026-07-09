@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Portable config export (from feature suggestions).** "Export portable config" button in Settings dialog and Portability panel. Uses pure `buildPortableExportSnapshot(config, inventory)` (shipped, testable via vm extraction) to produce a v1 JSON snapshot of model/runtime dirs + key portable settings (no secrets). Copies to clipboard with toast; surfaced for discoverability. ([lcc_api/static/app.js](lcc_api/static/app.js), [lcc_api/static/index.html](lcc_api/static/index.html))
+- **Keyboard command support + minimal palette (from feature suggestions).** Ctrl+Shift+K opens a lightweight command palette. Registry + `getCommands`/`executeCommand` drive real handlers for focus-search, open-settings, refresh (plus existing Ctrl+K). Arrow nav, filter, Escape supported. Pure registry exposed for tests. ([lcc_api/static/app.js](lcc_api/static/app.js), [lcc_api/static/index.html](lcc_api/static/index.html), [lcc_api/static/styles.css](lcc_api/static/styles.css))
+
+### Fixed
+- **Settings menu padding/spacing.** Scoped rules in `.settings-form *` now guarantee >=8px separation (form padding 16px, group padding 14px + 12px inter-group mt, title mb 8px, help mb 12px, field/row gap 8px, check-row, modal-actions). Removed 4px abutments and inline tight margins. No elements overlap or touch directly. ([lcc_api/static/styles.css](lcc_api/static/styles.css), [lcc_api/static/index.html](lcc_api/static/index.html))
+
 ### Fixed / Hardened (M1 Reliability)
 
 - **All manifest reads now go through `load_manifest_safely`.**

@@ -71,3 +71,41 @@ const fixture = {
 
 const line = sandbox.formatServerMetricsLine(fixture);
 console.log(JSON.stringify({ line: line }));
+
+// --- AC2/AC4: also drive the *shipped* pure buildPortableExportSnapshot via same vm extraction ---
+// This ensures the exact function from app.js (the one wired to buttons) is exercised with fresh plain data.
+// Use console.error for our extra verification output so the original single-line JSON stdout remains loadable by python test wrapper.
+let beSrc = extractFunctionSource(fullCode, 'buildPortableExportSnapshot');
+if (!beSrc) {
+  console.error('Could not extract buildPortableExportSnapshot from shipped app.js');
+  process.exit(1);
+}
+vm.runInContext(beSrc, sandbox);
+if (typeof sandbox.buildPortableExportSnapshot !== 'function') {
+  console.error('buildPortableExportSnapshot not callable after vm eval of shipped source');
+  process.exit(1);
+}
+
+// Fresh state-like inputs (no pre-seeded full app state)
+const cfg = { model_dirs: ['D:\\Models'], runtime_dirs: [], default_port: 9090, update_channel: 'stable' };
+const inv = { scan_roots: ['D:\\Models'] };
+const exported = sandbox.buildPortableExportSnapshot(cfg, inv);
+let parsed;
+try { parsed = JSON.parse(exported); } catch(e) { console.error('export not valid JSON'); process.exit(1); }
+if (!parsed || parsed.schema_version !== 'lcc-portable-export-v1' || !Array.isArray(parsed.model_dirs) || parsed.model_dirs[0] !== 'D:\\Models') {
+  console.error('shipped buildPortableExportSnapshot produced unexpected shape on real inputs');
+  process.exit(1);
+}
+console.error(JSON.stringify({ export_ok: true, schema: parsed.schema_version, has_model_dirs: parsed.model_dirs.length > 0 }));
+
+// Also exercise getCommands (pure list) from shipped source for AC3 coverage.
+let gcSrc = extractFunctionSource(fullCode, 'getCommands');
+if (gcSrc) {
+  vm.runInContext(gcSrc, sandbox);
+  const cmds = (typeof sandbox.getCommands === 'function') ? sandbox.getCommands() : [];
+  if (!Array.isArray(cmds) || cmds.length < 3) {
+    console.error('getCommands from shipped did not return >=3 entries');
+    process.exit(1);
+  }
+  console.error(JSON.stringify({ commands_ok: true, count: cmds.length }));
+}

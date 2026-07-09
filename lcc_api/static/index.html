@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Llama Control Center</title>
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23098a96'/%3E%3Ctext x='16' y='22' font-family='Inter,Arial,sans-serif' font-size='16' font-weight='700' text-anchor='middle' fill='white'%3ELC%3C/text%3E%3C/svg%3E" />
-    <link rel="stylesheet" href="/static/styles.css?v=0.13.0-ui-pass-8" />
+    <link rel="stylesheet" href="/static/styles.css?v=0.14.0-ui-fixes-1" />
   </head>
   <body>
     <div class="app-shell">
@@ -142,11 +142,12 @@
               <span class="metric-label">Models</span>
             </span>
           </div>
-          <div class="metric warning">
+          <div class="metric warning" id="metric-setup-wrapper" title="Profiles that are not launchable (model file missing, runtime not found, invalid params, etc.) plus any legacy portability issues found in scripts/JSONs. Click the label or use Profiles filter 'Needs setup' to investigate. Fix by ensuring models are in your scan roots, runtimes are installed/visible, or edit profiles.">
             <span class="metric-icon metric-icon-setup" aria-hidden="true"></span>
             <span class="metric-copy">
               <span class="metric-value" id="metric-setup">-</span>
               <span class="metric-label">Needs setup</span>
+              <span class="metric-help" aria-hidden="true" title="What counts as 'Needs setup' and how to fix it?">?</span>
             </span>
           </div>
         </section>
@@ -161,6 +162,10 @@
                 </div>
                 <div class="panel-heading-actions">
                   <span class="sr-only" role="status" aria-live="polite" id="runtime-status"></span>
+                  <label class="mini-toggle" title="Hide runtimes that are not installed or not found on disk.">
+                    <input id="hide-not-installed-runtimes" type="checkbox" />
+                    <span>Hide not installed</span>
+                  </label>
                   <button class="mini-button" type="button" id="check-updates-button" title="Refresh update availability from upstream release sources">Check for updates</button>
                 </div>
               </div>
@@ -224,6 +229,20 @@
                 </div>
               </div>
               <div class="model-list" id="model-list"></div>
+            </section>
+
+            <section class="panel" id="active-servers">
+              <div class="panel-heading">
+                <div>
+                  <h3>Active Servers</h3>
+                  <p>Tracked running and recent servers (live updates from the side pane too).</p>
+                </div>
+                <div class="panel-heading-actions">
+                  <button class="mini-button" type="button" id="active-servers-purge-stopped" title="Remove stopped and crashed entries from history">Purge stopped</button>
+                  <button class="mini-button danger" type="button" id="active-servers-purge-all" title="Clear all tracked server history">Clear history</button>
+                </div>
+              </div>
+              <div class="active-servers-list" id="active-servers-list"></div>
             </section>
           </section>
 
@@ -463,6 +482,10 @@
                   <h3>Servers</h3>
                   <p>Tracked launches only.</p>
                 </div>
+                <div class="panel-heading-actions">
+                  <button class="mini-button" type="button" id="servers-purge-stopped" title="Remove stopped/crashed from history">Purge stopped</button>
+                  <button class="mini-button" type="button" id="servers-clear-history" title="Clear entire server history">Clear all</button>
+                </div>
               </div>
               <div class="server-box" id="server-box"></div>
             </section>
@@ -494,11 +517,24 @@
             <section class="panel" id="portability">
               <div class="panel-heading">
                 <div>
-                  <h3>Portability</h3>
-                  <p>Setup issues before public release.</p>
+                  <h3>Portability &amp; Paths</h3>
+                  <p>Make your setup reproducible across machines.</p>
+                </div>
+                <div class="panel-heading-actions">
+                  <button class="mini-button" type="button" id="portability-open-settings">Edit roots</button>
+                  <button class="mini-button" type="button" id="portability-rescan" title="Rebuild inventory and re-scan for issues">Rescan</button>
+                  <button class="mini-button" type="button" id="portability-export" title="Export portable snapshot of current roots and settings">Export config</button>
                 </div>
               </div>
+              <div class="portability-summary" id="portability-summary">
+                <p class="portability-hint">Scan roots and runtime roots control what is discovered without hard-coded absolute user paths.</p>
+              </div>
               <div class="issue-list" id="issue-list"></div>
+              <div class="portability-checklist">
+                <div class="check-item"><span class="ok-dot"></span> Models live under configured scan roots (no user-specific paths in manifests)</div>
+                <div class="check-item"><span class="ok-dot"></span> Runtimes found via PATH, runtime_dirs, or explicit llama-server path</div>
+                <div class="check-item"><span class="ok-dot"></span> No absolute home paths in .ps1 / .json launch scripts (legacy scanner)</div>
+              </div>
             </section>
 
              <section class="panel" id="hf-tools">
@@ -546,64 +582,92 @@
           <button class="mini-button" type="button" id="settings-close-button">Close</button>
         </div>
         <form class="settings-form" id="settings-form">
-          <label class="field wide" title="Folders to scan for GGUF models. Put one folder on each line.">
-            <span>Model folders</span>
-            <textarea id="settings-model-dirs" rows="4" spellcheck="false"></textarea>
-          </label>
-          <div class="row-actions">
-            <button class="mini-button" type="button" id="settings-use-scan-roots">Use detected model folders</button>
+          <div class="settings-group">
+            <h4 class="settings-group-title">Scan Paths</h4>
+            <p class="settings-group-help">Configure where models and runtimes are discovered. These are the primary levers for portability.</p>
+            <label class="field wide" title="Folders to scan for GGUF models. One absolute or portable path per line.">
+              <span>Model folders (scan roots)</span>
+              <textarea id="settings-model-dirs" rows="3" spellcheck="false"></textarea>
+            </label>
+            <div class="row-actions">
+              <button class="mini-button" type="button" id="settings-use-scan-roots">Use detected model folders</button>
+            </div>
+
+            <label class="field wide" title="Folders that contain llama.cpp (or other) binaries. One per line.">
+              <span>Runtime folders</span>
+              <textarea id="settings-runtime-dirs" rows="2" spellcheck="false"></textarea>
+            </label>
+            <div class="row-actions">
+              <button class="mini-button" type="button" id="settings-use-runtime-roots">Use detected runtime folders</button>
+            </div>
+
+            <div class="field-grid">
+              <label class="field" title="Direct override for the llama-server executable. Empty = auto discover.">
+                <span>llama-server path (override)</span>
+                <input id="settings-llama-server" type="text" autocomplete="off" placeholder="auto" />
+              </label>
+              <label class="field" title="Direct override for the fit tool.">
+                <span>llama-fit-params path (override)</span>
+                <input id="settings-llama-fit" type="text" autocomplete="off" placeholder="auto" />
+              </label>
+            </div>
           </div>
-          <label class="field wide" title="Folders that contain llama.cpp binaries. Put one folder on each line.">
-            <span>Runtime folders</span>
-            <textarea id="settings-runtime-dirs" rows="3" spellcheck="false"></textarea>
-          </label>
-          <div class="row-actions">
-            <button class="mini-button" type="button" id="settings-use-runtime-roots">Use detected runtime folders</button>
+
+          <div class="settings-group">
+            <h4 class="settings-group-title">Launch Defaults</h4>
+            <p class="settings-group-help">Defaults applied when preparing new launches or profiles.</p>
+            <div class="field-grid">
+              <label class="field" title="Default bind address. 127.0.0.1 for local only.">
+                <span>Default host</span>
+                <input id="settings-default-host" type="text" autocomplete="off" />
+              </label>
+              <label class="field" title="Default port for new servers.">
+                <span>Default port</span>
+                <input id="settings-default-port" type="number" min="1" max="65535" />
+              </label>
+              <label class="field" title="Primary backend used for new profiles and prepare commands.">
+                <span>Default backend</span>
+                <select id="settings-default-backend">
+                  <option value="llama.cpp">llama.cpp</option>
+                  <option value="ollama">Ollama</option>
+                  <option value="lm-studio">LM Studio</option>
+                  <option value="vllm">vLLM</option>
+                  <option value="mlx">MLX</option>
+                </select>
+              </label>
+              <label class="field" title="Extra flags appended to every llama.cpp command (advanced). One token per line.">
+                <span>Extra launch args</span>
+                <textarea id="settings-extra-args" rows="2" spellcheck="false"></textarea>
+              </label>
+            </div>
           </div>
-          <div class="field-grid">
-            <label class="field" title="Optional direct path to llama-server. Leave empty to auto-detect from PATH and runtime folders.">
-              <span>llama-server path</span>
-              <input id="settings-llama-server" type="text" autocomplete="off" />
+
+          <div class="settings-group">
+            <h4 class="settings-group-title">Tracking &amp; Updates</h4>
+            <div class="field-grid">
+              <label class="field" title="How many historical server records (including crashed/stopped) to retain.">
+                <span>Server history limit</span>
+                <input id="settings-server-history-limit" type="number" min="1" max="50" />
+              </label>
+              <label class="field" title="Stable vs pre-release channel when checking runtime updates.">
+                <span>Update channel</span>
+                <select id="settings-update-channel">
+                  <option value="stable">Stable</option>
+                  <option value="prerelease">Pre-release</option>
+                </select>
+              </label>
+            </div>
+            <label class="check-row">
+              <label><input id="settings-auto-scripts" type="checkbox" /> Auto-generate launch scripts</label>
+              <label><input id="settings-auto-scan" type="checkbox" /> Scan on startup</label>
             </label>
-            <label class="field" title="Optional direct path to llama-fit-params. Leave empty to auto-detect from PATH and runtime folders.">
-              <span>llama-fit-params path</span>
-              <input id="settings-llama-fit" type="text" autocomplete="off" />
-            </label>
-            <label class="field" title="Default host for new prepared commands.">
-              <span>Default host</span>
-              <input id="settings-default-host" type="text" autocomplete="off" />
-            </label>
-            <label class="field" title="Default port for new prepared commands.">
-              <span>Default port</span>
-              <input id="settings-default-port" type="number" min="1" max="65535" />
-            </label>
-            <label class="field" title="Default runtime family for future features. llama.cpp is used for local launches today.">
-              <span>Default backend</span>
-              <select id="settings-default-backend">
-                <option value="llama.cpp">llama.cpp</option>
-                <option value="ollama">Ollama</option>
-                <option value="lm-studio">LM Studio</option>
-                <option value="vllm">vLLM</option>
-                <option value="mlx">MLX</option>
-              </select>
-            </label>
-            <label class="field" title="Which upstream release channel to check for runtime updates. Stable checks the latest stable release; prerelease includes release candidates.">
-              <span>Update channel</span>
-              <select id="settings-update-channel">
-                <option value="stable">Stable</option>
-                <option value="prerelease">Pre-release</option>
-              </select>
-            </label>
-            <label class="field" title="Maximum number of tracked servers to keep in history. Older entries are pruned automatically.">
-              <span>Server history limit</span>
-              <input id="settings-server-history-limit" type="number" min="1" max="50" />
-            </label>
+            <div class="row-actions" style="margin-top:8px">
+              <button class="mini-button" type="button" id="settings-export-button" title="Export current model/runtime roots + key portable settings as JSON for use on another machine. No secrets included.">Export portable config</button>
+            </div>
           </div>
-          <label class="field wide" title="Extra llama.cpp arguments appended to every prepared launch. One argument per line.">
-            <span>Extra launch args</span>
-            <textarea id="settings-extra-args" rows="3" spellcheck="false"></textarea>
-          </label>
+
           <div class="row-actions modal-actions">
+            <button class="mini-button" type="button" id="settings-reset-defaults">Reset defaults</button>
             <button class="mini-button" type="button" id="settings-cancel-button">Cancel</button>
             <button class="mini-button primary" type="submit">Save settings</button>
           </div>
@@ -667,6 +731,19 @@
     </div>
 
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
-    <script src="/static/app.js?v=0.13.0-ui-pass-8" defer></script>
+
+    <!-- Minimal command palette (lightweight overlay, AC3). Triggered by keyboard. -->
+    <div class="modal-backdrop command-palette-backdrop" id="command-palette" hidden>
+      <div class="command-palette" role="dialog" aria-modal="true" aria-label="Command palette">
+        <div class="palette-head">
+          <span>Commands</span>
+          <input id="palette-filter" type="text" placeholder="Type to filter..." autocomplete="off" />
+        </div>
+        <ul class="palette-list" id="palette-list"></ul>
+        <div class="palette-hint">Esc to close · Enter to run · Ctrl+Shift+K to open</div>
+      </div>
+    </div>
+
+    <script src="/static/app.js?v=0.14.0-ui-fixes-1" defer></script>
   </body>
 </html>
