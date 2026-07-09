@@ -154,6 +154,24 @@ class ManifestTests(unittest.TestCase):
             with self.assertRaises(ManifestReadError):
                 load_profiles(root)
 
+    def test_load_profiles_raises_on_non_dict_manifest(self) -> None:
+        """Additional manifest failure path (M1.3): root not object -> ManifestReadError."""
+        from lcc_core.manifest import ManifestReadError
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "models.json").write_text("[]", encoding="utf-8")
+            with self.assertRaises(ManifestReadError):
+                load_profiles(root)
+
+    def test_load_profiles_raises_on_non_list_models(self) -> None:
+        """Additional manifest failure path (M1.3): models not a list -> ManifestReadError."""
+        from lcc_core.manifest import ManifestReadError
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "models.json").write_text('{"models": {}}', encoding="utf-8")
+            with self.assertRaises(ManifestReadError):
+                load_profiles(root)
+
     def test_find_project_root_uses_markers(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -178,6 +196,18 @@ class ProcessPortDetectionTests(unittest.TestCase):
         # Should not crash; result may be None or a real system process.
         pid = find_process_on_port(1)  # privileged / unlikely, but exercises path
         self.assertTrue(pid is None or isinstance(pid, int))
+
+    def test_find_process_on_port_free_high_port(self) -> None:
+        """M1.3 additional edge: high port unlikely to be in use exercises free path + return contract."""
+        from lcc_core.server_manager import find_process_on_port
+        pid = find_process_on_port(54321)
+        self.assertTrue(pid is None or isinstance(pid, int))
+
+    def test_pid_is_running_negative_and_out_of_range(self) -> None:
+        """M1.3 additional: negative and huge PIDs are invalid (Windows pid_is_running + psutil path)."""
+        from lcc_core.server_manager import pid_is_running
+        self.assertFalse(pid_is_running(-1))
+        self.assertFalse(pid_is_running(2**40))
 
 
 class RuntimeDetectionTests(unittest.TestCase):
@@ -1287,6 +1317,19 @@ class ServerCrashWatchdogTests(unittest.TestCase):
         self.assertEqual(state["servers"][0]["status"], "stopped")
         self.assertNotIn("crashed_at", state["servers"][0])
 
+    def test_starting_server_with_dead_pid_is_flagged_crashed(self):
+        """Additional watchdog transition (M1.3): 'starting' in _LIVE_STATUSES must also crash on dead PID."""
+        dead_pid = 2147483647
+        self._write_state([{
+            "id": "demo-starting", "mode": "demo", "pid": dead_pid,
+            "status": "starting", "host": "127.0.0.1", "port": 8080,
+            "stderr_log": str(self._stderr),
+        }])
+        self.sm.refresh_server_states()
+        state = self.sm.read_state()
+        self.assertEqual(state["servers"][0]["status"], "crashed")
+        self.assertIn("crashed_at", state["servers"][0])
+
 
 class PrometheusMetricsParserTests(unittest.TestCase):
     """The live-metrics parser must pull KV usage and token rates out of the
@@ -1503,6 +1546,27 @@ class PerProcessMemoryTests(unittest.TestCase):
         self.assertIsNone(result["process"]["rss_bytes"])
         self.assertIsNone(result["process"]["cpu_percent"])
         self.assertIsNone(result["process"]["gpu_used_bytes"])
+
+    def test_fetch_server_metrics_no_matching_server_returns_error(self):
+        """M1.3: direct exercise of server_metrics error path when no server tracked."""
+        self.sm._find_server = lambda sid, mode=None: None
+        result = self.sm.fetch_server_metrics(server_id="nope")
+        self.assertFalse(result.get("success"))
+        self.assertIn("error", result)
+        self.assertIn("No tracked server", result.get("error", ""))
+
+    def test_fetch_server_metrics_dead_pid_returns_error_with_tail(self):
+        """M1.3: dead PID path (non-running tracked) returns structured error + stderr_tail for UI surfacing."""
+        self.sm._find_server = lambda sid, mode=None: {
+            "id": "dead", "mode": "demo", "pid": 2147483647,
+            "host": "127.0.0.1", "port": 1234,
+            "stdout_log": None, "stderr_log": None,
+        }
+        self.sm.pid_is_running = lambda p: False
+        result = self.sm.fetch_server_metrics(server_id="dead")
+        self.assertFalse(result.get("success"))
+        self.assertIn("no longer running", result.get("error", ""))
+        self.assertIn("stderr_tail", result)
 
 
 class ServerHistoryTrimTests(unittest.TestCase):

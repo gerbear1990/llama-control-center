@@ -301,6 +301,16 @@ def get_server_metrics(server_id: str) -> dict[str, Any]:
     return result
 
 
+@app.get("/api/servers/{server_id}/logs")
+def get_server_logs(server_id: str, lines: int = 200) -> dict[str, Any]:
+    """Return tail of stdout/stderr logs for a tracked server (M2 / documented in PORTABLE_CORE)."""
+    from lcc_core.server_manager import server_logs
+    result = server_logs(server_id=server_id, lines=lines)
+    if not result.get("success"):
+        raise HTTPException(status_code=400, detail=result)
+    return result
+
+
 @app.post("/api/servers/start")
 def start_server(request: StartRequest) -> dict[str, Any]:
     result = start_profile(
