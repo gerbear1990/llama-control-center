@@ -60,8 +60,8 @@ This document turns the review findings into **trackable, chunked work** with cl
   **Priority**: High
 
 - [x] **M1.3** Expand test coverage for reliability surfaces  
-  Completed: Added 8+ new direct unit tests exercising manifest non-dict / non-list failures (via load_profiles + safely), additional watchdog transitions (starting->crashed), server_metrics error paths (no server, dead pid), port/process edge cases (high port, negative/huge pids), and API-level injected state tests for /metrics + /logs. All call real shipped functions (no reimpl). Full suite 148 tests OK (live discover). (2026-07-09)  
-  **Files**: `tests/test_lcc_core.py` (ManifestTests, ProcessPortDetectionTests, ServerCrashWatchdogTests, PerProcessMemoryTests), `tests/test_lcc_api.py` (ApiSmokeTests + new ServerMetricsLogsInjectedStateTests).  
+  Completed: Added 8+ new direct unit tests exercising manifest non-dict / non-list failures (via load_profiles + safely), additional watchdog transitions (starting->crashed), server_metrics error paths (no server, dead pid), port/process edge cases (high port, negative/huge pids), and API-level injected state tests for /metrics + /logs. All call real shipped functions (no reimpl). Full suite passes (151 tests in capture run with new committed launch smoke + metrics stub tests). (2026-07-09)  
+  **Files**: `tests/test_lcc_core.py` (ManifestTests, ProcessPortDetectionTests, ServerCrashWatchdogTests, PerProcessMemoryTests), `tests/test_lcc_api.py` (ApiSmokeTests + new ServerMetricsLogsInjectedStateTests + MetricsSuccessWithStubTests), `tests/test_launch_smoke.py`.  
   **Priority**: High
 
 - [ ] **M1.4** Improve structured error classification from subprocesses and launches  
@@ -80,7 +80,7 @@ This document turns the review findings into **trackable, chunked work** with cl
 **M1 Success Criteria**
 - All `models.json` reads use the safe loader. (M1.1 done.)
 - Windows port/PID logic passes tests and handles documented edge cases. (M1.2 done.)
-- Core reliability paths are better tested (M1.3: 8+ new direct tests for manifest failures beyond corrupt, watchdog transitions incl. starting, server_metrics unavailable/dead/no-server, port edges; full 148 tests OK per live discover).
+- Core reliability paths are better tested (M1.3 + strategy restructure: committed launch smoke test (AC4, Uvicorn + /servers on real state, run twice; now also calls /metrics and /logs on real tracked ids from state) + metrics stub success test in suite for full live data body; full discover passes (exact count from capture script)).
 - `python -m unittest discover -s tests -q` passes.
 - No silent data-loss vectors remain in manifest handling.
 
