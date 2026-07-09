@@ -137,6 +137,118 @@ class ApiSmokeTests(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("no running tracked server", str(response.json()).lower())
 
+    def test_server_metrics_unknown_id_returns_400(self) -> None:
+        """M1.3: exercise server_metrics error path at API boundary (no server -> 400)."""
+        response = self.client.get("/api/servers/unknown-xyz/metrics")
+        self.assertEqual(response.status_code, 400)
+        # detail contains the error payload from the real fetch_server_metrics
+        self.assertIn("detail", response.json())
+
+    def test_server_logs_endpoint_unknown_returns_400(self) -> None:
+        """M2: wiring test for the previously-missing /logs endpoint (P1 bugfix)."""
+        response = self.client.get("/api/servers/unknown-xyz/logs?lines=50")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("detail", response.json())
+
+    def test_server_logs_func_error_and_contract(self) -> None:
+        """Direct exercise of server_logs real function (positive error shape + contract for success shape)."""
+        from lcc_core.server_manager import server_logs
+        result = server_logs("no-such-id")
+        self.assertFalse(result.get("success"))
+        self.assertIn("error", result)
+        # success shape contract (would be present when found)
+        # call with known-bad to confirm no crash on lines param
+        result2 = server_logs("no-such-id", lines=5)
+        self.assertFalse(result2.get("success"))
+
+
+class ServerMetricsLogsInjectedStateTests(unittest.TestCase):
+    """M1.3/M2: exercise /metrics and /logs endpoints + real funcs with injected
+    server state (dead pid path, error returns, no-psutil graceful)."""
+
+    def setUp(self) -> None:
+        self.client = TestClient(app)
+
+    def test_metrics_dead_pid_and_logs_unknown_via_patched_state(self) -> None:
+        import lcc_core.server_metrics as smet
+        import lcc_core.server_manager as sm
+        orig_find = smet._find_server
+        orig_pid = sm.pid_is_running
+        try:
+            # Simulate a tracked server whose pid is dead (exercises the early error return in fetch)
+            smet._find_server = lambda sid, mode=None: {
+                "id": sid or "inj", "mode": "inj", "pid": 2147483647,
+                "host": "127.0.0.1", "port": 9,
+                "stdout_log": None, "stderr_log": None,
+            }
+            sm.pid_is_running = lambda p: False
+            resp = self.client.get("/api/servers/inj/metrics")
+            self.assertEqual(resp.status_code, 400)
+            body = resp.json()
+            self.assertIn("detail", body)
+            self.assertIn("no longer running", str(body))
+            # logs for unknown still 400 (server_logs looks up tracked)
+            resp2 = self.client.get("/api/servers/inj/logs")
+            self.assertEqual(resp2.status_code, 400)
+        finally:
+            smet._find_server = orig_find
+            sm.pid_is_running = orig_pid
+
+    def test_server_logs_error_shape_direct(self) -> None:
+        # Already covered but re-assert via client for completeness with injected concept
+        resp = self.client.get("/api/servers/deadbeef/logs")
+        self.assertEqual(resp.status_code, 400)
+
+    def test_server_logs_positive_with_temp_files_and_injected_tracked(self) -> None:
+        """Positive AC2/M2 test: real tracked server with stdout/stderr log files returns success + tails via API and server_logs."""
+        import lcc_core.server_manager as sm
+        import tempfile
+        import shutil
+        from pathlib import Path as P
+
+        tmp = tempfile.mkdtemp()
+        try:
+            state_file = P(tmp) / "servers.json"
+            out_log = P(tmp) / "out.log"
+            err_log = P(tmp) / "err.log"
+            out_log.write_text("hello stdout line1\nline2\n", encoding="utf-8")
+            err_log.write_text("error line A\nline B with content\n", encoding="utf-8")
+
+            sid = "pos-logs-123"
+            entry = {
+                "id": sid,
+                "mode": "pos-test",
+                "pid": 12345,
+                "status": "running",
+                "host": "127.0.0.1",
+                "port": 18080,
+                "stdout_log": str(out_log),
+                "stderr_log": str(err_log),
+            }
+            state_file.write_text(json.dumps({"servers": [entry]}), encoding="utf-8")
+
+            orig_state = sm.state_path
+            sm.state_path = lambda: state_file
+            try:
+                # direct func
+                res = sm.server_logs(sid, lines=10)
+                self.assertTrue(res.get("success"))
+                self.assertIn("hello stdout", res.get("stdout", ""))
+                self.assertIn("error line A", res.get("stderr", ""))
+
+                # via API
+                r = self.client.get(f"/api/servers/{sid}/logs?lines=5")
+                self.assertEqual(r.status_code, 200)
+                body = r.json()
+                self.assertTrue(body.get("success"))
+                self.assertIn("stdout", body)
+                self.assertIn("stderr", body)
+                self.assertIn("line2", body.get("stdout", ""))
+            finally:
+                sm.state_path = orig_state
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
 
 class ProfileDeleteApiTests(unittest.TestCase):
     """Round-trip: write a profile to a sandboxed models.json, delete it,

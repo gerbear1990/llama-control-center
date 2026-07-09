@@ -1286,17 +1286,44 @@ function renderServers() {
     $('#log-preview').textContent = 'No tracked server selected.';
     return;
   }
-  $('#server-box').innerHTML = servers.map((server) => `
+  $('#server-box').innerHTML = servers.map((server) => {
+    const isRunning = !!server.running;
+    const status = server.status || (isRunning ? 'running' : 'stopped');
+    const isCrashed = status === 'crashed' || (!isRunning && server.last_stderr);
+    const oom = server.oom_likely ? ' <span class="badge error" title="Likely OOM">OOM</span>' : '';
+    const m = server.metrics || {};
+    const sum = m.summary || m.metrics || {};
+    const proc = m.process || {};
+    const kv = sum.kv_cache_usage_ratio != null ? `${(sum.kv_cache_usage_ratio * 100).toFixed(0)}% KV` : '';
+    const tps = sum.predicted_tokens_per_second != null ? ` · ${sum.predicted_tokens_per_second.toFixed(1)} t/s` : (sum.prompt_tokens_per_second != null ? ` · ${sum.prompt_tokens_per_second.toFixed(1)} prompt t/s` : '');
+    const slots = (sum.slots_active != null || sum.slots_processing != null) ? `slots ${sum.slots_active || 0}/${sum.slots_processing || 0}` : '';
+    const ctx = (m.props && m.props.n_ctx != null) ? `ctx ${m.props.n_ctx}` : (sum.kv_cache_tokens != null ? `kv ${sum.kv_cache_tokens}` : '');
+    const memParts = [];
+    if (proc.rss_bytes) memParts.push(`RSS ${formatBytes(proc.rss_bytes)}`);
+    if (proc.gpu_used_bytes) memParts.push(`VRAM ${formatBytes(proc.gpu_used_bytes)}`);
+    const mem = memParts.length ? ` · ${memParts.join(' / ')}` : '';
+    const extra = [slots, ctx].filter(Boolean).join(' · ');
+    const metricsLine = (kv || tps || extra || mem) ? `<div class="server-metrics">${[kv, tps, extra, mem].filter(Boolean).join('')}</div>` : '';
+    const stderrSnippet = (isCrashed && server.last_stderr) ? `<pre class="server-stderr" title="Last stderr (truncated)">${escapeHtml(String(server.last_stderr).slice(0, 300))}</pre>` : '';
+    // Restart visible for crashed/stopped (not for live running)
+    const restartBtn = !isRunning ? `<button class="mini-button" type="button" data-action="restart" data-server-id="${escapeHtml(server.id)}">Restart</button>` : '';
+    const stopBtn = `<button class="mini-button" type="button" data-action="stop" data-server-id="${escapeHtml(server.id)}" ${isRunning ? '' : 'disabled'}>Stop</button>`;
+    const badgeClass = isCrashed ? 'error' : (isRunning ? 'ok' : 'warn');
+    const badgeText = isCrashed ? 'crashed' : (isRunning ? 'running' : status);
+    return `
     <article class="server-item" data-server-id="${escapeHtml(server.id)}">
-      <span class="badge ${server.running ? 'ok' : 'warn'}">${server.running ? 'running' : server.status || 'stopped'}</span>
+      <span class="badge ${badgeClass}">${badgeText}</span>${oom}
       <strong>${escapeHtml(server.mode)}</strong>
-      <p>PID ${escapeHtml(server.pid)} on ${escapeHtml(server.host)}:${escapeHtml(server.port)}</p>
+      <p>PID ${escapeHtml(server.pid || '-')} on ${escapeHtml(server.host || '127.0.0.1')}:${escapeHtml(server.port || '-')}</p>
+      ${metricsLine}
+      ${stderrSnippet}
       <div class="row-actions">
         <button class="mini-button" type="button" data-action="logs" data-server-id="${escapeHtml(server.id)}">Open logs</button>
-        <button class="mini-button" type="button" data-action="stop" data-server-id="${escapeHtml(server.id)}" ${server.running ? '' : 'disabled'}>Stop</button>
+        ${restartBtn}
+        ${stopBtn}
       </div>
-    </article>
-  `).join('');
+    </article>`;
+  }).join('');
 }
 
 function renderIssues() {
@@ -1786,6 +1813,27 @@ async function refresh() {
       toast(`Refresh partial: ${summary}${suffix}`);
     } else {
       setApiStatus(true, 'API ready');
+    }
+
+    // M2 observability (M1.3/M2.1): extend polling to fetch /metrics for running/crashed
+    // servers on refresh. Attach to the server objects in state so renderers can use them.
+    // Logs remain on-demand via loadLogs (already wired in UI).
+    try {
+      const servers = state.servers || [];
+      const toPoll = servers.filter((s) => s.running || s.status === 'crashed' || s.status === 'startup_timeout');
+      if (toPoll.length > 0) {
+        await Promise.all(toPoll.map(async (srv) => {
+          try {
+            const m = await api(`/api/servers/${encodeURIComponent(srv.id)}/metrics`);
+            srv.metrics = m;
+          } catch (_) {
+            // non-fatal; render will show what it has
+          }
+        }));
+        renderServers();
+      }
+    } catch (_) {
+      // enrichment must never break refresh
     }
   } catch (error) {
     setApiStatus(false, 'API error', `API error: ${error.message}`);
@@ -2393,6 +2441,36 @@ async function stopTracked(serverId, trigger) {
   });
 }
 
+async function restartTracked(serverId, trigger) {
+  // M2.2: Restart re-uses the tracked mode to launch again (for crashed servers mainly).
+  const server = (state.servers || []).find((s) => s.id === serverId);
+  const mode = server && server.mode;
+  if (!mode) {
+    toast('No mode available to restart');
+    return;
+  }
+  const confirmed = await confirmAction({
+    title: 'Restart server',
+    message: `Restart "${mode}"? This will launch a fresh instance.`,
+    confirmLabel: 'Restart',
+    confirmKind: 'primary',
+  });
+  if (!confirmed) return;
+  await withBusy(trigger, async () => {
+    try {
+      await api('/api/servers/start', {
+        method: 'POST',
+        body: JSON.stringify({ mode, wait_ready: true, ready_timeout_seconds: 45 }),
+      });
+      toast(`Restarted ${mode}`);
+      await refresh();
+      renderProfiles();
+    } catch (error) {
+      toast(`Restart failed: ${error.message}`);
+    }
+  });
+}
+
 async function stopProfileByMode(mode, trigger) {
   if (!mode) {
     toast('No profile mode specified');
@@ -2642,6 +2720,9 @@ function wireEvents() {
     else if (action === 'prepare') prepareProfile(mode, target);
     else if (action === 'start') startProfile(mode, target);
     else if (action === 'logs') loadLogs(serverId, target);
+    else if (action === 'restart') {
+      if (serverId) restartTracked(serverId, target);
+    }
     else if (action === 'stop') {
       if (serverId) stopTracked(serverId, target);
       else if (mode) stopProfileByMode(mode, target);
