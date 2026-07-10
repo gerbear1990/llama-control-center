@@ -77,27 +77,35 @@ def _fallback_token_count(text: str) -> int:
 
 def send_chat_prompt(
     mode: str,
-    prompt: str,
+    prompt: str = "",
     max_tokens: int = 256,
     temperature: float = 0.7,
     timeout_seconds: int = 120,
+    messages: list[dict] | None = None,
 ) -> dict[str, Any]:
     """Send one chat prompt to an already-running tracked server and return the reply.
 
     Unlike run_profile_benchmark, this never starts or restarts the server — it only
     talks to a server this app already has running for the given mode.
     """
-    prompt = (prompt or "").strip()
-    if not prompt:
-        return {"success": False, "error": "Prompt is empty."}
+    if messages and isinstance(messages, list) and messages:
+        # Use provided conversation history (for multi-turn chat)
+        chat_messages = messages
+    else:
+        prompt = (prompt or "").strip()
+        if not prompt:
+            return {"success": False, "error": "Prompt is empty."}
+        chat_messages = [{"role": "user", "content": prompt}]
+
     server = _server_for_mode(mode)
     if not server:
         return {"success": False, "error": f"No running tracked server for '{mode}'. Start it first."}
 
     base_url = _api_base(server)
+
     request_payload = {
         "model": mode,
-        "messages": [{"role": "user", "content": prompt}],
+        "messages": chat_messages,
         "temperature": float(temperature),
         "max_tokens": int(max_tokens),
         "stream": False,

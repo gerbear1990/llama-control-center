@@ -583,6 +583,35 @@ def trim_server_history(limit: int = 5) -> None:
     write_state(state)
 
 
+def purge_server_history(only_non_running: bool = True, all: bool = False) -> dict[str, Any]:
+    """Remove tracked server entries.
+
+    - all=True: clear everything.
+    - only_non_running=True (default): keep only currently running servers.
+    Returns a summary dict for the API.
+    """
+    state = read_state()
+    servers = state.get("servers", [])
+    if not servers:
+        return {"success": True, "removed": 0, "remaining": 0, "message": "No tracked servers."}
+
+    if all:
+        removed = len(servers)
+        state["servers"] = []
+        write_state(state)
+        return {"success": True, "removed": removed, "remaining": 0, "message": f"Removed all {removed} tracked server(s)."}
+
+    if only_non_running:
+        kept = [s for s in servers if pid_is_running(s.get("pid"))]
+        removed = len(servers) - len(kept)
+        state["servers"] = kept
+        write_state(state)
+        return {"success": True, "removed": removed, "remaining": len(kept), "message": f"Removed {removed} stopped/crashed entry(ies); {len(kept)} kept."}
+
+    # Fallback: no-op keep all
+    return {"success": True, "removed": 0, "remaining": len(servers), "message": "Nothing to purge."}
+
+
 def _find_server(server_id: str | None = None, mode: str | None = None) -> dict[str, Any] | None:
     servers = list_servers()
     if server_id:

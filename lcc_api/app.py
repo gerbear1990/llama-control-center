@@ -445,9 +445,10 @@ def run_benchmark(request: BenchmarkRequest) -> dict[str, Any]:
 
 class TestPromptRequest(BaseModel):
     mode: str
-    prompt: str
+    prompt: str = ""
     max_tokens: int = 256
     temperature: float = 0.7
+    messages: list[dict] | None = None  # for multi-turn chat history
 
 
 @app.post("/api/servers/test-prompt")
@@ -457,6 +458,7 @@ def test_prompt(request: TestPromptRequest) -> dict[str, Any]:
         prompt=request.prompt,
         max_tokens=request.max_tokens,
         temperature=request.temperature,
+        messages=request.messages,
     )
     if not result.get("success"):
         raise HTTPException(status_code=400, detail=result)

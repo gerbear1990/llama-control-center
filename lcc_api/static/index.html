@@ -35,9 +35,13 @@
             <span class="nav-icon icon-models" aria-hidden="true"></span>
             <span>Models</span>
           </a>
-          <a class="nav-item" href="#servers" data-section="servers">
+          <a class="nav-item" href="#active-servers" data-section="servers">
             <span class="nav-icon icon-servers" aria-hidden="true"></span>
             <span>Servers</span>
+          </a>
+          <a class="nav-item" href="#chat" data-section="chat">
+            <span class="nav-icon icon-logs" aria-hidden="true"></span>
+            <span>Chat</span>
           </a>
           <a class="nav-item" href="#logs" data-section="logs">
             <span class="nav-icon icon-logs" aria-hidden="true"></span>
@@ -147,7 +151,7 @@
             <span class="metric-copy">
               <span class="metric-value" id="metric-setup">-</span>
               <span class="metric-label">Needs setup</span>
-              <span class="metric-help" aria-hidden="true" title="What counts as 'Needs setup' and how to fix it?">?</span>
+              <span class="metric-help" aria-hidden="true" title="Profiles that are not launchable (missing model, runtime not found, bad params, etc.) + legacy portability issues. Click the metric or use Profiles filter 'Needs setup' to investigate. Fix by setting scan roots, installing runtimes, or editing profiles.">?</span>
             </span>
           </div>
         </section>
@@ -243,6 +247,25 @@
                 </div>
               </div>
               <div class="active-servers-list" id="active-servers-list"></div>
+            </section>
+
+            <section class="panel" id="chat">
+              <div class="panel-heading">
+                <div>
+                  <h3>Chat</h3>
+                  <p>Multi-turn chat with the selected running server.</p>
+                </div>
+                <div>
+                  <button class="mini-button" type="button" id="chat-clear">Clear</button>
+                  <button class="mini-button primary" type="button" id="test-prompt-send">Send</button>
+                </div>
+              </div>
+              <div class="chat-log" id="chat-log"></div>
+              <div class="chat-input-row">
+                <textarea id="test-prompt-input" rows="2" placeholder="Type a message… (Shift+Enter for newline)" autocomplete="off"></textarea>
+                <button class="mini-button" type="button" id="test-prompt-send-bottom" title="Send message">▷</button>
+              </div>
+              <div class="test-prompt-meta" id="test-prompt-meta" hidden></div>
             </section>
           </section>
 
@@ -476,6 +499,16 @@
               <div class="model-info-box" id="model-info-box">Select a profile, then run HF info or Fit test.</div>
             </section>
 
+            <section class="panel" id="benchmark-history" style="display:none">
+              <div class="panel-heading compact">
+                <div>
+                  <h3>Benchmark History</h3>
+                  <p>Recent runs for comparison.</p>
+                </div>
+              </div>
+              <div id="benchmark-history-list" class="benchmark-history-list"></div>
+            </section>
+
             <section class="panel" id="servers">
               <div class="panel-heading compact">
                 <div>
@@ -490,18 +523,7 @@
               <div class="server-box" id="server-box"></div>
             </section>
 
-            <section class="panel" id="test-prompt">
-              <div class="panel-heading compact">
-                <div>
-                  <h3>Test Prompt</h3>
-                  <p>Send a chat message to the selected running server.</p>
-                </div>
-                <button class="mini-button" type="button" id="test-prompt-send">Send</button>
-              </div>
-              <textarea id="test-prompt-input" rows="2" placeholder="Ask the running model something…" autocomplete="off"></textarea>
-              <div class="test-prompt-meta" id="test-prompt-meta" hidden></div>
-              <pre class="log-preview" id="test-prompt-output" hidden></pre>
-            </section>
+
 
             <section class="panel" id="logs">
               <div class="panel-heading compact">
@@ -562,6 +584,14 @@
                      <button class="mini-button" id="hf-check-updates-button">Check for Updates</button>
                      <button class="mini-button primary" id="hf-install-button">Install CLI</button>
                    </div>
+                 </div>
+
+                 <div class="hf-browser">
+                   <div class="hf-search">
+                     <input id="hf-search-input" type="text" placeholder="HF repo e.g. Qwen/Qwen2.5-7B-Instruct-GGUF" />
+                     <button class="mini-button" id="hf-search-btn">Fetch</button>
+                   </div>
+                   <div id="hf-browser-results" class="hf-browser-results"></div>
                  </div>
                </div>
              </section>
@@ -661,7 +691,7 @@
               <label><input id="settings-auto-scripts" type="checkbox" /> Auto-generate launch scripts</label>
               <label><input id="settings-auto-scan" type="checkbox" /> Scan on startup</label>
             </label>
-            <div class="row-actions" style="margin-top:8px">
+            <div class="row-actions">
               <button class="mini-button" type="button" id="settings-export-button" title="Export current model/runtime roots + key portable settings as JSON for use on another machine. No secrets included.">Export portable config</button>
             </div>
           </div>

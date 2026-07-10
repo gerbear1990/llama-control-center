@@ -61,6 +61,9 @@ passes.
 The dashboard is strong pre-launch (discover → fit → estimate → prepare → start)
 but goes quiet once a server is running. These close that loop.
 
+> Detailed breakdown of remaining UI work (plus many other review items) lives in  
+> **[REVIEW_MILESTONES.md](./REVIEW_MILESTONES.md)** — see especially **M2: Running Server Observability**.
+
 _The backend for live metrics and the crash watchdog is shipped (`v0.13.1`):
 `GET /api/servers/{id}/metrics` polls `/metrics`/`/health`/`/props`, and
 `refresh_server_states` flags unexpectedly-dead tracked servers as `crashed`

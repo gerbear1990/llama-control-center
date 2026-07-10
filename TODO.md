@@ -1,5 +1,9 @@
 # Llama Control Center TODO
 
+> **New**: Full code review (engineering + UI/UX) was completed on 2026-07-09.  
+> All findings, priorities, and chunked work are tracked in **[REVIEW_MILESTONES.md](./REVIEW_MILESTONES.md)**.  
+> This document (TODO.md) is retained for historical quick-list items. New work should primarily use the milestones doc.
+
 ## Current Feature Pass
 
 - [x] CUDA estimate automatically updates when settings are manually changed.

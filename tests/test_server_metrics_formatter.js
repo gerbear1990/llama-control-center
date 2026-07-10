@@ -109,3 +109,31 @@ if (gcSrc) {
   }
   console.error(JSON.stringify({ commands_ok: true, count: cmds.length }));
 }
+
+// Drive the shipped executeCommand path with fresh stub registry (no reimpl, no pre-seeded app handlers)
+let execSrc = extractFunctionSource(fullCode, 'executeCommand');
+if (execSrc) {
+  vm.runInContext(execSrc, sandbox);
+  // fresh stub registry - only the entries under test
+  sandbox.COMMAND_REGISTRY = {
+    'focus-search': function(){ sandbox.__executed = 'focus-search'; },
+    'refresh': function(){ sandbox.__executed = 'refresh'; }
+  };
+  const didFocus = sandbox.executeCommand('focus-search');
+  if (!didFocus || sandbox.__executed !== 'focus-search') {
+    console.error('executeCommand did not invoke shipped stub for focus-search');
+    process.exit(1);
+  }
+  const didRefresh = sandbox.executeCommand('refresh');
+  if (!didRefresh || sandbox.__executed !== 'refresh') {
+    console.error('executeCommand did not invoke shipped stub for refresh');
+    process.exit(1);
+  }
+  // unknown should be falsey without crash
+  const didUnknown = sandbox.executeCommand('nonexistent');
+  if (didUnknown) {
+    console.error('executeCommand returned truthy for unknown id');
+    process.exit(1);
+  }
+  console.error(JSON.stringify({ execute_ok: true }));
+}

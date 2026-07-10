@@ -22,6 +22,7 @@ const state = {
   hideNotInstalledRuntimes: localStorage.getItem('lcc-hide-not-installed-runtimes') === '1',
   showAllRuntimes: false,
   query: '',
+  chatHistory: {},  // { [mode]: Array<{role: 'user'|'assistant', content: string}> }
   jinjaRecommended: false,
   theme: localStorage.getItem('lcc-theme') || 'light',
 };
@@ -1457,13 +1458,17 @@ function setModelNote(slot, html) {
 function renderTpsEstimate(estimate) {
   const value = $('#tps-estimate');
   const detail = $('#tps-detail');
+  const card = $('#speed-estimate-card');
+  if (card) card.classList.add('updating');
   if (!estimate) {
     value.textContent = '-';
     detail.textContent = 'Waiting for model and hardware details.';
+    if (card) setTimeout(() => card.classList.remove('updating'), 400);
     return;
   }
   value.textContent = `${estimate.estimate_tps} tok/s`;
   detail.textContent = `${estimate.low_tps}-${estimate.high_tps} tok/s range, ${estimate.confidence} confidence`;
+  if (card) setTimeout(() => card.classList.remove('updating'), 400);
 }
 
 function renderMeasuredTps(tokensPerSecond, elapsed) {
@@ -1492,9 +1497,11 @@ function renderFitEstimate(fit) {
   const detail = $('#fit-detail');
   const card = $('#fit-estimate-card');
   card.classList.remove('status-good', 'status-tight', 'status-near-limit');
+  if (card) card.classList.add('updating');
   if (!fit) {
     value.textContent = '-';
     detail.textContent = 'Waiting for model and hardware details.';
+    if (card) setTimeout(() => card.classList.remove('updating'), 400);
     return;
   }
   const estimated = fit.estimated || {};
@@ -1511,6 +1518,7 @@ function renderFitEstimate(fit) {
     details.push(`RAM use ${formatMib(estimated.ram_used_mib)}`);
   }
   detail.textContent = details.join(' · ');
+  if (card) setTimeout(() => card.classList.remove('updating'), 400);
 }
 
 function clearMeasuredTps() {
@@ -1717,6 +1725,7 @@ function renderSettings() {
 function openSettings() {
   renderSettings();
   const modal = $('#settings-modal');
+  modal.classList.remove('closing');
   modal.hidden = false;
   modal.dataset.openedBy = document.activeElement?.id || '';
   document.body.classList.add('modal-open');
@@ -1726,16 +1735,20 @@ function openSettings() {
 
 function closeSettings() {
   const modal = $('#settings-modal');
-  modal.hidden = true;
-  document.body.classList.remove('modal-open');
-  const openerId = modal.dataset.openedBy;
-  if (openerId) {
-    const opener = document.getElementById(openerId);
-    if (opener && typeof opener.focus === 'function') opener.focus();
-  } else {
-    const button = $('#settings-button');
-    if (button) button.focus();
-  }
+  modal.classList.add('closing');
+  setTimeout(() => {
+    modal.hidden = true;
+    modal.classList.remove('closing');
+    document.body.classList.remove('modal-open');
+    const openerId = modal.dataset.openedBy;
+    if (openerId) {
+      const opener = document.getElementById(openerId);
+      if (opener && typeof opener.focus === 'function') opener.focus();
+    } else {
+      const button = $('#settings-button');
+      if (button) button.focus();
+    }
+  }, 200);
 }
 
 function focusableInside(container) {
@@ -1882,16 +1895,18 @@ function showCommandPalette() {
     // Basic keyboard nav for palette list (up/down/enter)
     filter.onkeydown = (ev) => {
       const items = Array.from($('#palette-list').querySelectorAll('li[data-cmd]'));
+      if (!items.length) return;
       let sel = items.findIndex(i => i.classList.contains('selected'));
+      if (sel < 0) sel = 0;
       if (ev.key === 'ArrowDown') {
         ev.preventDefault();
-        if (sel >= 0) items[sel].classList.remove('selected');
+        if (sel >= 0 && items[sel]) items[sel].classList.remove('selected');
         sel = (sel + 1) % items.length;
         items[sel].classList.add('selected');
         items[sel].scrollIntoView({block:'nearest'});
       } else if (ev.key === 'ArrowUp') {
         ev.preventDefault();
-        if (sel >= 0) items[sel].classList.remove('selected');
+        if (sel >= 0 && items[sel]) items[sel].classList.remove('selected');
         sel = (sel - 1 + items.length) % items.length;
         items[sel].classList.add('selected');
         items[sel].scrollIntoView({block:'nearest'});
@@ -2035,6 +2050,7 @@ const DASHBOARD_RESOURCES = [
   { label: 'meta', path: '/api/meta', apply: (d) => { state.meta = d; }, render: renderVersion },
   { label: 'runtime-updates', path: '/api/runtime-updates', apply: (d) => { state.runtimeUpdates = d; }, render: renderRuntimes },
   { label: 'hf-cli', path: '/api/hf-cli', apply: (d) => { updateHfCliUi(d); }, render: () => {} },
+  { label: 'benchmarks', path: '/api/benchmarks', apply: (d) => { state.benchmarks = d.benchmarks || []; }, render: renderBenchmarkHistory },
 ];
 
 async function refresh() {
@@ -2473,41 +2489,140 @@ function renderBenchmarkSummary(result) {
   `;
 }
 
+function renderBenchmarkHistory() {
+  const container = $('#benchmark-history');
+  const list = $('#benchmark-history-list');
+  if (!container || !list) return;
+
+  const all = state.benchmarks || [];
+  const currentMode = selectedMode();
+  const recent = all.slice(-5).reverse(); // newest first
+
+  if (!recent.length) {
+    container.style.display = 'none';
+    return;
+  }
+  container.style.display = '';
+
+  let html = '<table><thead><tr><th>When</th><th>Mode</th><th>t/s</th><th>tok</th><th>Action</th></tr></thead><tbody>';
+  recent.forEach((b, i) => {
+    const bm = b.benchmark || b;
+    const when = b.timestamp ? new Date(b.timestamp).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}) : '–';
+    const mode = b.mode || '–';
+    const tps = bm.tokens_per_second ? bm.tokens_per_second.toFixed(1) : '–';
+    const toks = bm.completion_tokens || bm.total_tokens || '–';
+    const isCurrent = currentMode && mode === currentMode;
+    const cls = isCurrent ? 'current' : '';
+    html += `<tr class="${cls}"><td>${escapeHtml(when)}</td><td>${escapeHtml(mode)}</td><td>${tps}</td><td>${toks}</td>`;
+    html += `<td><button class="mini-button" data-bench-idx="${all.length - 1 - i}">Use</button></td></tr>`;
+  });
+  html += '</tbody></table>';
+  list.innerHTML = html;
+
+  list.querySelectorAll('button[data-bench-idx]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const idx = parseInt(btn.dataset.benchIdx);
+      const entry = all[idx];
+      if (entry && entry.mode) {
+        state.selectedProfileMode = entry.mode;
+        renderParameters();
+        renderProfiles();
+        toast('Loaded params from benchmark history (approximate)');
+      }
+    });
+  });
+}
+
 async function sendTestPrompt() {
   const mode = selectedMode();
   if (!mode) {
     toast('Select a profile first');
     return;
   }
-  const input = $('#test-prompt-input');
-  const prompt = (input.value || '').trim();
-  if (!prompt) {
-    toast('Enter a prompt to send');
-    return;
-  }
   if (!serverRunningForMode(mode)) {
     toast(`Start the server for "${mode}" first`);
     return;
   }
-  const meta = $('#test-prompt-meta');
-  const output = $('#test-prompt-output');
-  output.hidden = false;
-  output.textContent = 'Sending…';
-  meta.hidden = true;
+  const input = $('#test-prompt-input');
+  const prompt = (input.value || '').trim();
+  if (!prompt) {
+    toast('Enter a message to send');
+    return;
+  }
+
+  // Maintain history for this mode
+  if (!state.chatHistory[mode]) state.chatHistory[mode] = [];
+  const history = state.chatHistory[mode];
+
+  // Append user message
+  history.push({ role: 'user', content: prompt });
+  renderChatLog(mode);
+
+  input.value = '';
+
   await withBusy($('#test-prompt-send'), async () => {
     try {
+      // Send full history so backend can do proper multi-turn
       const result = await api('/api/servers/test-prompt', {
         method: 'POST',
-        body: JSON.stringify({ mode, prompt, max_tokens: 256 }),
+        body: JSON.stringify({
+          mode,
+          messages: history,           // full conversation
+          max_tokens: 512,
+        }),
       });
-      output.textContent = result.reply || '(empty response)';
-      meta.hidden = false;
-      meta.textContent = `${result.tokens_per_second} tok/s · ${result.completion_tokens} tokens · ${result.elapsed_seconds}s`;
+
+      if (result.success && result.reply) {
+        history.push({ role: 'assistant', content: result.reply });
+        renderChatLog(mode);
+
+        // Show last-turn stats
+        const meta = $('#test-prompt-meta');
+        if (meta) {
+          meta.hidden = false;
+          meta.textContent = `${result.tokens_per_second || '?'} tok/s · ${result.completion_tokens || '?'} tokens · ${result.elapsed_seconds || '?'}s`;
+        }
+      } else {
+        // rollback the user message on failure
+        history.pop();
+        renderChatLog(mode);
+        toast(result.error || 'Chat failed');
+      }
     } catch (error) {
-      output.textContent = `Error: ${error.message}`;
-      meta.hidden = true;
+      history.pop();
+      renderChatLog(mode);
+      toast(`Chat error: ${error.message}`);
     }
   });
+}
+
+function renderChatLog(mode) {
+  const container = $('#chat-log');
+  if (!container) return;
+
+  const history = state.chatHistory[mode] || [];
+  if (history.length === 0) {
+    container.innerHTML = '<div class="empty-state" style="padding:8px;font-size:12px;">No messages yet. Start chatting with the running server.</div>';
+    return;
+  }
+
+  container.innerHTML = history.map(msg => {
+    const cls = msg.role === 'user' ? 'user' : 'assistant';
+    const label = msg.role === 'user' ? 'You' : 'Model';
+    return `<div class="chat-message ${cls}"><strong>${label}:</strong> ${escapeHtml(msg.content)}</div>`;
+  }).join('');
+
+  // scroll to bottom
+  container.scrollTop = container.scrollHeight;
+}
+
+function clearChat() {
+  const mode = selectedMode();
+  if (!mode) return;
+  state.chatHistory[mode] = [];
+  renderChatLog(mode);
+  const meta = $('#test-prompt-meta');
+  if (meta) meta.hidden = true;
 }
 
 async function runBenchmark() {
@@ -2553,6 +2668,7 @@ async function runBenchmark() {
       ].join('\n');
       toast(`Benchmark: ${result.benchmark.tokens_per_second} tok/s`);
       await refresh();
+      renderBenchmarkHistory();
       const currentKey = estimateKey(selectedMode() || '', collectOverrides());
       if (currentKey === state.lastBenchmarkKey && state.measuredTps) {
         renderMeasuredTps(state.measuredTps, state.measuredElapsed);
@@ -2638,6 +2754,50 @@ async function checkModelUpdate() {
       toast(`HF update check failed: ${error.message}`);
     }
   });
+}
+
+async function searchHfBrowser() {
+  const input = $('#hf-search-input');
+  const q = (input.value || '').trim();
+  const resEl = $('#hf-browser-results');
+  if (!q || !resEl) return;
+  resEl.innerHTML = '<div class="loading">Fetching info…</div>';
+  try {
+    const data = await api('/api/models/hf-info', {
+      method: 'POST',
+      body: JSON.stringify({ repo_id: q }),
+    });
+    if (!data.success) {
+      resEl.innerHTML = `<div class="empty-state">${escapeHtml(data.error || 'No results')}</div>`;
+      return;
+    }
+    let html = `<strong>${escapeHtml(data.model_id || q)}</strong><br>`;
+    html += `Downloads: ${data.downloads || '–'} · Likes: ${data.likes || '–'}<br>`;
+    if (data.summary) html += `<small>${escapeHtml(String(data.summary).slice(0,120))}</small><br>`;
+
+    // Try to show files if present in card or matches (heuristic)
+    const files = data.files || (data.matches && data.matches[0] && data.matches[0].files) || [];
+    // For GGUF focused browser, show common quants or link to download
+    const commonQuants = ['Q4_K_M', 'Q5_K_M', 'Q8_0', 'Q3_K_M', 'IQ4_NL'];
+    html += '<div style="margin-top:4px"><strong>Quick quants (example):</strong></div>';
+    commonQuants.forEach(qt => {
+      const fnameGuess = `${data.model_id ? data.model_id.split('/').pop() : q}-${qt}.gguf`;
+      html += `<div class="hf-file-row"><span>${qt}</span> <button class="mini-button" data-hf-repo="${escapeHtml(q)}" data-hf-file="${escapeHtml(fnameGuess)}">Download</button></div>`;
+    });
+    resEl.innerHTML = html;
+
+    resEl.querySelectorAll('button[data-hf-repo]').forEach(btn => {
+      btn.addEventListener('click', async (e) => {
+        const repo = btn.dataset.hfRepo;
+        const file = btn.dataset.hfFile;
+        // use existing download, dest can be first model dir or prompt
+        const dest = (state.inventory && state.inventory.scan_roots && state.inventory.scan_roots[0]) || '';
+        await downloadModelUpdate(repo, file, dest, btn);
+      });
+    });
+  } catch (err) {
+    resEl.innerHTML = `<div class="empty-state">Error: ${escapeHtml(err.message)}</div>`;
+  }
 }
 
 async function downloadModelUpdate(repo, file, dest, trigger) {
@@ -2771,7 +2931,7 @@ async function purgeServers(onlyNonRunning = true, trigger = null, clearAll = fa
 }
 
 const PANEL_COLLAPSE_KEY = 'lcc-collapsed-panels';
-const DEFAULT_COLLAPSED_PANELS = ['test-prompt', 'logs', 'portability', 'hf-tools'];
+const DEFAULT_COLLAPSED_PANELS = ['chat', 'logs', 'portability', 'hf-tools'];
 
 function loadCollapsedPanels() {
   try {
@@ -3003,6 +3163,10 @@ function wireEvents() {
       const sid = serverCard.dataset.serverId;
       if (sid) {
         state.selectedServerId = sid;
+        const server = (state.servers || []).find(s => s.id === sid);
+        if (server && server.mode) {
+          renderChatLog(server.mode);
+        }
         // If logs pane is visible, optionally auto-load; for now just remember selection.
         // User can hit "Open logs" or the per-item Logs button.
         const preview = $('#log-preview');
@@ -3056,6 +3220,8 @@ function wireEvents() {
     state.selectedProfileMode = event.target.value;
     renderParameters();
     renderProfiles();
+    const mode = selectedMode();
+    if (mode) renderChatLog(mode);
   });
   $('#reset-params-button').addEventListener('click', () => {
     const mode = selectedMode();
@@ -3075,8 +3241,16 @@ function wireEvents() {
   $('#fit-button').addEventListener('click', runFitTest);
   $('#benchmark-button').addEventListener('click', runBenchmark);
   $('#test-prompt-send').addEventListener('click', sendTestPrompt);
+  $('#test-prompt-send-bottom')?.addEventListener('click', sendTestPrompt);
+  $('#chat-clear')?.addEventListener('click', clearChat);
   $('#test-prompt-input').addEventListener('keydown', (event) => {
-    if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') sendTestPrompt();
+    if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
+      sendTestPrompt();
+    } else if (event.key === 'Enter' && !event.shiftKey) {
+      // allow normal enter to send (like many chats)
+      event.preventDefault();
+      sendTestPrompt();
+    }
   });
   $('#hf-info-button').addEventListener('click', fetchHFInfo);
   // Portability reworked panel actions
@@ -3122,6 +3296,10 @@ function wireEvents() {
         toast(`Install failed: ${error.message}`);
       }
     });
+  });
+  $('#hf-search-btn')?.addEventListener('click', searchHfBrowser);
+  $('#hf-search-input')?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') searchHfBrowser();
   });
   $('#suggest-draft-button').addEventListener('click', suggestDraftModels);
   $('#save-profile-button').addEventListener('click', async () => {
@@ -3215,17 +3393,17 @@ function wireEvents() {
     ctx.dispatchEvent(new Event('change', { bubbles: true }));
   });
   document.addEventListener('keydown', (event) => {
+    // AC3: Check Ctrl+Shift+K (more specific) BEFORE plain Ctrl+K so palette trigger works
+    if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === 'k') {
+      event.preventDefault();
+      if (paletteVisible) hideCommandPalette(); else showCommandPalette();
+      return;
+    }
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
       event.preventDefault();
       const search = $('#search-input');
       search?.focus();
       search?.select();
-      return;
-    }
-    // AC3: Ctrl+Shift+K (or Cmd+Shift+K) opens command palette
-    if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === 'k') {
-      event.preventDefault();
-      if (paletteVisible) hideCommandPalette(); else showCommandPalette();
       return;
     }
     if (event.key === 'Escape') {
@@ -3259,9 +3437,27 @@ function wireEvents() {
   window.addEventListener('resize', hideFloatingTooltip);
   window.addEventListener('scroll', hideFloatingTooltip, true);
   $$('.nav-item').forEach((item) => {
-    item.addEventListener('click', () => {
+    item.addEventListener('click', (e) => {
       $$('.nav-item').forEach((nav) => nav.classList.remove('active'));
       item.classList.add('active');
+
+      // Bounce transition to linked panel
+      const href = item.getAttribute('href');
+      if (href && href.startsWith('#')) {
+        const target = document.querySelector(href);
+        if (target) {
+          // Prevent instant jump if we want custom scroll
+          if (item.tagName === 'A') {
+            e.preventDefault();
+          }
+          target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          target.classList.add('bounce-target');
+          // Remove after animation
+          setTimeout(() => {
+            target.classList.remove('bounce-target');
+          }, 700);
+        }
+      }
     });
   });
 }
@@ -3398,11 +3594,69 @@ function showPopupMenu(trigger, items) {
 // bar inside the sidebar just above the API footer.
 const LIVE_HARDWARE_INTERVAL_MS = 3000;
 let liveHardwareTimer = null;
+const LIVE_HISTORY_MAX = 20; // ~60 seconds of history
+let liveGpuUtilHistory = {}; // { idx: number[] }
+let liveGpuVramHistory = {}; // { idx: number[] }
+let liveRamHistory = []; // number[]
 
 function liveBarClass(percent) {
   if (percent >= 90) return 'danger';
   if (percent >= 70) return 'warn';
   return '';
+}
+
+function drawSparkline(canvas, values, color = '#20aeb5') {
+  if (!canvas || !values || values.length < 2) {
+    if (canvas) {
+      const ctx = canvas.getContext('2d');
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+    }
+    return;
+  }
+  const ctx = canvas.getContext('2d');
+  const w = canvas.width;
+  const h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
+
+  const n = values.length;
+  const max = Math.max(...values, 100);
+  const min = Math.min(...values, 0);
+  const range = (max - min) || 1;
+
+  // subtle fill under the line
+  ctx.beginPath();
+  values.forEach((v, i) => {
+    const x = (i / (n - 1)) * w;
+    const y = h - ((v - min) / range) * h;
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  });
+  ctx.lineTo(w, h);
+  ctx.lineTo(0, h);
+  ctx.closePath();
+  ctx.fillStyle = color + '22'; // very transparent
+  ctx.fill();
+
+  // line
+  ctx.beginPath();
+  values.forEach((v, i) => {
+    const x = (i / (n - 1)) * w;
+    const y = h - ((v - min) / range) * h;
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  });
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1.8;
+  ctx.lineJoin = 'round';
+  ctx.stroke();
+
+  // small end dot
+  const lastX = w;
+  const lastY = h - ((values[values.length-1] - min) / range) * h;
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.arc(lastX - 1, lastY, 2, 0, Math.PI * 2);
+  ctx.fill();
 }
 
 function renderLiveGpu(gpu) {
@@ -3418,14 +3672,18 @@ function renderLiveGpu(gpu) {
     .replace(/^NVIDIA /, '')
     .replace(/^AMD Radeon /, '')
     .replace(/^Intel /, '');
+  const idx = gpu.index ?? 0;
   return `
-    <div class="live-gpu-card" data-gpu-index="${escapeHtml(gpu.index ?? '')}">
+    <div class="live-gpu-card" data-gpu-index="${escapeHtml(idx)}">
       <div class="live-gpu-card-head">
         <span class="gpu-name" title="${escapeHtml(gpu.name)}">${escapeHtml(displayName)}</span>
         <span class="gpu-stats">${utilText} · ${temp}</span>
       </div>
       <div class="live-bar-label"><span>VRAM</span><span>${formatBytes(gpu.used_memory_bytes)} / ${formatBytes(gpu.total_memory_bytes)}</span></div>
       <div class="live-bar"><div class="live-bar-fill ${liveBarClass(usedPct)}" style="width:${usedPct.toFixed(1)}%"></div></div>
+      <canvas class="sparkline" width="120" height="18" data-type="vram" title="VRAM % history"></canvas>
+      <div class="live-bar-label" style="margin-top:2px"><span>Util %</span></div>
+      <canvas class="sparkline" width="120" height="18" data-type="util" title="GPU util history"></canvas>
     </div>`;
 }
 
@@ -3440,7 +3698,8 @@ function renderLiveRam(ram) {
       <span class="label-title">System RAM</span>
       <span>${formatBytes(used)} / ${formatBytes(ram.total_bytes)}</span>
     </div>
-    <div class="live-bar"><div class="live-bar-fill ${liveBarClass(pct)}" style="width:${pct.toFixed(1)}%"></div></div>`;
+    <div class="live-bar"><div class="live-bar-fill ${liveBarClass(pct)}" style="width:${pct.toFixed(1)}%"></div></div>
+    <canvas class="sparkline" width="120" height="16" data-type="ram" title="RAM usage % history"></canvas>`;
 }
 
 function renderLiveHardware(data) {
@@ -3451,21 +3710,38 @@ function renderLiveHardware(data) {
   if (!gpuGrid) return;
 
   const gpus = Array.isArray(data?.gpus) ? data.gpus : [];
-  if (gpus.length) {
+  const hasGpus = gpus.length > 0;
+  const hasRam = !!(data?.system_ram && data.system_ram.total_bytes != null);
+
+  if (hasGpus) {
     gpuGrid.innerHTML = gpus.map(renderLiveGpu).join('');
     empty.hidden = true;
+    // draw sparklines after DOM update
+    gpuGrid.querySelectorAll('.live-gpu-card').forEach(card => {
+      const idx = parseInt(card.dataset.gpuIndex || '0', 10);
+      const utilH = liveGpuUtilHistory[idx] || [];
+      const vramH = liveGpuVramHistory[idx] || [];
+      const utilCan = card.querySelector('canvas[data-type="util"]');
+      const vramCan = card.querySelector('canvas[data-type="vram"]');
+      if (utilCan) drawSparkline(utilCan, utilH, '#20aeb5');
+      if (vramCan) drawSparkline(vramCan, vramH, '#e26962');
+    });
   } else {
     gpuGrid.innerHTML = '';
-    empty.hidden = false;
-    empty.textContent = data?.source === 'none'
-      ? 'GPU data unavailable (no nvidia-smi detected).'
-      : 'Waiting for first sample…';
+    empty.hidden = hasRam;  // hide the placeholder if we at least have RAM data
+    if (!hasRam) {
+      empty.textContent = data?.source === 'none'
+        ? 'GPU data unavailable (no nvidia-smi detected).'
+        : 'Waiting for first sample…';
+    }
   }
-  ramRow.innerHTML = renderLiveRam(data?.system_ram);
+  ramRow.innerHTML = hasRam ? renderLiveRam(data.system_ram) : '';
+  const ramCan = ramRow.querySelector('canvas[data-type="ram"]');
+  if (ramCan) drawSparkline(ramCan, liveRamHistory, '#087f86');
 
   if (badge) {
     const age = data?.cached_age_ms;
-    const label = gpus.length
+    const label = hasGpus
       ? `nvidia-smi · ${age != null ? `${age}ms` : 'live'}`
       : 'RAM only';
     badge.textContent = label;
@@ -3482,15 +3758,50 @@ async function pollLiveHardware() {
   if (document.querySelector('.app-shell')?.classList.contains('sidebar-collapsed')) return;
   try {
     const data = await api('/api/system/live');
+    recordLiveHistory(data);
     renderLiveHardware(data);
   } catch {
     // Transient — next tick will retry.
   }
 }
 
+function recordLiveHistory(data) {
+  const gpus = Array.isArray(data?.gpus) ? data.gpus : [];
+  gpus.forEach((gpu, i) => {
+    const idx = gpu.index ?? i;
+    const util = Number.isFinite(gpu.utilization_gpu_percent) ? gpu.utilization_gpu_percent : 0;
+    if (!liveGpuUtilHistory[idx]) liveGpuUtilHistory[idx] = [];
+    liveGpuUtilHistory[idx].push(util);
+    if (liveGpuUtilHistory[idx].length > LIVE_HISTORY_MAX) liveGpuUtilHistory[idx].shift();
+
+    const vramPct = (gpu.total_memory_bytes > 0) ? (gpu.used_memory_bytes / gpu.total_memory_bytes * 100) : 0;
+    if (!liveGpuVramHistory[idx]) liveGpuVramHistory[idx] = [];
+    liveGpuVramHistory[idx].push(vramPct);
+    if (liveGpuVramHistory[idx].length > LIVE_HISTORY_MAX) liveGpuVramHistory[idx].shift();
+  });
+
+  const ram = data?.system_ram;
+  if (ram && ram.total_bytes) {
+    const used = ram.total_bytes - (ram.free_bytes ?? ram.total_bytes);
+    const pct = ram.total_bytes > 0 ? (used / ram.total_bytes) * 100 : 0;
+    liveRamHistory.push(pct);
+    if (liveRamHistory.length > LIVE_HISTORY_MAX) liveRamHistory.shift();
+  }
+}
+
 function startLiveHardwarePolling() {
   if (liveHardwareTimer) return;
-  pollLiveHardware();
+  // Always fetch the first sample immediately (even if sidebar collapsed at load).
+  // Subsequent interval updates will respect the pause checks inside pollLiveHardware.
+  (async () => {
+    try {
+      const data = await api('/api/system/live');
+      recordLiveHistory(data);
+      renderLiveHardware(data);
+    } catch {
+      // will retry on interval
+    }
+  })();
   liveHardwareTimer = setInterval(pollLiveHardware, LIVE_HARDWARE_INTERVAL_MS);
   document.addEventListener('visibilitychange', () => {
     if (!document.hidden) pollLiveHardware();
