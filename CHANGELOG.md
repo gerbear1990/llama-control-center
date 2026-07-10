@@ -7,12 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-07-10
+
 ### Added
 - **Portable config export (from feature suggestions).** "Export portable config" button in Settings dialog and Portability panel. Uses pure `buildPortableExportSnapshot(config, inventory)` (shipped, testable via vm extraction) to produce a v1 JSON snapshot of model/runtime dirs + key portable settings (no secrets). Copies to clipboard with toast; surfaced for discoverability. ([lcc_api/static/app.js](lcc_api/static/app.js), [lcc_api/static/index.html](lcc_api/static/index.html))
 - **Keyboard command support + minimal palette (from feature suggestions).** Ctrl+Shift+K opens a lightweight command palette. Registry + `getCommands`/`executeCommand` drive real handlers for focus-search, open-settings, refresh (plus existing Ctrl+K). Arrow nav, filter, Escape supported. Pure registry exposed for tests. ([lcc_api/static/app.js](lcc_api/static/app.js), [lcc_api/static/index.html](lcc_api/static/index.html), [lcc_api/static/styles.css](lcc_api/static/styles.css))
+- **Light animations throughout the UI.** Panel minimize/expand (with opacity + grid height), nav link "bounce" transitions to target panels, settings modal open (scale + fade) and close, Parameters section (estimate cards, applied fields flash), live hardware (bars, sparklines), chat messages pop-in, card hovers (lift/shadow on servers, models, metrics), button presses, nav hovers, etc. Plus sidebar label fades on collapse.
+- **Chat moved to main content panel** with its own navbar link. Now a full multi-turn chat experience (history preserved per mode, proper bubbles).
+- **Servers nav link now targets the main Active Servers panel** (instead of the mini inspector version).
+- **Portability & Paths panel fixes:** proper padding so buttons no longer clip, can now be minimized/expanded.
+- **Improved Needs Setup tooltip:** now has descriptive help text explaining what counts and how to fix (instead of literal placeholder).
+- **Settings dialog animations:** smooth open/close with scale/fade instead of instant appear.
+- **Animations for Parameters:** updating estimates flash, applied field highlights, smooth transitions on fields/sections.
 
 ### Fixed
 - **Settings menu padding/spacing.** Scoped rules in `.settings-form *` now guarantee >=8px separation (form padding 16px, group padding 14px + 12px inter-group mt, title mb 8px, help mb 12px, field/row gap 8px, check-row, modal-actions). Removed 4px abutments and inline tight margins. No elements overlap or touch directly. ([lcc_api/static/styles.css](lcc_api/static/styles.css), [lcc_api/static/index.html](lcc_api/static/index.html))
+- **Live Hardware stuck on "Waiting for first sample…"** Fixed variable reference bug from history refactoring, improved empty state logic for RAM-only cases, forced first sample fetch, better sparklines (separate util/vram history, fill under line, dots).
+- **Portability & Paths** now properly minimizable with padding fixes for buttons.
 
 ### Fixed / Hardened (M1 Reliability)
 

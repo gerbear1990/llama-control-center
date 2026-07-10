@@ -4,12 +4,7 @@
 > runtimes, preparing `llama.cpp` launch commands, running fit tests, and managing
 > tracked local inference servers.
 
-**v0.13.0** — Live host hardware panel (GPU util/temp/VRAM, system RAM), per-process
-memory gauge for tracked servers (RSS + per-PID VRAM via `nvidia-smi --query-compute-apps`),
-crash/exit watchdog with `oom_likely` hinting, Smart Fit KV ladder expansion
-(`q5_0`/`q4_1`/`iq4_nl` rungs) and **NVFP4/MXFP4** pricing on hardware-accelerated NVIDIA
-GPUs, and several estimator robustness fixes (hybrid-SSM layer naming, cache_bytes
-two-tier, typo rename). See [CHANGELOG.md](./CHANGELOG.md) for details.
+**v0.15.0** — Major UI refresh: Chat moved to main content panel with its own nav link, light animations everywhere (panel min/expand with fade, nav "bounce" to panels, settings modal scale+fade open/close, Parameters updates, live hardware, hovers/lifts on cards, chat pop-ins, button presses), portable export feature, keyboard command palette (Ctrl+Shift+K), settings padding/spacing fixes and reworks, live hardware fixes and improved sparklines, portability fixes. See [CHANGELOG.md](./CHANGELOG.md) for details.
 
 The app is designed to be portable: paths live in user settings or environment
 variables, not in source code.
