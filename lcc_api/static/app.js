@@ -1717,8 +1717,6 @@ function renderSettings() {
   $('#settings-server-history-limit').value = config.server_history_limit || 5;
   $('#settings-extra-args').value = listToLines(config.extra_llama_args);
   // New/expanded toggles
-  const autoScripts = $('#settings-auto-scripts');
-  if (autoScripts) autoScripts.checked = config.auto_generate_launch_scripts !== false;
   const autoScan = $('#settings-auto-scan');
   if (autoScan) autoScan.checked = config.auto_scan_on_startup !== false;
 }
@@ -1783,7 +1781,6 @@ function collectSettings() {
     update_channel: $('#settings-update-channel').value || 'stable',
     server_history_limit: Number($('#settings-server-history-limit').value) || 5,
     extra_llama_args: linesToList($('#settings-extra-args').value),
-    auto_generate_launch_scripts: $('#settings-auto-scripts') ? $('#settings-auto-scripts').checked : true,
     auto_scan_on_startup: $('#settings-auto-scan') ? $('#settings-auto-scan').checked : true,
   };
 }
@@ -1824,7 +1821,6 @@ function buildPortableExportSnapshot(config, inventory) {
     default_backend: c.default_backend || "llama.cpp",
     update_channel: c.update_channel || "stable",
     server_history_limit: Number(c.server_history_limit) || 5,
-    auto_generate_launch_scripts: c.auto_generate_launch_scripts !== false,
     auto_scan_on_startup: c.auto_scan_on_startup !== false,
     // Discovered scan roots for context (read-only snapshot)
     scan_roots: Array.isArray(inv.scan_roots) ? [...inv.scan_roots] : [],
@@ -3054,7 +3050,6 @@ function wireEvents() {
     $('#settings-update-channel').value = 'stable';
     $('#settings-server-history-limit').value = '5';
     $('#settings-extra-args').value = '';
-    const a1 = $('#settings-auto-scripts'); if (a1) a1.checked = true;
     const a2 = $('#settings-auto-scan'); if (a2) a2.checked = true;
     toast('Form reset to defaults (click Save to apply)');
   });
