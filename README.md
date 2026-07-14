@@ -29,10 +29,8 @@ variables, not in source code.
   RTX 40-series, RTX 30/20-series, GTX 16/10-series, Tesla/A/L-series,
   and AMD RX 9000/8000/7000/6000 series.
 - Resolves `models.json` profiles against discovered local model files.
-- Auto-generates portable `llama.cpp` launch scripts for every discovered model
-  (into the project `scripts/` folder), registers brand-new models as launchable
-  profiles, and repairs broken `models.json` script references so matching is exact.
-  Hand-written scripts in the same folder are never overwritten.
+- Auto-registers newly discovered models as launchable profiles in
+  `models.json`, pinned by explicit model path so matching is exact.
 - Shows profile fit badges: Good, Tight, or Near Limit based on estimated
   accelerator memory and host RAM pressure.
 - Groups profiles by matched model in the Profiles table with collapsible

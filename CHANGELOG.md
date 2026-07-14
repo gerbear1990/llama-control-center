@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+- **Launch-script generation.** LCC no longer writes `.ps1`/`.sh` launch
+  scripts; the web UI has always started servers by building the
+  `llama-server` command directly. `models.json` entries now pin an explicit
+  `model_path` instead of referencing a script (existing manifests were
+  migrated in-repo). The `/api/launch-scripts*` endpoints and the
+  "Auto-generate launch scripts" setting are gone; profile auto-registration
+  moved to `lcc_core/profile_registry.py` and `POST /api/profiles/scan`.
+- **Portable CLI.** `python -m lcc_core` (inventory/profiles/prepare/servers/
+  stop/logs) and PORTABLE_CORE.md are removed; the web UI and HTTP API are
+  the supported interfaces.
+
+### Fixed
+- Server-metrics formatter test now decodes node output as UTF-8 explicitly,
+  so the suite passes on machines whose locale encoding is not UTF-8.
+
 ## [0.15.0] - 2026-07-10
 
 ### Added
