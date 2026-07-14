@@ -23,12 +23,8 @@ from lcc_core.hardware import detect_system_hardware
 from lcc_core.hf_cli import detect_hf_cli as hf_cli_detect, check_for_updates, install_hf_cli
 from lcc_core.draft_models import suggest_draft_models, pull_draft_model, download_model_file
 from lcc_core.inventory import build_inventory
-from lcc_core.launch_scripts import (
-    delete_launch_script,
-    generate_all_launch_scripts,
-    generate_launch_script,
-    launch_scripts_scan_summary,
-    list_launch_scripts,
+from lcc_core.profile_registry import (
+    register_discovered_models,
     startup_autoscan_if_enabled,
 )
 from lcc_core.profile_resolver import resolved_inventory, resolve_profiles
@@ -42,7 +38,7 @@ from lcc_core.smart_tune import auto_tune_fit
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
-    """Regenerate launch scripts for any new models at server startup."""
+    """Register profiles for any new models at server startup."""
 
     try:
         startup_autoscan_if_enabled()
@@ -96,7 +92,6 @@ class ConfigRequest(BaseModel):
     extra_llama_args: list[str] = Field(default_factory=list)
     update_channel: str = "stable"
     server_history_limit: int = 5
-    auto_generate_launch_scripts: bool = True
     auto_scan_on_startup: bool = True
 
 
@@ -675,58 +670,11 @@ def delete_profile(request: DeleteProfileRequest) -> dict[str, Any]:
     return {"success": True, "message": f"Deleted profile '{request.mode}'.", "mode": request.mode}
 
 
-class GenerateLaunchScriptRequest(BaseModel):
-    mode: str
-    model_path: str
-    params: dict[str, Any] = Field(default_factory=dict)
-    name: str | None = None
-    project_root: str | None = None
-    overwrite: bool = True
+@app.post("/api/profiles/scan")
+def scan_profiles() -> dict[str, Any]:
+    """Register any newly discovered models as launchable profiles."""
 
-
-@app.get("/api/launch-scripts")
-def get_launch_scripts() -> dict[str, Any]:
-    summary = launch_scripts_scan_summary()
-    summary["success"] = True
-    return summary
-
-
-@app.post("/api/launch-scripts/generate")
-def generate_single_launch_script(request: GenerateLaunchScriptRequest) -> dict[str, Any]:
-    if not request.mode or not request.model_path:
-        raise HTTPException(status_code=400, detail="mode and model_path are required.")
-    try:
-        payload = generate_launch_script(
-            mode=request.mode,
-            model_path=request.model_path,
-            params=request.params,
-            project_root=request.project_root,
-            name=request.name,
-            overwrite=request.overwrite,
-        )
-    except OSError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    payload["success"] = True
-    return payload
-
-
-@app.post("/api/launch-scripts/scan")
-def scan_launch_scripts() -> dict[str, Any]:
-    """Trigger a fresh scan/regeneration of all launch scripts."""
-
-    result = generate_all_launch_scripts()
+    result = register_discovered_models()
     payload = result.to_dict()
     payload["success"] = True
     return payload
-
-
-class LaunchScriptActionRequest(BaseModel):
-    mode: str
-
-
-@app.post("/api/launch-scripts/delete")
-def delete_launch_script_endpoint(request: LaunchScriptActionRequest) -> dict[str, Any]:
-    if not request.mode:
-        raise HTTPException(status_code=400, detail="mode is required.")
-    removed = delete_launch_script(request.mode)
-    return {"success": True, "removed": removed, "mode": request.mode}

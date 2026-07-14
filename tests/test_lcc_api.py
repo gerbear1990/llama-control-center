@@ -21,6 +21,27 @@ class ApiSmokeTests(unittest.TestCase):
     def setUp(self) -> None:
         self.client = TestClient(app)
 
+    def test_profiles_scan_registers_and_launch_scripts_routes_are_gone(self) -> None:
+        # Stub the registry so the route test never scans (or mutates) the
+        # real models.json / model folders; the registry behavior itself is
+        # covered by tests/test_profile_registry.py.
+        import lcc_api.app as app_module
+        from lcc_core.profile_registry import ScanResult
+
+        orig = app_module.register_discovered_models
+        app_module.register_discovered_models = lambda: ScanResult(scanned_at="test")
+        try:
+            scan = self.client.post("/api/profiles/scan")
+        finally:
+            app_module.register_discovered_models = orig
+        self.assertEqual(scan.status_code, 200)
+        payload = scan.json()
+        self.assertTrue(payload["success"])
+        for key in ("registered", "skipped", "errors", "scanned_model_count", "registered_count"):
+            self.assertIn(key, payload)
+        self.assertEqual(self.client.get("/api/launch-scripts").status_code, 404)
+        self.assertEqual(self.client.post("/api/launch-scripts/scan").status_code, 404)
+
     def test_health_config_and_servers(self) -> None:
         index = self.client.get("/")
         self.assertEqual(index.status_code, 200)
