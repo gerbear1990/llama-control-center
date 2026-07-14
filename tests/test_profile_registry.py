@@ -107,6 +107,14 @@ class RegisterDiscoveredModelsTests(_IsolatedDirs):
         self.assertEqual((self.project_root / "models.json").read_text(encoding="utf-8"), "{not json")
 
 
+class ConfigFieldTests(_IsolatedDirs):
+    def test_auto_scan_on_startup_round_trips(self) -> None:
+        config = AppConfig(auto_scan_on_startup=False)
+        path = config.save(self.config_dir / "config.json")
+        loaded = AppConfig.load(path)
+        self.assertFalse(loaded.auto_scan_on_startup)
+
+
 class StartupAutoscanTests(_IsolatedDirs):
     def test_disabled_when_config_says_so(self) -> None:
         config = AppConfig(auto_scan_on_startup=False)
