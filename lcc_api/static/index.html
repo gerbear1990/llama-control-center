@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Llama Control Center</title>
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23098a96'/%3E%3Ctext x='16' y='22' font-family='Inter,Arial,sans-serif' font-size='16' font-weight='700' text-anchor='middle' fill='white'%3ELC%3C/text%3E%3C/svg%3E" />
-    <link rel="stylesheet" href="/static/styles.css" />
+    <link rel="stylesheet" href="/static/styles.css?v=0.15.0" />
   </head>
   <body>
     <div class="app-shell">
@@ -35,23 +35,42 @@
             <span class="nav-icon icon-models" aria-hidden="true"></span>
             <span>Models</span>
           </a>
-          <a class="nav-item" href="#servers" data-section="servers">
+          <a class="nav-item" href="#active-servers" data-section="servers">
             <span class="nav-icon icon-servers" aria-hidden="true"></span>
             <span>Servers</span>
+          </a>
+          <a class="nav-item" href="#chat" data-section="chat">
+            <span class="nav-icon icon-logs" aria-hidden="true"></span>
+            <span>Chat</span>
           </a>
           <a class="nav-item" href="#logs" data-section="logs">
             <span class="nav-icon icon-logs" aria-hidden="true"></span>
             <span>Logs</span>
           </a>
-           <a class="nav-item" href="#portability" data-section="portability">
-             <span class="nav-icon icon-portability" aria-hidden="true"></span>
-             <span>Portability</span>
-           </a>
-           <a class="nav-item" href="#hf-tools" data-section="hf-tools">
-             <span class="nav-icon icon-hf" aria-hidden="true"></span>
-             <span>HF Tools</span>
-           </a>
+          <a class="nav-item" href="#portability" data-section="portability">
+            <span class="nav-icon icon-portability" aria-hidden="true"></span>
+            <span>Portability</span>
+          </a>
+          <a class="nav-item" href="#hf-tools" data-section="hf-tools">
+            <span class="nav-icon icon-hf" aria-hidden="true"></span>
+            <span>HF Tools</span>
+          </a>
+          <button class="nav-item nav-button" id="settings-nav-button" type="button">
+            <span class="nav-icon icon-settings-nav" aria-hidden="true"></span>
+            <span>Settings</span>
+          </button>
          </nav>
+        <section class="sidebar-live-hardware" id="sidebar-live-hardware" aria-label="Live hardware stats">
+          <header class="sidebar-live-head">
+            <span class="sidebar-live-title">Live Hardware</span>
+            <span class="live-source-badge" id="live-source-badge" hidden></span>
+          </header>
+          <div class="sidebar-live-body" id="sidebar-live-body">
+            <div class="live-gpu-grid" id="live-gpu-grid"></div>
+            <div class="live-ram-row" id="live-ram-row"></div>
+            <p class="live-empty" id="live-empty">Waiting for first sample…</p>
+          </div>
+        </section>
         <div class="sidebar-footer">
           <span class="status-dot" id="api-dot" aria-hidden="true"></span>
           <span id="api-status">Connecting</span>
@@ -62,7 +81,7 @@
       <main class="main">
         <header class="topbar">
           <div class="topbar-title">
-            <h2>Control Center</h2>
+            <h2>Llama Control Center</h2>
             <p id="summary-line">Loading local runtimes, profiles, and models.</p>
           </div>
           <div class="hardware-widget" id="hardware-widget" aria-label="Detected hardware">
@@ -87,7 +106,8 @@
             <label class="search-field">
               <span class="sr-only">Search models and profiles</span>
               <span class="toolbar-icon search-icon" aria-hidden="true"></span>
-              <input id="search-input" type="search" placeholder="Search models and profiles" autocomplete="off" aria-label="Search models and profiles" />
+              <input id="search-input" type="search" placeholder="Search..." autocomplete="off" aria-label="Search models and profiles" />
+              <kbd>Ctrl K</kbd>
             </label>
             <button class="button secondary" id="settings-button" type="button" title="Open general settings">
               <span class="toolbar-icon settings-icon" aria-hidden="true"></span>
@@ -106,20 +126,33 @@
 
         <section class="status-strip" aria-label="Inventory summary">
           <div class="metric">
-            <span class="metric-value" id="metric-runtimes">-</span>
-            <span class="metric-label">Runtimes</span>
+            <span class="metric-icon metric-icon-runtimes" aria-hidden="true"></span>
+            <span class="metric-copy">
+              <span class="metric-value" id="metric-runtimes">-</span>
+              <span class="metric-label">Runtimes</span>
+            </span>
           </div>
           <div class="metric">
-            <span class="metric-value" id="metric-launchable">-</span>
-            <span class="metric-label">Launchable</span>
+            <span class="metric-icon metric-icon-launchable" aria-hidden="true"></span>
+            <span class="metric-copy">
+              <span class="metric-value" id="metric-launchable">-</span>
+              <span class="metric-label">Launchable</span>
+            </span>
           </div>
           <div class="metric">
-            <span class="metric-value" id="metric-models">-</span>
-            <span class="metric-label">Models</span>
+            <span class="metric-icon metric-icon-models" aria-hidden="true"></span>
+            <span class="metric-copy">
+              <span class="metric-value" id="metric-models">-</span>
+              <span class="metric-label">Models</span>
+            </span>
           </div>
-          <div class="metric warning">
-            <span class="metric-value" id="metric-setup">-</span>
-            <span class="metric-label">Needs setup</span>
+          <div class="metric warning" id="metric-setup-wrapper" title="Profiles that are not launchable (model file missing, runtime not found, invalid params, etc.) plus any legacy portability issues found in scripts/JSONs. Click the label or use Profiles filter 'Needs setup' to investigate. Fix by ensuring models are in your scan roots, runtimes are installed/visible, or edit profiles.">
+            <span class="metric-icon metric-icon-setup" aria-hidden="true"></span>
+            <span class="metric-copy">
+              <span class="metric-value" id="metric-setup">-</span>
+              <span class="metric-label">Needs setup</span>
+              <span class="metric-help" aria-hidden="true" title="Profiles that are not launchable (missing model, runtime not found, bad params, etc.) + legacy portability issues. Click the metric or use Profiles filter 'Needs setup' to investigate. Fix by setting scan roots, installing runtimes, or editing profiles.">?</span>
+            </span>
           </div>
         </section>
 
@@ -133,6 +166,10 @@
                 </div>
                 <div class="panel-heading-actions">
                   <span class="sr-only" role="status" aria-live="polite" id="runtime-status"></span>
+                  <label class="mini-toggle" title="Hide runtimes that are not installed or not found on disk.">
+                    <input id="hide-not-installed-runtimes" type="checkbox" />
+                    <span>Hide not installed</span>
+                  </label>
                   <button class="mini-button" type="button" id="check-updates-button" title="Refresh update availability from upstream release sources">Check for updates</button>
                 </div>
               </div>
@@ -143,29 +180,48 @@
               <div class="panel-heading">
                 <div>
                   <h3>Profiles</h3>
-                  <p>Runnable launch profiles resolved from local models.</p>
+                  <p>Manage and launch model configurations.</p>
                 </div>
-                <div class="segmented" aria-label="Profile filter">
-                  <button class="segment active" type="button" data-profile-filter="all">All</button>
-                  <button class="segment" type="button" data-profile-filter="launchable">Launchable</button>
-                  <button class="segment" type="button" data-profile-filter="setup">Needs setup</button>
+                <div class="profiles-toolbar" aria-label="Profile tools">
+                  <label class="profile-filter-field">
+                    <span class="toolbar-icon filter-icon" aria-hidden="true"></span>
+                    <input id="profile-filter-input" type="search" placeholder="Filter profiles..." autocomplete="off" aria-label="Filter profiles" />
+                  </label>
+                  <select id="profile-model-filter" aria-label="Filter by model">
+                    <option value="all">All models</option>
+                  </select>
+                  <label class="profile-availability-toggle" title="Hide profiles that are not launchable or do not resolve to an installed local model.">
+                    <input id="hide-unavailable-profiles" type="checkbox" />
+                    <span>Hide unavailable</span>
+                  </label>
+                  <button class="button primary profile-new-button" id="new-profile-button" type="button">
+                    <span aria-hidden="true">+</span>
+                    New profile
+                  </button>
+                  <button class="button primary icon-only" type="button" id="profile-menu-button" title="More profile actions" aria-label="More profile actions">⌄</button>
                 </div>
               </div>
               <div class="table-wrap">
                 <table>
                   <thead>
                     <tr>
-                      <th>Profile</th>
                       <th>Model</th>
+                      <th>Profile</th>
+                      <th>Runtime</th>
+                      <th>Context</th>
+                      <th>Threads</th>
+                      <th>GPU Layers</th>
+                      <th>Updated</th>
                       <th>Status</th>
-                      <th>Fit</th>
-                      <th>Ctx</th>
-                      <th>Port</th>
-                      <th>Action</th>
+                      <th>Actions</th>
                     </tr>
                   </thead>
                   <tbody id="profiles-table"></tbody>
                 </table>
+              </div>
+              <div class="table-footer">
+                <span id="profiles-count">Showing profiles</span>
+                <a href="#profiles" id="view-all-profiles">View all profiles <span aria-hidden="true">→</span></a>
               </div>
             </section>
 
@@ -177,6 +233,39 @@
                 </div>
               </div>
               <div class="model-list" id="model-list"></div>
+            </section>
+
+            <section class="panel" id="active-servers">
+              <div class="panel-heading">
+                <div>
+                  <h3>Active Servers</h3>
+                  <p>Tracked running and recent servers (live updates from the side pane too).</p>
+                </div>
+                <div class="panel-heading-actions">
+                  <button class="mini-button" type="button" id="active-servers-purge-stopped" title="Remove stopped and crashed entries from history">Purge stopped</button>
+                  <button class="mini-button danger" type="button" id="active-servers-purge-all" title="Clear all tracked server history">Clear history</button>
+                </div>
+              </div>
+              <div class="active-servers-list" id="active-servers-list"></div>
+            </section>
+
+            <section class="panel" id="chat">
+              <div class="panel-heading">
+                <div>
+                  <h3>Chat</h3>
+                  <p>Multi-turn chat with the selected running server.</p>
+                </div>
+                <div>
+                  <button class="mini-button" type="button" id="chat-clear">Clear</button>
+                  <button class="mini-button primary" type="button" id="test-prompt-send">Send</button>
+                </div>
+              </div>
+              <div class="chat-log" id="chat-log"></div>
+              <div class="chat-input-row">
+                <textarea id="test-prompt-input" rows="2" placeholder="Type a message… (Shift+Enter for newline)" autocomplete="off"></textarea>
+                <button class="mini-button" type="button" id="test-prompt-send-bottom" title="Send message">▷</button>
+              </div>
+              <div class="test-prompt-meta" id="test-prompt-meta" hidden></div>
             </section>
           </section>
 
@@ -195,7 +284,7 @@
                 </label>
                 <div class="param-section-title">Runtime</div>
                 <div class="field-grid">
-                  <label class="field wide" title="Which backend starts this model. Only llama.cpp can be launched from here today; other detected runtimes are selectable but report a clear error until their launch support lands.">
+                  <label class="field wide" title="Which backend starts this model. llama.cpp runs natively; vLLM (WSL2) runs supported safetensors/NVFP4 profiles through the configured WSL environment.">
                     <span>Runtime</span>
                     <select id="param-runtime" name="runtime">
                       <option value="llama.cpp">llama.cpp</option>
@@ -208,6 +297,7 @@
                   <label class="field" title="The local web port used by llama.cpp. Change it if another app already uses the port.">
                     <span>Port</span>
                     <input id="param-port" name="port" type="number" min="1" max="65535" />
+                    <span class="port-status" id="param-port-status" aria-live="polite" title="Click to check now"></span>
                   </label>
                   <label class="field" title="Choose how the model should be accelerated. Auto follows the detected runtime; CPU disables GPU layers.">
                     <span>Acceleration</span>
@@ -302,7 +392,7 @@
                 <div class="param-section-title">Sampling</div>
                 <div class="sampling-suggest" title="Fill the sampling fields below from a task-tuned preset. These are starting points you can adjust.">
                   <select id="sampling-intent" aria-label="Sampling preset"></select>
-                  <button class="mini-button" type="button" id="sampling-suggest-button">Suggest sampling</button>
+                  <button class="mini-button" type="button" id="sampling-suggest-button">Edit sampling</button>
                 </div>
                 <div class="field-grid">
                   <label class="field" title="Controls how adventurous responses feel. Lower is steadier; higher is more varied.">
@@ -377,15 +467,24 @@
                   </div>
                   <small id="tps-detail">Waiting for model and hardware details.</small>
                 </div>
-                <div class="row-actions">
-                  <button class="mini-button" type="button" id="save-profile-button">Save Profile</button>
-                  <button class="mini-button" type="button" id="reset-params-button">Reset</button>
-                  <button class="mini-button" type="button" id="hf-info-button">HF info</button>
-                  <button class="mini-button" type="button" id="hf-update-button">HF update</button>
-                  <button class="mini-button" type="button" id="smart-fit-button" title="Auto-tune GPU layers, context, and KV cache to the best fit for your hardware.">Smart fit</button>
-                  <button class="mini-button" type="button" id="fit-button">Fit test</button>
-                  <button class="mini-button" type="button" id="benchmark-button">Benchmark</button>
-                  <button class="mini-button primary" type="button" id="prepare-selected-button">Prepare</button>
+                <div class="row-actions launch-actions">
+                  <button class="mini-button primary launch-primary" type="button" id="start-selected-button">
+                    <span aria-hidden="true">▷</span>
+                    Start server
+                  </button>
+                  <div class="launch-secondary">
+                    <button class="mini-button" type="button" id="prepare-selected-button">Prepare</button>
+                    <button class="mini-button danger launch-stop-button" type="button" id="stop-selected-button">Stop</button>
+                  </div>
+                  <div class="advanced-actions">
+                    <button class="mini-button" type="button" id="save-profile-button">Save Profile</button>
+                    <button class="mini-button" type="button" id="reset-params-button">Reset</button>
+                    <button class="mini-button" type="button" id="hf-info-button">HF info</button>
+                    <button class="mini-button" type="button" id="hf-update-button">HF update</button>
+                    <button class="mini-button" type="button" id="smart-fit-button" title="Auto-tune GPU layers, context, and KV cache to the best fit for your hardware.">Smart fit</button>
+                    <button class="mini-button" type="button" id="fit-button">Fit test</button>
+                    <button class="mini-button" type="button" id="benchmark-button">Benchmark</button>
+                  </div>
                 </div>
               </form>
             </section>
@@ -400,28 +499,31 @@
               <div class="model-info-box" id="model-info-box">Select a profile, then run HF info or Fit test.</div>
             </section>
 
+            <section class="panel" id="benchmark-history" style="display:none">
+              <div class="panel-heading compact">
+                <div>
+                  <h3>Benchmark History</h3>
+                  <p>Recent runs for comparison.</p>
+                </div>
+              </div>
+              <div id="benchmark-history-list" class="benchmark-history-list"></div>
+            </section>
+
             <section class="panel" id="servers">
               <div class="panel-heading compact">
                 <div>
                   <h3>Servers</h3>
                   <p>Tracked launches only.</p>
                 </div>
+                <div class="panel-heading-actions">
+                  <button class="mini-button" type="button" id="servers-purge-stopped" title="Remove stopped/crashed from history">Purge stopped</button>
+                  <button class="mini-button" type="button" id="servers-clear-history" title="Clear entire server history">Clear all</button>
+                </div>
               </div>
               <div class="server-box" id="server-box"></div>
             </section>
 
-            <section class="panel" id="test-prompt">
-              <div class="panel-heading compact">
-                <div>
-                  <h3>Test Prompt</h3>
-                  <p>Send a chat message to the selected running server.</p>
-                </div>
-                <button class="mini-button" type="button" id="test-prompt-send">Send</button>
-              </div>
-              <textarea id="test-prompt-input" rows="2" placeholder="Ask the running model something…" autocomplete="off"></textarea>
-              <div class="test-prompt-meta" id="test-prompt-meta" hidden></div>
-              <pre class="log-preview" id="test-prompt-output" hidden></pre>
-            </section>
+
 
             <section class="panel" id="logs">
               <div class="panel-heading compact">
@@ -434,16 +536,28 @@
               <pre class="log-preview" id="log-preview">No tracked server selected.</pre>
             </section>
 
-         <section class="panel" id="portability">
-               <div class="panel-heading">
-                 <div>
-                   <h3>Portability</h3>
-                   <p>Setup issues before public release.</p>
-                 </div>
-                 <button class="mini-button" type="button" id="open-logs-button">Open logs</button>
-               </div>
-               <div class="issue-list" id="issue-list"></div>
-             </section>
+            <section class="panel" id="portability">
+              <div class="panel-heading">
+                <div>
+                  <h3>Portability &amp; Paths</h3>
+                  <p>Make your setup reproducible across machines.</p>
+                </div>
+                <div class="panel-heading-actions">
+                  <button class="mini-button" type="button" id="portability-open-settings">Edit roots</button>
+                  <button class="mini-button" type="button" id="portability-rescan" title="Rebuild inventory and re-scan for issues">Rescan</button>
+                  <button class="mini-button" type="button" id="portability-export" title="Export portable snapshot of current roots and settings">Export config</button>
+                </div>
+              </div>
+              <div class="portability-summary" id="portability-summary">
+                <p class="portability-hint">Scan roots and runtime roots control what is discovered without hard-coded absolute user paths.</p>
+              </div>
+              <div class="issue-list" id="issue-list"></div>
+              <div class="portability-checklist">
+                <div class="check-item"><span class="ok-dot"></span> Models live under configured scan roots (no user-specific paths in manifests)</div>
+                <div class="check-item"><span class="ok-dot"></span> Runtimes found via PATH, runtime_dirs, or explicit llama-server path</div>
+                <div class="check-item"><span class="ok-dot"></span> No absolute home paths in .ps1 / .json launch scripts (legacy scanner)</div>
+              </div>
+            </section>
 
              <section class="panel" id="hf-tools">
                <div class="panel-heading">
@@ -471,6 +585,14 @@
                      <button class="mini-button primary" id="hf-install-button">Install CLI</button>
                    </div>
                  </div>
+
+                 <div class="hf-browser">
+                   <div class="hf-search">
+                     <input id="hf-search-input" type="text" placeholder="HF repo e.g. Qwen/Qwen2.5-7B-Instruct-GGUF" />
+                     <button class="mini-button" id="hf-search-btn">Fetch</button>
+                   </div>
+                   <div id="hf-browser-results" class="hf-browser-results"></div>
+                 </div>
                </div>
              </section>
            </section>
@@ -490,64 +612,91 @@
           <button class="mini-button" type="button" id="settings-close-button">Close</button>
         </div>
         <form class="settings-form" id="settings-form">
-          <label class="field wide" title="Folders to scan for GGUF models. Put one folder on each line.">
-            <span>Model folders</span>
-            <textarea id="settings-model-dirs" rows="4" spellcheck="false"></textarea>
-          </label>
-          <div class="row-actions">
-            <button class="mini-button" type="button" id="settings-use-scan-roots">Use detected model folders</button>
+          <div class="settings-group">
+            <h4 class="settings-group-title">Scan Paths</h4>
+            <p class="settings-group-help">Configure where models and runtimes are discovered. These are the primary levers for portability.</p>
+            <label class="field wide" title="Folders to scan for GGUF models. One absolute or portable path per line.">
+              <span>Model folders (scan roots)</span>
+              <textarea id="settings-model-dirs" rows="3" spellcheck="false"></textarea>
+            </label>
+            <div class="row-actions">
+              <button class="mini-button" type="button" id="settings-use-scan-roots">Use detected model folders</button>
+            </div>
+
+            <label class="field wide" title="Folders that contain llama.cpp (or other) binaries. One per line.">
+              <span>Runtime folders</span>
+              <textarea id="settings-runtime-dirs" rows="2" spellcheck="false"></textarea>
+            </label>
+            <div class="row-actions">
+              <button class="mini-button" type="button" id="settings-use-runtime-roots">Use detected runtime folders</button>
+            </div>
+
+            <div class="field-grid">
+              <label class="field" title="Direct override for the llama-server executable. Empty = auto discover.">
+                <span>llama-server path (override)</span>
+                <input id="settings-llama-server" type="text" autocomplete="off" placeholder="auto" />
+              </label>
+              <label class="field" title="Direct override for the fit tool.">
+                <span>llama-fit-params path (override)</span>
+                <input id="settings-llama-fit" type="text" autocomplete="off" placeholder="auto" />
+              </label>
+            </div>
           </div>
-          <label class="field wide" title="Folders that contain llama.cpp binaries. Put one folder on each line.">
-            <span>Runtime folders</span>
-            <textarea id="settings-runtime-dirs" rows="3" spellcheck="false"></textarea>
-          </label>
-          <div class="row-actions">
-            <button class="mini-button" type="button" id="settings-use-runtime-roots">Use detected runtime folders</button>
+
+          <div class="settings-group">
+            <h4 class="settings-group-title">Launch Defaults</h4>
+            <p class="settings-group-help">Defaults applied when preparing new launches or profiles.</p>
+            <div class="field-grid">
+              <label class="field" title="Default bind address. 127.0.0.1 for local only.">
+                <span>Default host</span>
+                <input id="settings-default-host" type="text" autocomplete="off" />
+              </label>
+              <label class="field" title="Default port for new servers.">
+                <span>Default port</span>
+                <input id="settings-default-port" type="number" min="1" max="65535" />
+              </label>
+              <label class="field" title="Primary backend used for new profiles and prepare commands.">
+                <span>Default backend</span>
+                <select id="settings-default-backend">
+                  <option value="llama.cpp">llama.cpp</option>
+                  <option value="ollama">Ollama</option>
+                  <option value="lm-studio">LM Studio</option>
+                  <option value="vllm">vLLM</option>
+                  <option value="mlx">MLX</option>
+                </select>
+              </label>
+              <label class="field" title="Extra flags appended to every llama.cpp command (advanced). One token per line.">
+                <span>Extra launch args</span>
+                <textarea id="settings-extra-args" rows="2" spellcheck="false"></textarea>
+              </label>
+            </div>
           </div>
-          <div class="field-grid">
-            <label class="field" title="Optional direct path to llama-server. Leave empty to auto-detect from PATH and runtime folders.">
-              <span>llama-server path</span>
-              <input id="settings-llama-server" type="text" autocomplete="off" />
+
+          <div class="settings-group">
+            <h4 class="settings-group-title">Tracking &amp; Updates</h4>
+            <div class="field-grid">
+              <label class="field" title="How many historical server records (including crashed/stopped) to retain.">
+                <span>Server history limit</span>
+                <input id="settings-server-history-limit" type="number" min="1" max="50" />
+              </label>
+              <label class="field" title="Stable vs pre-release channel when checking runtime updates.">
+                <span>Update channel</span>
+                <select id="settings-update-channel">
+                  <option value="stable">Stable</option>
+                  <option value="prerelease">Pre-release</option>
+                </select>
+              </label>
+            </div>
+            <label class="check-row">
+              <label><input id="settings-auto-scan" type="checkbox" /> Auto-register new models on startup</label>
             </label>
-            <label class="field" title="Optional direct path to llama-fit-params. Leave empty to auto-detect from PATH and runtime folders.">
-              <span>llama-fit-params path</span>
-              <input id="settings-llama-fit" type="text" autocomplete="off" />
-            </label>
-            <label class="field" title="Default host for new prepared commands.">
-              <span>Default host</span>
-              <input id="settings-default-host" type="text" autocomplete="off" />
-            </label>
-            <label class="field" title="Default port for new prepared commands.">
-              <span>Default port</span>
-              <input id="settings-default-port" type="number" min="1" max="65535" />
-            </label>
-            <label class="field" title="Default runtime family for future features. llama.cpp is used for local launches today.">
-              <span>Default backend</span>
-              <select id="settings-default-backend">
-                <option value="llama.cpp">llama.cpp</option>
-                <option value="ollama">Ollama</option>
-                <option value="lm-studio">LM Studio</option>
-                <option value="vllm">vLLM</option>
-                <option value="mlx">MLX</option>
-              </select>
-            </label>
-            <label class="field" title="Which upstream release channel to check for runtime updates. Stable checks the latest stable release; prerelease includes release candidates.">
-              <span>Update channel</span>
-              <select id="settings-update-channel">
-                <option value="stable">Stable</option>
-                <option value="prerelease">Pre-release</option>
-              </select>
-            </label>
-            <label class="field" title="Maximum number of tracked servers to keep in history. Older entries are pruned automatically.">
-              <span>Server history limit</span>
-              <input id="settings-server-history-limit" type="number" min="1" max="50" />
-            </label>
+            <div class="row-actions">
+              <button class="mini-button" type="button" id="settings-export-button" title="Export current model/runtime roots + key portable settings as JSON for use on another machine. No secrets included.">Export portable config</button>
+            </div>
           </div>
-          <label class="field wide" title="Extra llama.cpp arguments appended to every prepared launch. One argument per line.">
-            <span>Extra launch args</span>
-            <textarea id="settings-extra-args" rows="3" spellcheck="false"></textarea>
-          </label>
+
           <div class="row-actions modal-actions">
+            <button class="mini-button" type="button" id="settings-reset-defaults">Reset defaults</button>
             <button class="mini-button" type="button" id="settings-cancel-button">Cancel</button>
             <button class="mini-button primary" type="submit">Save settings</button>
           </div>
@@ -611,6 +760,19 @@
     </div>
 
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
-    <script src="/static/app.js" defer></script>
+
+    <!-- Minimal command palette (lightweight overlay, AC3). Triggered by keyboard. -->
+    <div class="modal-backdrop command-palette-backdrop" id="command-palette" hidden>
+      <div class="command-palette" role="dialog" aria-modal="true" aria-label="Command palette">
+        <div class="palette-head">
+          <span>Commands</span>
+          <input id="palette-filter" type="text" placeholder="Type to filter..." autocomplete="off" />
+        </div>
+        <ul class="palette-list" id="palette-list"></ul>
+        <div class="palette-hint">Esc to close · Enter to run · Ctrl+Shift+K to open</div>
+      </div>
+    </div>
+
+    <script src="/static/app.js?v=0.15.0" defer></script>
   </body>
 </html>

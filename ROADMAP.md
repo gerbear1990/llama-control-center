@@ -61,20 +61,32 @@ passes.
 The dashboard is strong pre-launch (discover → fit → estimate → prepare → start)
 but goes quiet once a server is running. These close that loop.
 
+> Detailed breakdown of remaining UI work (plus many other review items) lives in  
+> **[REVIEW_MILESTONES.md](./REVIEW_MILESTONES.md)** — see especially **M2: Running Server Observability**.
+
+_The backend for live metrics and the crash watchdog is shipped (`v0.13.1`):
+`GET /api/servers/{id}/metrics` polls `/metrics`/`/health`/`/props`, and
+`refresh_server_states` flags unexpectedly-dead tracked servers as `crashed`
+with a stderr snapshot. The UI panels that surface these are still pending._
+
 - ~~Test-prompt box against a running server~~ **Shipped in `v0.9.0`.** Test Prompt
   panel proxies to the running server's `/v1/chat/completions` and shows the reply
   plus measured tokens/sec.
 - Live server metrics from llama.cpp: poll the running server's `/metrics`
   (Prometheus), `/health`, and `/props` for real KV-cache usage, slots in use,
   prompt/decode tokens/sec, and context fill %. Turns the estimate into ground truth
-  and feeds the ongoing TPS calibration.
+  and feeds the ongoing TPS calibration. **Backend shipped `v0.13.1`; UI pending.**
 - Live process memory gauge: show the tracked PID's actual resident memory (and GPU
   memory via existing tooling) while it runs, to confirm the pre-launch fit estimate
-  and catch surprise OOMs.
+  and catch surprise OOMs. **Shipped (Unreleased).** `GET /api/servers/{id}/metrics`
+  now returns a `process` block with `rss_bytes` (psutil, portable) and `gpu_used_bytes`
+  (NVIDIA-only, via shared `nvidia-smi --query-compute-apps`).
 - Crash/exit watchdog: surface when a tracked server has died unexpectedly (badge it
   "crashed", show last log lines, offer restart) instead of showing stale running state.
+  **Detection shipped `v0.13.1`; UI surfacing pending.**
 - Log tail panel: capture detached server stdout/stderr to a file and tail it in the
-  UI, so debugging a bad launch doesn't mean leaving the app.
+  UI, so debugging a bad launch doesn't mean leaving the app. _(Server stdout/stderr
+  paths are already captured per tracked server; a dedicated tail panel is pending.)_
 
 ## Quant Selection
 
@@ -85,11 +97,14 @@ but goes quiet once a server is running. These close that loop.
 
 ## Smart Fit
 
-- Expand the KV-cache quant ladder beyond `f16 / q8_0 / q5_1 / q4_0`. The memory
-  estimator (`estimates.py`) already prices `q5_0`, `q4_1`, and `iq4_nl`, so adding
-  them as search rungs — for both K and V, which are now tuned independently —
-  would give the asymmetric search finer memory/quality landing spots. Low risk:
-  it is a search-space change only, with no estimator or API changes.
+- ~~Expand the KV-cache quant ladder beyond `f16 / q8_0 / q5_1 / q4_0`.~~ **Shipped
+  `v0.13.1`.** The memory estimator (`estimates.py`) already prices `q5_0`,
+  `q4_1`, and `iq4_nl`, so they're now search rungs — for both K and V, which are
+  tuned independently — giving the asymmetric search finer memory/quality landing
+  spots. The 4-bit float formats **NVFP4** and **MXFP4** are also priced (exact
+  llama.cpp block ratios) and added as rungs on NVIDIA CUDA GPUs that
+  hardware-accelerate them (Blackwell/Hopper/Ada/A100/L4-L40), preferred over
+  integer `q4_0` at the same byte rate.
 
 ## Runtime Management
 
@@ -102,10 +117,32 @@ but goes quiet once a server is running. These close that loop.
 - Continue iterating on spacing, alignment, and visual hierarchy as new
   panels are added.
 - Keep the style clean, modern, and utilitarian rather than decorative.
-- Keep the style clean, modern, and utilitarian rather than decorative.
 
 (Model Notes separation, the partial-state status tooltip, and the llama.cpp
 live host/port preview are all shipped — see Completed.)
+
+## Live Host Hardware
+
+The full SwarmUI hardware-monitoring pattern ported to Python: a live
+`nvidia-smi` poll for GPU utilization / temperature / VRAM, a system-RAM
+read, and a short rolling RAM window that lets the crash watchdog annotate
+freshly-crashed servers with an `oom_likely` flag when memory was already
+under pressure before the death.
+
+- ~~Live host hardware panel~~ **Shipped (Unreleased).** `GET /api/system/live`
+  returns `{system_ram:{total,used,free}, gpus:[{util, temp, total/free/used_vram}], source, cached_age_ms}`,
+  TTL-cached (2s) behind a lock + one-shot graceful disable (SwarmUI's
+  `NvidiaQueryRateLimitMS` + `HasNvidiaGPU` pattern). A matching `#live-hardware`
+  dashboard panel polls every 3s (paused when the tab is hidden or the panel is
+  collapsed) and renders GPU util/temp/VRAM bars + a system-RAM bar with
+  green/amber/red thresholds.
+- ~~Crash watchdog OOM hint~~ **Shipped (Unreleased).** `refresh_server_states()`
+  appends each refresh's RAM pressure to a 10-sample rolling window and
+  annotates freshly-crashed servers with `oom_likely: true` when the peak
+  exceeded 80% (mirrors SwarmUI's `NetworkBackendUtils` pre-crash
+  memory-overload heuristic).
+- Per-process memory gauge: **Shipped (Unreleased)** — see "Running Server
+  Tooling" above for the server_metrics endpoint details.
 
 ## Hugging Face Tooling
 

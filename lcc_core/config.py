@@ -22,11 +22,12 @@ class AppConfig:
     runtime_dirs: list[str] = field(default_factory=list)
     llama_server_path: str = ""
     llama_fit_params_path: str = ""
+    wsl_distro: str = "Ubuntu-24.04"
+    vllm_wsl_venv: str = "/opt/lcc-vllm"
     extra_llama_args: list[str] = field(default_factory=list)
     update_channel: str = "stable"
     profile_names: dict[str, str] = field(default_factory=dict)
     server_history_limit: int = 5
-    auto_generate_launch_scripts: bool = True
     auto_scan_on_startup: bool = True
 
     @classmethod

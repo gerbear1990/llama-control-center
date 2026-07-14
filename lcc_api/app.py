@@ -23,16 +23,13 @@ from lcc_core.hardware import detect_system_hardware
 from lcc_core.hf_cli import detect_hf_cli as hf_cli_detect, check_for_updates, install_hf_cli
 from lcc_core.draft_models import suggest_draft_models, pull_draft_model, download_model_file
 from lcc_core.inventory import build_inventory
-from lcc_core.launch_scripts import (
-    delete_launch_script,
-    generate_all_launch_scripts,
-    generate_launch_script,
-    launch_scripts_scan_summary,
-    list_launch_scripts,
+from lcc_core.profile_registry import (
+    register_discovered_models,
     startup_autoscan_if_enabled,
 )
 from lcc_core.profile_resolver import resolved_inventory, resolve_profiles
 from lcc_core.hf_metadata import fetch_model_info, check_model_update
+from lcc_core.manifest import ManifestReadError
 from lcc_core.runtime_updates import check_runtime_updates
 from lcc_core.sampling import list_sampling_intents, suggest_sampling
 from lcc_core.server_manager import list_servers, prepare_launch_command, start_profile, stop_server
@@ -41,7 +38,7 @@ from lcc_core.smart_tune import auto_tune_fit
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
-    """Regenerate launch scripts for any new models at server startup."""
+    """Register profiles for any new models at server startup."""
 
     try:
         startup_autoscan_if_enabled()
@@ -90,10 +87,11 @@ class ConfigRequest(BaseModel):
     runtime_dirs: list[str] = Field(default_factory=list)
     llama_server_path: str = ""
     llama_fit_params_path: str = ""
+    wsl_distro: str = "Ubuntu-24.04"
+    vllm_wsl_venv: str = "/opt/lcc-vllm"
     extra_llama_args: list[str] = Field(default_factory=list)
     update_channel: str = "stable"
     server_history_limit: int = 5
-    auto_generate_launch_scripts: bool = True
     auto_scan_on_startup: bool = True
 
 
@@ -149,15 +147,21 @@ def save_config(config: ConfigRequest) -> dict[str, Any]:
 @app.get("/api/inventory")
 def get_inventory() -> dict[str, Any]:
     config = AppConfig.load()
-    return build_inventory(model_dirs=[Path(path) for path in config.model_dirs] or None)
+    try:
+        return build_inventory(model_dirs=[Path(path) for path in config.model_dirs] or None)
+    except ManifestReadError as exc:
+        return {"error": "manifest_read_error", "message": str(exc), "profiles": [], "models": []}
 
 
 @app.post("/api/inventory")
 def post_inventory(request: InventoryRequest) -> dict[str, Any]:
-    return build_inventory(
-        project_root=request.project_root,
-        model_dirs=[Path(path) for path in request.model_dirs] or None,
-    )
+    try:
+        return build_inventory(
+            project_root=request.project_root,
+            model_dirs=[Path(path) for path in request.model_dirs] or None,
+        )
+    except ManifestReadError as exc:
+        return {"error": "manifest_read_error", "message": str(exc), "profiles": [], "models": []}
 
 
 @app.get("/api/runtime-updates")
@@ -187,7 +191,10 @@ def refresh_runtime_updates(runtime: str | None = None) -> dict[str, Any]:
 def get_profiles() -> dict[str, Any]:
     config = AppConfig.load()
     hardware = detect_system_hardware()
-    profiles = [profile.to_dict() for profile in resolve_profiles(model_dirs=[Path(path) for path in config.model_dirs] or None)]
+    try:
+        profiles = [profile.to_dict() for profile in resolve_profiles(model_dirs=[Path(path) for path in config.model_dirs] or None)]
+    except ManifestReadError as exc:
+        return {"profiles": [], "launchable_count": 0, "error": "manifest_read_error", "message": str(exc)}
     profiles = enrich_profiles_with_fit_status(profiles, hardware)
     for profile in profiles:
         mode = profile.get("mode")
@@ -202,6 +209,50 @@ def get_profiles() -> dict[str, Any]:
 @app.get("/api/system")
 def get_system() -> dict[str, Any]:
     return detect_system_hardware()
+
+
+@app.get("/api/system/live")
+def get_system_live() -> dict[str, Any]:
+    from lcc_core.hardware import live_system_status
+    return live_system_status()
+
+
+@app.get("/api/system/check-port")
+def check_port(port: int, host: str = "127.0.0.1") -> dict[str, Any]:
+    """Probe a TCP port from the dashboard so the user sees a live status dot
+    next to the Port field, instead of waiting for the next launch attempt
+    to fail. Returns ``port_in_use_reason`` ("reserved" vs "in_use") so the
+    UI can phrase the action button correctly — Windows machines with the
+    default netsh config exclude 8080/8081 from bind and need a port above
+    15200, not a kill-conflict suggestion.
+    """
+    from lcc_core.server_manager import (
+        _next_free_port,
+        _port_in_use_info,
+        _probe_port,
+    )
+
+    safe_host = host.strip() or "127.0.0.1"
+    safe_port = max(1, min(65535, int(port)))
+    probe = _probe_port(safe_host, safe_port)
+    payload: dict[str, Any] = {
+        "host": safe_host,
+        "port": safe_port,
+        "free": probe["free"],
+    }
+    if not probe["free"]:
+        reason = probe.get("reason", "in_use")
+        payload["port_in_use_reason"] = reason
+        if reason == "reserved":
+            payload["reserved_range"] = probe.get("range")
+            rng = probe.get("range") or {}
+            payload["suggested_port"] = _next_free_port(
+                safe_host, rng.get("end", safe_port) + 1,
+            )
+        else:
+            payload["port_holder"] = _port_in_use_info(safe_host, safe_port)
+            payload["suggested_port"] = _next_free_port(safe_host, safe_port + 1)
+    return payload
 
 
 @app.post("/api/profiles")
@@ -230,12 +281,31 @@ def prepare_server(request: StartRequest) -> dict[str, Any]:
 
 @app.get("/api/servers")
 def get_servers() -> dict[str, Any]:
-    from lcc_core.server_manager import prune_stale_servers, trim_server_history
+    from lcc_core.server_manager import refresh_server_states, trim_server_history
     from lcc_core.config import AppConfig
-    prune_stale_servers()
+    refresh_server_states()
     config = AppConfig.load()
     trim_server_history(config.server_history_limit)
     return {"servers": list_servers()}
+
+
+@app.get("/api/servers/{server_id}/metrics")
+def get_server_metrics(server_id: str) -> dict[str, Any]:
+    from lcc_core.server_metrics import fetch_server_metrics
+    result = fetch_server_metrics(server_id=server_id)
+    if not result.get("success"):
+        raise HTTPException(status_code=400, detail=result)
+    return result
+
+
+@app.get("/api/servers/{server_id}/logs")
+def get_server_logs(server_id: str, lines: int = 200) -> dict[str, Any]:
+    """Return tail of stdout/stderr logs for a tracked server."""
+    from lcc_core.server_manager import server_logs
+    result = server_logs(server_id=server_id, lines=lines)
+    if not result.get("success"):
+        raise HTTPException(status_code=400, detail=result)
+    return result
 
 
 @app.post("/api/servers/start")
@@ -273,7 +343,10 @@ def fit_profile(request: FitRequest) -> dict[str, Any]:
 def auto_tune_profile(request: EstimateRequest) -> dict[str, Any]:
     config = AppConfig.load()
     model_dirs = [Path(path) for path in request.model_dirs] or [Path(path) for path in config.model_dirs] or None
-    profiles = resolve_profiles(project_root=request.project_root, model_dirs=model_dirs)
+    try:
+        profiles = resolve_profiles(project_root=request.project_root, model_dirs=model_dirs)
+    except ManifestReadError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     profile = next((item for item in profiles if item.mode == request.mode), None)
     if not profile:
         raise HTTPException(status_code=400, detail=f"Unknown profile mode: {request.mode}")
@@ -296,7 +369,10 @@ def sampling_presets() -> dict[str, Any]:
 def estimate_tps(request: EstimateRequest) -> dict[str, Any]:
     config = AppConfig.load()
     model_dirs = [Path(path) for path in request.model_dirs] or [Path(path) for path in config.model_dirs] or None
-    profiles = resolve_profiles(project_root=request.project_root, model_dirs=model_dirs)
+    try:
+        profiles = resolve_profiles(project_root=request.project_root, model_dirs=model_dirs)
+    except ManifestReadError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     profile = next((item for item in profiles if item.mode == request.mode), None)
     if not profile:
         raise HTTPException(status_code=400, detail=f"Unknown profile mode: {request.mode}")
@@ -318,7 +394,10 @@ def estimate_tps(request: EstimateRequest) -> dict[str, Any]:
 def estimate_launch(request: EstimateRequest) -> dict[str, Any]:
     config = AppConfig.load()
     model_dirs = [Path(path) for path in request.model_dirs] or [Path(path) for path in config.model_dirs] or None
-    profiles = resolve_profiles(project_root=request.project_root, model_dirs=model_dirs)
+    try:
+        profiles = resolve_profiles(project_root=request.project_root, model_dirs=model_dirs)
+    except ManifestReadError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     profile = next((item for item in profiles if item.mode == request.mode), None)
     if not profile:
         raise HTTPException(status_code=400, detail=f"Unknown profile mode: {request.mode}")
@@ -363,9 +442,10 @@ def run_benchmark(request: BenchmarkRequest) -> dict[str, Any]:
 
 class TestPromptRequest(BaseModel):
     mode: str
-    prompt: str
+    prompt: str = ""
     max_tokens: int = 256
     temperature: float = 0.7
+    messages: list[dict] | None = None  # for multi-turn chat history
 
 
 @app.post("/api/servers/test-prompt")
@@ -375,6 +455,7 @@ def test_prompt(request: TestPromptRequest) -> dict[str, Any]:
         prompt=request.prompt,
         max_tokens=request.max_tokens,
         temperature=request.temperature,
+        messages=request.messages,
     )
     if not result.get("success"):
         raise HTTPException(status_code=400, detail=result)
@@ -485,19 +566,24 @@ def get_profile_names() -> dict[str, Any]:
 @app.post("/api/profiles/save")
 def save_profile(request: SaveProfileRequest) -> dict[str, Any]:
     from lcc_core.paths import find_project_root
+    from lcc_core.manifest import (
+        ManifestReadError,
+        load_manifest_safely,
+        write_manifest_atomic,
+    )
 
     root = find_project_root()
     if not root:
         return {"success": False, "message": "Could not find project root. Create a models.json file first."}
     manifest_path = root / "models.json"
-    if not manifest_path.is_file():
-        manifest = {"models": []}
-    else:
-        try:
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            manifest = {"models": []}
-    models = manifest.get("models", [])
+    # CRITICAL: never silently reset the manifest on a read failure. A
+    # transient parse error or antivirus lock would otherwise wipe every
+    # existing profile to a single empty list on the next save.
+    try:
+        manifest = load_manifest_safely(manifest_path)
+    except ManifestReadError as exc:
+        return {"success": False, "message": str(exc)}
+    models = manifest.setdefault("models", [])
     existing = next((m for m in models if m.get("mode") == request.mode), None)
     if existing is not None:
         existing["name"] = request.name
@@ -514,64 +600,81 @@ def save_profile(request: SaveProfileRequest) -> dict[str, Any]:
         message = f"Saved profile '{request.name}'."
 
     manifest["models"] = models
-    tmp_path = manifest_path.with_suffix(".json.tmp")
-    tmp_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
-    tmp_path.replace(manifest_path)
+    try:
+        write_manifest_atomic(manifest_path, manifest)
+    except OSError as exc:
+        return {"success": False, "message": f"Failed to write models.json: {exc}"}
     return {"success": True, "message": message}
 
 
-class GenerateLaunchScriptRequest(BaseModel):
+class DeleteProfileRequest(BaseModel):
     mode: str
-    model_path: str
-    params: dict[str, Any] = Field(default_factory=dict)
-    name: str | None = None
-    project_root: str | None = None
-    overwrite: bool = True
 
 
-@app.get("/api/launch-scripts")
-def get_launch_scripts() -> dict[str, Any]:
-    summary = launch_scripts_scan_summary()
-    summary["success"] = True
-    return summary
+@app.post("/api/profiles/delete")
+def delete_profile(request: DeleteProfileRequest) -> dict[str, Any]:
+    """Remove a profile entry from ``models.json``.
 
+    Uses the same atomic tmp+replace write as ``/api/profiles/save`` so a
+    partial write can't corrupt the manifest. Renamed profiles live in the
+    user config (``profile_names``); the user may rename or remove them
+    independently. Refuses to delete a profile whose tracked server is
+    still running so Stop always wins.
+    """
+    from lcc_core.paths import find_project_root
+    from lcc_core.server_manager import list_servers
+    from lcc_core.manifest import (
+        ManifestReadError,
+        load_manifest_safely,
+        write_manifest_atomic,
+    )
 
-@app.post("/api/launch-scripts/generate")
-def generate_single_launch_script(request: GenerateLaunchScriptRequest) -> dict[str, Any]:
-    if not request.mode or not request.model_path:
-        raise HTTPException(status_code=400, detail="mode and model_path are required.")
+    root = find_project_root()
+    if not root:
+        return {"success": False, "message": "Could not find project root."}
+    manifest_path = root / "models.json"
+    if not manifest_path.is_file():
+        return {"success": False, "message": f"Unknown profile mode: {request.mode}"}
+
+    # Refuse if a tracked server is still running for this profile so the user
+    # can't accidentally lose the connection mid-generation.
+    for server in list_servers():
+        if server.get("mode") == request.mode and server.get("running"):
+            return {
+                "success": False,
+                "message": f"Profile '{request.mode}' has a tracked server running. Stop it before deleting.",
+            }
+
     try:
-        payload = generate_launch_script(
-            mode=request.mode,
-            model_path=request.model_path,
-            params=request.params,
-            project_root=request.project_root,
-            name=request.name,
-            overwrite=request.overwrite,
-        )
+        manifest = load_manifest_safely(manifest_path)
+    except ManifestReadError as exc:
+        return {"success": False, "message": str(exc)}
+
+    models = manifest.get("models", [])
+    kept = [m for m in models if m.get("mode") != request.mode]
+    if len(kept) == len(models):
+        return {"success": False, "message": f"Unknown profile mode: {request.mode}"}
+
+    manifest["models"] = kept
+    try:
+        write_manifest_atomic(manifest_path, manifest)
     except OSError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    payload["success"] = True
-    return payload
+        return {"success": False, "message": f"Failed to write models.json: {exc}"}
+
+    # Also drop any custom name the user assigned for this mode.
+    config = AppConfig.load()
+    if request.mode in config.profile_names:
+        config.profile_names.pop(request.mode, None)
+        config.save()
+
+    return {"success": True, "message": f"Deleted profile '{request.mode}'.", "mode": request.mode}
 
 
-@app.post("/api/launch-scripts/scan")
-def scan_launch_scripts() -> dict[str, Any]:
-    """Trigger a fresh scan/regeneration of all launch scripts."""
+@app.post("/api/profiles/scan")
+def scan_profiles() -> dict[str, Any]:
+    """Register any newly discovered models as launchable profiles."""
 
-    result = generate_all_launch_scripts()
+    result = register_discovered_models()
     payload = result.to_dict()
     payload["success"] = True
     return payload
-
-
-class LaunchScriptActionRequest(BaseModel):
-    mode: str
-
-
-@app.post("/api/launch-scripts/delete")
-def delete_launch_script_endpoint(request: LaunchScriptActionRequest) -> dict[str, Any]:
-    if not request.mode:
-        raise HTTPException(status_code=400, detail="mode is required.")
-    removed = delete_launch_script(request.mode)
-    return {"success": True, "removed": removed, "mode": request.mode}

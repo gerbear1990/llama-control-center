@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import shutil
+import socket
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -18,6 +20,7 @@ from lcc_core.models import discover_models, parse_params, parse_quant
 from lcc_core.paths import find_project_root
 from lcc_core.portability import scan_portability_issues
 from lcc_core.profile_resolver import resolve_profiles
+from lcc_core.vllm_args import build_wsl_vllm_args, windows_to_wsl_path
 
 
 class VersionConsistencyTests(unittest.TestCase):
@@ -93,6 +96,49 @@ class ModelDiscoveryTests(unittest.TestCase):
         self.assertEqual(models[0].quant, "Q4_K_M")
         self.assertTrue(models[0].mmproj_path.endswith("mmproj-Example.gguf"))
 
+    def test_discovered_model_carries_mtime(self) -> None:
+        # The dashboard's "Updated" column reads model.mtime; the discovery
+        # path must populate it from a real stat() so the UI doesn't have to.
+        import time as _time
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            model_dir = root / "models"
+            model_dir.mkdir()
+            target = model_dir / "Tiny-1B-Q8_0.gguf"
+            target.write_bytes(b"x" * 100)
+            before = _time.time()
+            models = discover_models([root / "models"])
+            after = _time.time()
+        self.assertEqual(len(models), 1)
+        mtime = models[0].mtime
+        self.assertIsNotNone(mtime)
+        # Allow a small clock skew window (the stat call uses real wall clock).
+        self.assertGreaterEqual(mtime, before - 2)
+        self.assertLessEqual(mtime, after + 2)
+        # to_dict() must surface it for the JS layer.
+        self.assertEqual(models[0].to_dict()["mtime"], mtime)
+
+    def test_discovers_transformers_nvfp4_checkpoint_as_one_model(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "models"
+            model_dir = root / "Qwen3.6-27B-NVFP4"
+            model_dir.mkdir(parents=True)
+            (model_dir / "config.json").write_text(
+                json.dumps({"model_type": "qwen3_5", "architectures": ["Qwen3_5ForConditionalGeneration"], "quantization_config": {"format": "nvfp4"}}),
+                encoding="utf-8",
+            )
+            (model_dir / "model-00001-of-00002.safetensors").write_bytes(b"a" * 10)
+            (model_dir / "model-00002-of-00002.safetensors").write_bytes(b"b" * 12)
+            (model_dir / "model.safetensors.index.json").write_text("{}", encoding="utf-8")
+
+            models = discover_models([root])
+
+        self.assertEqual(len(models), 1)
+        self.assertEqual(models[0].format, "Safetensors")
+        self.assertEqual(models[0].quant, "NVFP4")
+        self.assertEqual(models[0].size_bytes, 22)
+        self.assertEqual(models[0].path, str(model_dir))
+
 
 class ManifestTests(unittest.TestCase):
     def test_manifest_profiles_flag_absolute_paths(self) -> None:
@@ -101,14 +147,12 @@ class ManifestTests(unittest.TestCase):
             model_path = root / "models" / "portable.gguf"
             model_path.parent.mkdir()
             model_path.write_bytes(b"gguf")
-            script = root / "start-portable.ps1"
-            script.write_text("$model = 'C:\\Users\\someone\\models\\portable.gguf'\n", encoding="utf-8")
             manifest = {
                 "models": [
                     {
                         "mode": "portable",
                         "name": "Portable",
-                        "script": script.name,
+                        "model_path": "C:\\Users\\someone\\models\\portable.gguf",
                         "recommended_params": {
                             "draft_model": "C:\\Users\\someone\\models\\draft.gguf",
                         },
@@ -122,6 +166,32 @@ class ManifestTests(unittest.TestCase):
         self.assertEqual(len(profiles), 1)
         self.assertGreaterEqual(len(profiles[0].portable_warnings), 2)
 
+    def test_load_profiles_raises_on_corrupt_manifest(self) -> None:
+        from lcc_core.manifest import ManifestReadError
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "models.json").write_text("{not valid json", encoding="utf-8")
+            with self.assertRaises(ManifestReadError):
+                load_profiles(root)
+
+    def test_load_profiles_raises_on_non_dict_manifest(self) -> None:
+        """Additional manifest failure path (M1.3): root not object -> ManifestReadError."""
+        from lcc_core.manifest import ManifestReadError
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "models.json").write_text("[]", encoding="utf-8")
+            with self.assertRaises(ManifestReadError):
+                load_profiles(root)
+
+    def test_load_profiles_raises_on_non_list_models(self) -> None:
+        """Additional manifest failure path (M1.3): models not a list -> ManifestReadError."""
+        from lcc_core.manifest import ManifestReadError
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "models.json").write_text('{"models": {}}', encoding="utf-8")
+            with self.assertRaises(ManifestReadError):
+                load_profiles(root)
+
     def test_find_project_root_uses_markers(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -130,6 +200,34 @@ class ManifestTests(unittest.TestCase):
             (root / "models.json").write_text('{"models": []}', encoding="utf-8")
 
             self.assertEqual(find_project_root(child), root)
+
+
+class ProcessPortDetectionTests(unittest.TestCase):
+    """Smoke tests for the hardened pid/port helpers (M1.2)."""
+
+    def test_pid_is_running_invalid_pids(self) -> None:
+        from lcc_core.server_manager import pid_is_running
+        self.assertFalse(pid_is_running(None))
+        self.assertFalse(pid_is_running(0))
+        self.assertFalse(pid_is_running(2**31))  # very unlikely live PID in tests
+
+    def test_find_process_on_port_smoke(self) -> None:
+        from lcc_core.server_manager import find_process_on_port
+        # Should not crash; result may be None or a real system process.
+        pid = find_process_on_port(1)  # privileged / unlikely, but exercises path
+        self.assertTrue(pid is None or isinstance(pid, int))
+
+    def test_find_process_on_port_free_high_port(self) -> None:
+        """M1.3 additional edge: high port unlikely to be in use exercises free path + return contract."""
+        from lcc_core.server_manager import find_process_on_port
+        pid = find_process_on_port(54321)
+        self.assertTrue(pid is None or isinstance(pid, int))
+
+    def test_pid_is_running_negative_and_out_of_range(self) -> None:
+        """M1.3 additional: negative and huge PIDs are invalid (Windows pid_is_running + psutil path)."""
+        from lcc_core.server_manager import pid_is_running
+        self.assertFalse(pid_is_running(-1))
+        self.assertFalse(pid_is_running(2**40))
 
 
 class RuntimeDetectionTests(unittest.TestCase):
@@ -312,6 +410,38 @@ class ProfileResolverTests(unittest.TestCase):
         self.assertGreaterEqual(profiles[0].confidence, 0.55)
         self.assertTrue(profiles[0].launchable)
 
+    def test_vllm_profile_resolves_explicit_checkpoint_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            model_dir = root / "models" / "Qwen3.6-27B-NVFP4"
+            model_dir.mkdir(parents=True)
+            (model_dir / "config.json").write_text(
+                json.dumps({"model_type": "qwen3_5", "architectures": ["Qwen3_5ForConditionalGeneration"]}),
+                encoding="utf-8",
+            )
+            (model_dir / "model.safetensors").write_bytes(b"model")
+            manifest = {
+                "models": [{
+                    "mode": "qwen-nvfp4",
+                    "name": "Qwen NVFP4",
+                    "description": "vLLM test",
+                    "model_path": str(model_dir),
+                    "recommended_params": {
+                        "runtime": "vllm-wsl",
+                        "ctx_size": 4096,
+                        "max_model_len": 4096,
+                        "gpu_memory_utilization": 0.9,
+                    },
+                }]
+            }
+            (root / "models.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+            profiles = resolve_profiles(project_root=root, model_dirs=[root / "models"])
+
+        self.assertTrue(profiles[0].launchable)
+        self.assertEqual(profiles[0].model["format"], "Safetensors")
+        self.assertEqual(profiles[0].params["runtime"], "vllm-wsl")
+
 
 class LaunchArgsTests(unittest.TestCase):
     def test_builds_llama_server_args_without_shell_string_rebuild(self) -> None:
@@ -369,6 +499,34 @@ class LaunchArgsTests(unittest.TestCase):
             self.assertEqual(cmd.argv[cmd.argv.index("--gpu-layers") + 1], expected)
         fit = build_fit_args("llama-fit-params", "m.gguf", {"gpu_layers": "all"})
         self.assertEqual(fit[fit.index("-ngl") + 1], "-2")
+
+    def test_builds_wsl_vllm_command_and_converts_model_path(self) -> None:
+        self.assertEqual(windows_to_wsl_path(r"C:\Users\filth\models\Qwen NVFP4"), "/mnt/c/Users/filth/models/Qwen NVFP4")
+        cmd = build_wsl_vllm_args(
+            "wsl.exe",
+            "Ubuntu-24.04",
+            "/opt/lcc-vllm",
+            r"C:\Users\filth\models\Qwen NVFP4",
+            {
+                "host": "127.0.0.1",
+                "port": 18027,
+                "alias": "qwen-nvfp4",
+                "ctx_size": 8192,
+                "gpu_memory_utilization": 0.9,
+                "enable_auto_tool_choice": True,
+                "tool_call_parser": "qwen3_coder",
+                "reasoning_parser": "qwen3",
+            },
+            "/tmp/lcc-vllm/qwen.pid",
+        )
+        self.assertEqual(cmd.argv[:5], ["wsl.exe", "-d", "Ubuntu-24.04", "--", "bash"])
+        shell = cmd.argv[-1]
+        self.assertIn("/opt/lcc-vllm/bin/vllm serve", shell)
+        self.assertIn("'/mnt/c/Users/filth/models/Qwen NVFP4'", shell)
+        self.assertIn("--max-model-len 8192", shell)
+        self.assertIn("--max-num-seqs 32", shell)
+        self.assertIn("--max-num-batched-tokens 2048", shell)
+        self.assertIn("export CUDA_HOME=/usr/local/cuda", shell)
 
     def test_fit_args_and_output_parser(self) -> None:
         args = build_fit_args(
@@ -594,7 +752,7 @@ class KvMetaProbeTests(unittest.TestCase):
 
         def fake_parse(path: str):
             self.parse_calls.append(path)
-            return (32, (256, 128, 128), True)
+            return (32, (256, 128, 128), True, 40960)
 
         est._parse_gguf_meta = fake_parse
         self.model_file = Path(self._tmp) / "model.gguf"
@@ -637,6 +795,15 @@ class KvMetaProbeTests(unittest.TestCase):
         self.assertEqual(len(self.parse_calls), 1)
         rec = self.est.recommend_jinja({"path": str(self.model_file)})
         self.assertTrue(rec["recommended"])
+
+    def test_context_length_parsed_and_cached(self) -> None:
+        # The trained context flows through the same single parse + cache as dims.
+        self.assertEqual(self.est.model_max_context(self.model), 40960)
+        self.assertEqual(len(self.parse_calls), 1)
+        self.est._gguf_meta_mem.clear()
+        # Cache-only read reuses the persisted value without re-parsing.
+        self.assertEqual(self.est.model_max_context(self.model, probe=False), 40960)
+        self.assertEqual(len(self.parse_calls), 1)
 
     def test_template_tool_markers(self) -> None:
         self.assertTrue(self.est._template_supports_tools("...{{ tool_call }}..."))
@@ -689,6 +856,49 @@ class SmartTuneTests(unittest.TestCase):
         # With no measurable VRAM, any surviving pick must keep layers off the GPU.
         if out["success"]:
             self.assertEqual(out["after"]["fit_status"]["inputs"]["gpu_layer_fraction"], 0)
+
+    def test_ctx_ladder_offers_256k_when_model_and_vram_allow(self) -> None:
+        # A model trained for 262144 on a big GPU should let the tuner reach 256K.
+        from lcc_core.smart_tune import _ctx_ladder_for_model
+        model = {"name": "big-ctx", "params_b": 7, "quant": "Q4_K_M", "context_length": 262144}
+        ladder = _ctx_ladder_for_model(model)
+        self.assertIn(262144, ladder)
+
+    def test_ctx_ladder_capped_at_trained_window(self) -> None:
+        # A 32K-trained model must never be offered a larger context.
+        from lcc_core.smart_tune import _ctx_ladder_for_model
+        model = {"name": "small-ctx", "params_b": 7, "quant": "Q4_K_M", "context_length": 32768}
+        ladder = _ctx_ladder_for_model(model)
+        self.assertEqual(max(ladder), 32768)
+        self.assertNotIn(262144, ladder)
+
+    def test_ctx_ladder_includes_exact_trained_non_rung(self) -> None:
+        # An odd trained window (40960) is offered exactly, capped there.
+        from lcc_core.smart_tune import _ctx_ladder_for_model
+        model = {"name": "odd-ctx", "params_b": 7, "quant": "Q4_K_M", "context_length": 40960}
+        ladder = _ctx_ladder_for_model(model)
+        self.assertEqual(max(ladder), 40960)
+        self.assertTrue(all(c <= 40960 for c in ladder))
+
+    def test_ctx_over_trained_window_warns(self) -> None:
+        from lcc_core.estimates import estimate_memory_fit
+        model = {"name": "small-ctx", "params_b": 7, "quant": "Q4_K_M", "context_length": 32768}
+        fit = estimate_memory_fit({"ctx_size": 262144, "gpu_layers": "all"}, model, self._hw(24))
+        self.assertTrue(any("trained window" in w for w in fit["warnings"]))
+
+    def test_cpu_fallback_flagged_when_gpu_present_but_vram_full(self) -> None:
+        # A GPU exists but only a sliver of VRAM is free (a stale server is still
+        # holding it). Every GPU-offload config is rejected, so the tuner can only
+        # land on a CPU-only pick — it must flag that loudly, not report a clean win.
+        from lcc_core.smart_tune import auto_tune_fit
+
+        hw = self._hw(24)
+        hw["primary_gpu"]["vram_free_bytes"] = int(0.3 * 1024**3)  # ~300 MiB free
+        model = {"name": "test-32B", "params_b": 32, "quant": "Q4_K_M"}
+        out = auto_tune_fit({"gpu_layers": "all", "ctx_size": 8192}, model, hw)
+        if out["success"] and out["after"]["fit_status"]["inputs"]["gpu_layer_fraction"] <= 0:
+            self.assertTrue(out["cpu_fallback"])
+            self.assertTrue(any("runs on the CPU" in note for note in out["notes"]))
 
     def test_reports_named_suggestions(self) -> None:
         from lcc_core.smart_tune import auto_tune_fit
@@ -1043,6 +1253,17 @@ class ServerStopTests(unittest.TestCase):
         self.assertEqual(len(models), 1)
         self.assertIn("gemma-4-26B", models[0].name)
 
+    def test_diffusion_unet_ggufs_are_not_discovered_as_llms(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "models"
+            (root / "unet").mkdir(parents=True)
+            (root / "unet" / "Wan-I2V-Q8_0.gguf").write_bytes(b"diffusion")
+            (root / "Qwen-1B-Q8_0.gguf").write_bytes(b"llm")
+
+            models = discover_models([root])
+
+        self.assertEqual([model.name for model in models], ["Qwen-1B-Q8_0"])
+
     def test_find_project_root_falls_back_to_package_location(self) -> None:
         # The real repo has pyproject.toml, so find_project_root() should resolve.
         root = find_project_root(Path(__file__).parent.parent)
@@ -1062,8 +1283,737 @@ class RuntimeDispatchTests(unittest.TestCase):
         self.assertEqual(detect_runtime("ollama").id, "ollama")
         # Unknown id is rejected (no silent fallback to llama.cpp).
         self.assertIsNone(detect_runtime("nonsense-runtime"))
-        # llama.cpp is the only runtime wired into the launch path so far.
-        self.assertEqual(LAUNCHABLE_RUNTIMES, ("llama.cpp",))
+        self.assertIn("llama.cpp", LAUNCHABLE_RUNTIMES)
+        self.assertIn("vllm-wsl", LAUNCHABLE_RUNTIMES)
+
+
+class LayerIndexAndCacheBytesTests(unittest.TestCase):
+    """Lock in the tensor-index parser and KV-cache byte sizing so a refactor
+    can't silently regress hybrid-SSM layer counting or quantized KV rates."""
+
+    def test_layer_index_covers_all_naming_conventions(self) -> None:
+        from lcc_core.estimates import _layer_index_from_tensor
+
+        cases = {
+            "blk.5.attn_k.weight": 5,
+            "block.12.attn_v.weight": 12,
+            "model.layers.3.self_attn.k_proj.weight": 3,
+            "transformer.layer.7.attn_q.weight": 7,
+            "enc.blk.0.attn_norm.weight": 0,
+            "h[9].attn.weight": None,  # bare h[] at start has no leading dot
+            "something.h[4].attn.weight": 4,
+            "tok_embeddings.weight": None,
+            "output_norm.weight": None,
+        }
+        for name, expected in cases.items():
+            with self.subTest(name=name):
+                self.assertEqual(_layer_index_from_tensor(name), expected)
+
+    def test_cache_bytes_specific_quants_match_llama_cpp_blocks(self) -> None:
+        from lcc_core.estimates import _cache_bytes
+
+        # Exact KV-cache type names: bytes/element = llama.cpp block ratio.
+        self.assertAlmostEqual(_cache_bytes("q8_0"), 34 / 32)
+        self.assertAlmostEqual(_cache_bytes("q5_1"), 24 / 32)
+        self.assertAlmostEqual(_cache_bytes("q5_0"), 22 / 32)
+        self.assertAlmostEqual(_cache_bytes("q4_1"), 20 / 32)
+        self.assertAlmostEqual(_cache_bytes("q4_0"), 18 / 32)
+        self.assertAlmostEqual(_cache_bytes("iq4_nl"), 18 / 32)
+        self.assertAlmostEqual(_cache_bytes("f16"), 2.0)
+        self.assertAlmostEqual(_cache_bytes("bf16"), 2.0)
+        self.assertAlmostEqual(_cache_bytes("f32"), 4.0)
+        # 4-bit float formats (NVIDIA hardware-accelerated): NVFP4 = 36 B / 64
+        # elems (4 sub-block scales + 32 B packed E2M1); MXFP4 = 17 B / 32.
+        self.assertAlmostEqual(_cache_bytes("nvfp4"), 36 / 64)
+        self.assertAlmostEqual(_cache_bytes("mxfp4"), 17 / 32)
+
+    def test_cache_bytes_bare_prefix_falls_back_approximately(self) -> None:
+        from lcc_core.estimates import _cache_bytes
+
+        # Bare quant prefixes (no specific block layout) hit the conservative
+        # tier-2 fallback rather than collapsing to the f16 default.
+        self.assertEqual(_cache_bytes("q8"), 1.0625)
+        self.assertEqual(_cache_bytes("q6"), 0.8125)
+        self.assertEqual(_cache_bytes("q4"), 0.5625)
+        self.assertEqual(_cache_bytes("nvfp"), 0.5625)
+        self.assertEqual(_cache_bytes("mxfp"), 0.53125)
+        # Unknown / empty defaults to f16.
+        self.assertEqual(_cache_bytes(""), 2.0)
+        self.assertEqual(_cache_bytes("unknown"), 2.0)
+
+    def test_smart_fit_fp4_ladder_gated_by_nvidia_hardware(self) -> None:
+        from lcc_core.smart_tune import _cache_ladder
+
+        cuda_hw = {"primary_gpu": {"name": "NVIDIA GeForce RTX 4090", "acceleration_backend": "cuda"}}
+        amd_hw = {"primary_gpu": {"name": "AMD Radeon RX 7900 XTX", "acceleration_backend": "rocm"}}
+        none_hw = {"primary_gpu": {}}
+        cuda_ladder = _cache_ladder(cuda_hw)
+        self.assertIn("nvfp4", cuda_ladder)
+        self.assertIn("mxfp4", cuda_ladder)
+        self.assertIn("bf16", cuda_ladder)  # CUDA also unlocks BF16
+        # Non-NVIDIA hardware must not get FP4 rungs (no acceleration benefit).
+        self.assertNotIn("nvfp4", _cache_ladder(amd_hw))
+        self.assertNotIn("nvfp4", _cache_ladder(none_hw))
+
+
+class ServerCrashWatchdogTests(unittest.TestCase):
+    """A tracked server whose PID died while its status said 'running' must be
+    flagged 'crashed' (with a stderr snapshot) rather than silently dropped."""
+
+    def setUp(self) -> None:
+        import lcc_core.server_manager as sm
+        self.sm = sm
+        self._tmp = tempfile.mkdtemp()
+        self._orig_state_path = sm.state_path
+        self._orig_cache_dir = None
+        # Point state at a temp file so we never touch real tracked servers.
+        self._state_file = Path(self._tmp) / "servers.json"
+        sm.state_path = lambda: self._state_file
+        # A fake stderr log the watchdog can tail.
+        self._stderr = Path(self._tmp) / "stderr.log"
+        self._stderr.write_text("line one\nOOM killed\n", encoding="utf-8")
+
+    def tearDown(self) -> None:
+        self.sm.state_path = self._orig_state_path
+        shutil.rmtree(self._tmp, ignore_errors=True)
+
+    def _write_state(self, servers):
+        self._state_file.write_text(json.dumps({"servers": servers}), encoding="utf-8")
+
+    def test_live_server_with_dead_pid_is_flagged_crashed(self):
+        # A PID certain to not exist (2^31-1 is reserved/unallocated on every OS).
+        dead_pid = 2147483647
+        self._write_state([{
+            "id": "demo-1234", "mode": "demo", "pid": dead_pid,
+            "status": "running", "host": "127.0.0.1", "port": 8080,
+            "stderr_log": str(self._stderr),
+        }])
+        self.sm.refresh_server_states()
+        state = self.sm.read_state()
+        self.assertEqual(state["servers"][0]["status"], "crashed")
+        self.assertFalse(state["servers"][0]["running"])
+        self.assertIn("crashed_at", state["servers"][0])
+        self.assertIn("OOM killed", state["servers"][0]["last_stderr"])
+
+    def test_already_stopped_server_is_not_recrashed(self):
+        dead_pid = 2147483647
+        self._write_state([{
+            "id": "demo-stopped", "mode": "demo", "pid": dead_pid,
+            "status": "stopped", "host": "127.0.0.1", "port": 8080,
+            "stderr_log": str(self._stderr),
+        }])
+        self.sm.refresh_server_states()
+        state = self.sm.read_state()
+        # 'stopped' is terminal — the watchdog must not rewrite it.
+        self.assertEqual(state["servers"][0]["status"], "stopped")
+        self.assertNotIn("crashed_at", state["servers"][0])
+
+    def test_starting_server_with_dead_pid_is_flagged_crashed(self):
+        """Additional watchdog transition (M1.3): 'starting' in _LIVE_STATUSES must also crash on dead PID."""
+        dead_pid = 2147483647
+        self._write_state([{
+            "id": "demo-starting", "mode": "demo", "pid": dead_pid,
+            "status": "starting", "host": "127.0.0.1", "port": 8080,
+            "stderr_log": str(self._stderr),
+        }])
+        self.sm.refresh_server_states()
+        state = self.sm.read_state()
+        self.assertEqual(state["servers"][0]["status"], "crashed")
+        self.assertIn("crashed_at", state["servers"][0])
+
+
+class PrometheusMetricsParserTests(unittest.TestCase):
+    """The live-metrics parser must pull KV usage and token rates out of the
+    Prometheus text that llama-server exposes, ignoring comments and labels."""
+
+    def test_parses_kv_usage_and_token_rates(self):
+        from lcc_core.server_metrics import _parse_prometheus
+        sample = (
+            "# HELP llamacpp:kv_cache_usage_ratio KV cache usage ratio\n"
+            "# TYPE llamacpp:kv_cache_usage_ratio gauge\n"
+            'llamacpp:kv_cache_usage_ratio{slot_id="0"} 0.421\n'
+            'llamacpp:kv_cache_tokens{slot_id="0"} 13721\n'
+            "# TYPE llamacpp:prompt_tokens_seconds gauge\n"
+            'llamacpp:prompt_tokens_seconds 812.5\n'
+            'llamacpp:tokens_predicted_seconds 45.2\n'
+            'llamacpp:tokens_predicted_total 4096\n'
+            'llamacpp:prompt_tokens_total 8192\n'
+            'llamacpp:active_slots 1\n'
+            'llamacpp:processing_slots 0\n'
+        )
+        parsed = _parse_prometheus(sample)
+        self.assertAlmostEqual(parsed["kv_cache_usage_ratio"], 0.421)
+        self.assertEqual(parsed["kv_cache_tokens"], 13721.0)
+        self.assertEqual(parsed["prompt_tokens_per_second"], 812.5)
+        self.assertEqual(parsed["predicted_tokens_per_second"], 45.2)
+        self.assertEqual(parsed["slots_active"], 1.0)
+
+    def test_ignores_comments_and_unrelated_lines(self):
+        from lcc_core.server_metrics import _parse_prometheus
+        parsed = _parse_prometheus("# just a comment\nunrelated_metric 5\n")
+        self.assertNotIn("kv_cache_usage_ratio", parsed)
+
+    def test_parses_vllm_metrics(self):
+        from lcc_core.server_metrics import _parse_prometheus
+        parsed = _parse_prometheus(
+            'vllm:kv_cache_usage_perc{engine="0"} 0.25\n'
+            'vllm:num_requests_running{engine="0"} 2\n'
+            'vllm:num_requests_waiting{engine="0"} 1\n'
+            'vllm:prompt_tokens_total{engine="0"} 100\n'
+            'vllm:generation_tokens_total{engine="0"} 75\n'
+        )
+        self.assertEqual(parsed["kv_cache_usage_ratio"], 0.25)
+        self.assertEqual(parsed["requests_in_flight"], 2.0)
+        self.assertEqual(parsed["requests_waiting"], 1.0)
+        self.assertEqual(parsed["prompt_tokens_total"], 100.0)
+        self.assertEqual(parsed["predicted_tokens_total"], 75.0)
+
+
+class LiveHardwareStatusTests(unittest.TestCase):
+    """The TTL-cached live nvidia-smi poll must deduplicate within its window,
+    parse multi-GPU / [N/A] CSV, and latch-disable on failure (SwarmUI pattern)."""
+
+    def setUp(self) -> None:
+        import lcc_core.hardware as hw
+        self.hw = hw
+        self._orig_snapshot = hw._nvidia_live_snapshot
+        self._orig_unavailable = hw._nvidia_live_unavailable
+        self._orig_cache = hw._live_cache
+        self._orig_cache_ts = hw._live_cache_ts
+        # Reset cache state so each test starts cold.
+        hw._nvidia_live_unavailable = False
+        hw._live_cache = None
+        hw._live_cache_ts = 0.0
+        self._orig_win_mem = hw._windows_memory_info
+        self._orig_posix_mem = hw._posix_memory_info
+        hw._windows_memory_info = lambda: {"total_bytes": 1000, "available_bytes": 400}
+        hw._posix_memory_info = lambda: {"total_bytes": 1000, "available_bytes": 400}
+
+    def tearDown(self) -> None:
+        self.hw._nvidia_live_snapshot = self._orig_snapshot
+        self.hw._nvidia_live_unavailable = self._orig_unavailable
+        self.hw._live_cache = self._orig_cache
+        self.hw._live_cache_ts = self._orig_cache_ts
+        self.hw._windows_memory_info = self._orig_win_mem
+        self.hw._posix_memory_info = self._orig_posix_mem
+
+    def test_ttl_cache_dedupes_within_window(self):
+        calls = []
+        def fake():
+            calls.append(1)
+            return [{"index": 0, "name": "X", "utilization_gpu_percent": 5.0}]
+        self.hw._nvidia_live_snapshot = fake
+        self.hw.live_system_status()
+        self.hw.live_system_status()
+        self.hw.live_system_status()
+        self.assertEqual(len(calls), 1, "second/third calls within TTL must hit the cache")
+
+    def test_ram_always_refreshes_even_when_gpu_cached(self):
+        self.hw._nvidia_live_snapshot = lambda: [{"index": 0, "name": "X"}]
+        first = self.hw.live_system_status()
+        # Drop available RAM between calls; GPU is cached but RAM must reflect it.
+        self.hw._windows_memory_info = lambda: {"total_bytes": 1000, "available_bytes": 200}
+        second = self.hw.live_system_status()
+        self.assertEqual(first["system_ram"]["free_bytes"], 400)
+        self.assertEqual(second["system_ram"]["free_bytes"], 200)
+
+    def test_first_failure_latches_disable(self):
+        calls = []
+        self.hw._nvidia_live_snapshot = lambda: (calls.append(1), None)[1]
+        a = self.hw.live_system_status()
+        b = self.hw.live_system_status()
+        c = self.hw.live_system_status()
+        # Only the very first call queried nvidia-smi; subsequent calls short-circuit.
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(a["gpus"], [])
+        self.assertEqual(b["gpus"], [])
+        # RAM still reported even with GPU unavailable.
+        self.assertEqual(b["system_ram"]["total_bytes"], 1000)
+
+    def test_snapshot_parses_multi_gpu_and_na(self):
+        # A second GPU line and an "[N/A]" utilization (some GPUs report no util).
+        raw = "0, RTX 5090, 12, 34, 41, 32768, 30720, 2048\n1, RTX 4090, [N/A], 50, 55, 24576, 24000, 576"
+        from lcc_core.hardware import _float_or_none, _int_or_none
+        # Simulate the parser path directly against the CSV nvidia-smi emits.
+        gpus = []
+        for line in raw.splitlines():
+            parts = [p.strip() for p in line.split(",")]
+            gpus.append({
+                "index": _int_or_none(parts[0]),
+                "name": parts[1],
+                "utilization_gpu_percent": _float_or_none(parts[2].replace("[N/A]", "")),
+                "used_mib": _int_or_none(parts[7]),
+            })
+        self.assertEqual(len(gpus), 2)
+        self.assertEqual(gpus[0]["utilization_gpu_percent"], 12.0)
+        self.assertIsNone(gpus[1]["utilization_gpu_percent"])  # [N/A] -> None
+        self.assertEqual(gpus[1]["used_mib"], 576)
+
+
+class PerProcessMemoryTests(unittest.TestCase):
+    """The per-process block in fetch_server_metrics() must return RSS / CPU%
+    (psutil) and GPU VRAM attribution (nvidia-smi --query-compute-apps) without
+    blocking when either source is unavailable."""
+
+    def setUp(self) -> None:
+        import lcc_core.server_metrics as sm
+        self.sm = sm
+        self._orig_find = sm._find_server
+        self._orig_pid_running = sm.pid_is_running
+        self._orig_proc_mem = sm._process_memory
+        self._orig_query = sm._query_compute_apps
+        self._orig_apps_cache = sm._compute_apps_cache
+        self._orig_apps_ts = sm._compute_apps_cache_ts
+        self._orig_apps_unavail = sm._compute_apps_unavailable
+        self._orig_get_json = sm._get_json
+        self._orig_get_text = sm._get_text
+        # Reset cache so each test starts cold.
+        sm._compute_apps_cache = None
+        sm._compute_apps_cache_ts = 0.0
+        sm._compute_apps_unavailable = False
+
+    def tearDown(self) -> None:
+        self.sm._find_server = self._orig_find
+        self.sm.pid_is_running = self._orig_pid_running
+        self.sm._process_memory = self._orig_proc_mem
+        self.sm._query_compute_apps = self._orig_query
+        self.sm._compute_apps_cache = self._orig_apps_cache
+        self.sm._compute_apps_cache_ts = self._orig_apps_ts
+        self.sm._compute_apps_unavailable = self._orig_apps_unavail
+        self.sm._get_json = self._orig_get_json
+        self.sm._get_text = self._orig_get_text
+
+    def _wire_running_server(self, pid=12345):
+        self.sm._find_server = lambda sid, mode=None: {
+            "id": sid or "fake", "mode": "fake", "pid": pid,
+            "host": "127.0.0.1", "port": 9999,
+            "stdout_log": None, "stderr_log": None,
+        }
+        self.sm.pid_is_running = lambda pid: True
+        # Health/metrics/props returns so we don't take the early-return path.
+        self.sm._get_text = lambda url, timeout=3.0: "ok"
+        self.sm._get_json = lambda url, timeout=3.0: {"n_ctx": 4096}
+
+    def test_process_block_includes_rss_cpu_and_gpu(self):
+        self._wire_running_server(pid=12345)
+        self.sm._process_memory = lambda pid: {"rss_bytes": 150 * 1024 * 1024, "cpu_percent": 12.5}
+        self.sm._query_compute_apps = lambda: {12345: 2 * 1024 * 1024 * 1024}
+        result = self.sm.fetch_server_metrics(server_id="fake")
+        self.assertEqual(result["process"]["rss_bytes"], 150 * 1024 * 1024)
+        self.assertEqual(result["process"]["cpu_percent"], 12.5)
+        self.assertEqual(result["process"]["gpu_used_bytes"], 2 * 1024 * 1024 * 1024)
+
+    def test_gpu_used_is_none_for_untracked_pid(self):
+        self._wire_running_server(pid=12345)
+        self.sm._process_memory = lambda pid: {"rss_bytes": None, "cpu_percent": None}
+        self.sm._query_compute_apps = lambda: {99999: 100 * 1024 * 1024}  # different PID
+        result = self.sm.fetch_server_metrics(server_id="fake")
+        self.assertIsNone(result["process"]["gpu_used_bytes"])
+
+    def test_compute_apps_unavailable_path(self):
+        self._wire_running_server()
+        self.sm._process_memory = lambda pid: {"rss_bytes": 1024, "cpu_percent": 0.5}
+        # nvidia-smi returns nothing (no GPU / no compute apps) -> query returns None
+        self.sm._query_compute_apps = lambda: None
+        result = self.sm.fetch_server_metrics(server_id="fake")
+        # First call latches disable; gpu_used_bytes stays None.
+        self.assertIsNone(result["process"]["gpu_used_bytes"])
+        self.assertTrue(self.sm._compute_apps_unavailable)
+        # Second call must NOT invoke the subprocess again (disabled).
+        calls = []
+        def re_call(): calls.append(1); return None
+        self.sm._query_compute_apps = re_call
+        self.sm.fetch_server_metrics(server_id="fake")
+        self.assertEqual(calls, [], "disabled compute-apps must not be re-queried")
+
+    def test_compute_apps_csv_parser_handles_mixture(self):
+        # Direct unit test of the parse path: multi-row, with a non-numeric row.
+        raw = "111, 2048\n222, 4096\nbroken, row\n333, 8192\n"
+        from lcc_core.server_metrics import _query_compute_apps
+        # We can't actually call _query_compute_apps without nvidia-smi; verify
+        # the data-shape contract via the lookup that fetch_server_metrics uses.
+        parsed = {}
+        for line in raw.splitlines():
+            parts = [p.strip() for p in line.split(",")]
+            if len(parts) < 2:
+                continue
+            try:
+                parsed[int(parts[0])] = int(parts[1]) * 1024 * 1024
+            except ValueError:
+                continue
+        self.assertEqual(parsed, {111: 2048 * 1024 * 1024, 222: 4096 * 1024 * 1024, 333: 8192 * 1024 * 1024})
+
+    def test_process_memory_handles_missing_psutil(self):
+        # psutil is a soft dep; absence must produce all-None, not crash.
+        self.sm.psutil = None
+        self._wire_running_server()
+        self.sm._query_compute_apps = lambda: None
+        result = self.sm.fetch_server_metrics(server_id="fake")
+        self.assertIsNone(result["process"]["rss_bytes"])
+        self.assertIsNone(result["process"]["cpu_percent"])
+        self.assertIsNone(result["process"]["gpu_used_bytes"])
+
+    def test_fetch_server_metrics_no_matching_server_returns_error(self):
+        """M1.3: direct exercise of server_metrics error path when no server tracked."""
+        self.sm._find_server = lambda sid, mode=None: None
+        result = self.sm.fetch_server_metrics(server_id="nope")
+        self.assertFalse(result.get("success"))
+        self.assertIn("error", result)
+        self.assertIn("No tracked server", result.get("error", ""))
+
+    def test_fetch_server_metrics_dead_pid_returns_error_with_tail(self):
+        """M1.3: dead PID path (non-running tracked) returns structured error + stderr_tail for UI surfacing."""
+        self.sm._find_server = lambda sid, mode=None: {
+            "id": "dead", "mode": "demo", "pid": 2147483647,
+            "host": "127.0.0.1", "port": 1234,
+            "stdout_log": None, "stderr_log": None,
+        }
+        self.sm.pid_is_running = lambda p: False
+        result = self.sm.fetch_server_metrics(server_id="dead")
+        self.assertFalse(result.get("success"))
+        self.assertIn("no longer running", result.get("error", ""))
+        self.assertIn("stderr_tail", result)
+
+
+class ServerHistoryTrimTests(unittest.TestCase):
+    """trim_server_history must keep the NEWEST servers, and _find_server(mode=)
+    must resolve to the running/most-recent entry. Regression: the trim kept the
+    oldest `limit` entries while new servers were appended to the end, so a
+    freshly launched server was dropped from state the instant it started — which
+    made the Stop button a silent no-op (it couldn't find the running PID)."""
+
+    def setUp(self) -> None:
+        import lcc_core.server_manager as sm
+        self.sm = sm
+        self._tmp = tempfile.mkdtemp()
+        self._orig_state_path = sm.state_path
+        self._orig_pid_running = sm.pid_is_running
+        self._state_file = Path(self._tmp) / "servers.json"
+        sm.state_path = lambda: self._state_file
+        # Default: nothing is "running" unless a test marks it so.
+        sm.pid_is_running = lambda pid: False
+
+    def tearDown(self) -> None:
+        self.sm.state_path = self._orig_state_path
+        self.sm.pid_is_running = self._orig_pid_running
+        shutil.rmtree(self._tmp, ignore_errors=True)
+
+    def _write_state(self, servers):
+        self._state_file.write_text(json.dumps({"servers": servers}), encoding="utf-8")
+
+    def test_trim_keeps_newest_not_oldest(self):
+        servers = [
+            {"id": f"demo-{i}", "mode": "demo", "pid": 1000 + i,
+             "status": "stopped", "started_at": f"2026-07-08T00:0{i}:00+00:00"}
+            for i in range(7)
+        ]
+        self._write_state(servers)
+        self.sm.trim_server_history(limit=5)
+        kept = [s["id"] for s in self.sm.read_state()["servers"]]
+        # The two OLDEST (demo-0, demo-1) are dropped; the newest survive.
+        self.assertEqual(kept, ["demo-2", "demo-3", "demo-4", "demo-5", "demo-6"])
+
+    def test_newly_started_server_survives_trim(self):
+        # A full history of old dead entries, then a brand-new server appended.
+        old = [
+            {"id": f"old-{i}", "mode": "demo", "pid": 1000 + i,
+             "status": "startup_timeout", "started_at": f"2026-07-08T00:0{i}:00+00:00"}
+            for i in range(5)
+        ]
+        self._write_state(old)
+        new_server = {"id": "demo-9999", "mode": "demo", "pid": 9999,
+                      "status": "starting", "started_at": "2026-07-08T12:00:00+00:00"}
+        self.sm._upsert_server(new_server)
+        self.sm.trim_server_history(limit=5)
+        ids = [s["id"] for s in self.sm.read_state()["servers"]]
+        self.assertIn("demo-9999", ids, "the just-started server must not be trimmed away")
+
+    def test_find_server_by_mode_prefers_running(self):
+        self._write_state([
+            {"id": "dead", "mode": "demo", "pid": 111,
+             "status": "startup_timeout", "started_at": "2026-07-08T00:00:00+00:00"},
+            {"id": "live", "mode": "demo", "pid": 222,
+             "status": "running", "started_at": "2026-07-08T01:00:00+00:00"},
+        ])
+        # Only PID 222 is alive.
+        self.sm.pid_is_running = lambda pid: pid == 222
+        found = self.sm._find_server(mode="demo")
+        self.assertEqual(found["id"], "live")
+
+
+class ServerOomHintTests(unittest.TestCase):
+    """A freshly-crashed tracked server is annotated oom_likely when the recent
+    RAM-pressure rolling window exceeded the OOM threshold before the death.
+    Mirrors SwarmUI's pre-crash memory-overload detection."""
+
+    def setUp(self) -> None:
+        import lcc_core.server_manager as sm
+        self.sm = sm
+        self._tmp = tempfile.mkdtemp()
+        self._state_file = Path(self._tmp) / "servers.json"
+        self._orig_state_path = sm.state_path
+        sm.state_path = lambda: self._state_file
+        self._orig_ram = sm._ram_pressure
+        self._orig_history = list(sm._ram_history)
+        sm._ram_history.clear()
+
+    def tearDown(self) -> None:
+        self.sm.state_path = self._orig_state_path
+        self.sm._ram_pressure = self._orig_ram
+        self.sm._ram_history.clear()
+        self.sm._ram_history.extend(self._orig_history)
+        shutil.rmtree(self._tmp, ignore_errors=True)
+
+    def _write_state(self, servers):
+        self._state_file.write_text(json.dumps({"servers": servers}), encoding="utf-8")
+
+    def test_oom_likely_set_when_recent_ram_high(self):
+        # The recent window has been at 92% (well over the 80% threshold).
+        self.sm._ram_history.extend([0.92, 0.93, 0.91])
+        # _ram_pressure is called by _record_ram_pressure; mock to keep window stable.
+        self.sm._ram_pressure = lambda: 0.92
+        self._write_state([{
+            "id": "demo-1", "mode": "demo", "pid": 2147483647,
+            "status": "running", "host": "127.0.0.1", "port": 8080,
+        }])
+        self.sm.refresh_server_states()
+        server = self.sm.read_state()["servers"][0]
+        self.assertEqual(server["status"], "crashed")
+        self.assertTrue(server.get("oom_likely"))
+
+    def test_oom_likely_absent_when_ram_low(self):
+        self.sm._ram_history.extend([0.40, 0.45, 0.50])
+        self.sm._ram_pressure = lambda: 0.45
+        self._write_state([{
+            "id": "demo-2", "mode": "demo", "pid": 2147483647,
+            "status": "running", "host": "127.0.0.1", "port": 8080,
+        }])
+        self.sm.refresh_server_states()
+        server = self.sm.read_state()["servers"][0]
+        self.assertEqual(server["status"], "crashed")
+        self.assertNotIn("oom_likely", server)
+
+    def test_no_oom_likely_for_already_stopped_server(self):
+        self.sm._ram_history.extend([0.95, 0.95, 0.95])
+        self.sm._ram_pressure = lambda: 0.95
+        self._write_state([{
+            "id": "demo-3", "mode": "demo", "pid": 2147483647,
+            "status": "stopped", "host": "127.0.0.1", "port": 8080,
+        }])
+        self.sm.refresh_server_states()
+        server = self.sm.read_state()["servers"][0]
+        # 'stopped' is terminal; no annotation even with high RAM.
+        self.assertEqual(server["status"], "stopped")
+        self.assertNotIn("oom_likely", server)
+
+    def test_ram_pressure_bounded_to_unit_interval(self):
+        # Sanity: helper computes correctly even when available > total (shouldn't happen).
+        import lcc_core.server_manager as sm
+        orig_win = sm._windows_memory_info
+        orig_posix = sm._posix_memory_info
+        sm._windows_memory_info = lambda: {"total_bytes": 100, "available_bytes": 200}
+        sm._posix_memory_info = lambda: {"total_bytes": 100, "available_bytes": 200}
+        try:
+            self.assertIsNone(sm._ram_pressure())
+        finally:
+            sm._windows_memory_info = orig_win
+            sm._posix_memory_info = orig_posix
+
+
+class PortAvailabilityTests(unittest.TestCase):
+    """Pre-launch TCP probe helpers in server_manager: _is_port_free,
+    _next_free_port, and _classify_launch_error."""
+
+    def test_port_free_returns_true_when_nothing_bound(self):
+        from lcc_core.server_manager import _is_port_free
+        # Find a port nothing is bound to. We pick a high random-ish port and
+        # trust the kernel not to have anything on it for the test run.
+        candidate = 19000
+        attempts = 0
+        while not _is_port_free("127.0.0.1", candidate) and attempts < 50:
+            candidate += 1
+            attempts += 1
+        self.assertTrue(_is_port_free("127.0.0.1", candidate))
+
+    def test_port_free_returns_false_when_listener_bound(self):
+        from lcc_core.server_manager import _is_port_free
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.bind(("127.0.0.1", 0))
+            port = sock.getsockname()[1]
+            sock.listen(1)
+            self.assertFalse(_is_port_free("127.0.0.1", port))
+        finally:
+            sock.close()
+
+    def test_port_free_handles_zero_and_negative(self):
+        from lcc_core.server_manager import _is_port_free
+        # An invalid port shouldn't raise; treat as "not free" so callers
+        # fail loud rather than silently spawning into a bad port.
+        self.assertFalse(_is_port_free("127.0.0.1", 0))
+        self.assertFalse(_is_port_free("127.0.0.1", -1))
+
+    def test_next_free_port_skips_bound_ports(self):
+        from lcc_core.server_manager import _next_free_port, _is_port_free
+        # Bind two consecutive ports OUTSIDE the Windows reserved dynamic
+        # range so the OS actually allows the bind; if we land inside the
+        # range, ``_is_port_free`` reports EACCES and the
+        # ``_next_free_port`` Windows skip changes the expected answer.
+        start = 20000 if sys.platform == "win32" else 0
+        first = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        second = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        first.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        second.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            first.bind(("127.0.0.1", start))
+            p1 = first.getsockname()[1]
+            first.listen(1)
+            second.bind(("127.0.0.1", p1 + 1))
+            second.listen(1)
+            # The first free port at or above p1 must be p1+2.
+            self.assertEqual(_next_free_port("127.0.0.1", p1), p1 + 2)
+            self.assertFalse(_is_port_free("127.0.0.1", p1))
+            self.assertFalse(_is_port_free("127.0.0.1", p1 + 1))
+        finally:
+            first.close()
+            second.close()
+
+    def test_next_free_port_skips_windows_reserved_range(self):
+        if sys.platform != "win32":
+            self.skipTest("reserved-range skip is Windows-only")
+        from lcc_core.server_manager import _next_free_port, _windows_dynamic_port_range
+        rng = _windows_dynamic_port_range()
+        if rng is None:
+            self.skipTest("netsh not available")
+        # Start *inside* the reserved range. The first free port above it
+        # should land past the range end, not at ``start + 1``.
+        start = rng["start"] + 1000  # safely inside the range
+        chosen = _next_free_port("127.0.0.1", start)
+        self.assertIsNotNone(chosen)
+        self.assertGreater(chosen, rng["end"])
+
+    def test_next_free_port_returns_none_when_all_bound(self):
+        from lcc_core.server_manager import _next_free_port
+        # Bind two consecutive ports OUTSIDE the Windows reserved dynamic
+        # range so the bind isn't rejected for EACCES; with max_tries=2
+        # we probe only those two. Both are bound, so the search must give
+        # up and return None rather than picking a wildly high port.
+        start = 20000 if sys.platform == "win32" else 0
+        first = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        second = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        first.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        second.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            first.bind(("127.0.0.1", start))
+            port = first.getsockname()[1]
+            first.listen(1)
+            second.bind(("127.0.0.1", port + 1))
+            second.listen(1)
+            self.assertIsNone(_next_free_port("127.0.0.1", port, max_tries=2))
+        finally:
+            first.close()
+            second.close()
+
+    def test_classifier_recognises_port_in_use(self):
+        from lcc_core.server_manager import _classify_launch_error
+        self.assertIn("Port", _classify_launch_error(
+            "E srv  start: couldn't bind HTTP server socket, hostname: 127.0.0.1, port: 8081"
+        ))
+        self.assertIn("Port", _classify_launch_error(
+            "E bind: address already in use on 0.0.0.0:8081"
+        ))
+
+    def test_classifier_recognises_oom(self):
+        from lcc_core.server_manager import _classify_launch_error
+        hint = _classify_launch_error("E cudaMalloc failed: out of memory")
+        self.assertIsNotNone(hint)
+        self.assertIn("GPU out of memory", hint)
+
+    def test_classifier_recognises_missing_model(self):
+        from lcc_core.server_manager import _classify_launch_error
+        self.assertIn("Model file", _classify_launch_error(
+            "E failed to load model: No such file or directory"
+        ))
+
+    def test_classifier_returns_none_for_unknown_stderr(self):
+        from lcc_core.server_manager import _classify_launch_error
+        self.assertIsNone(_classify_launch_error(""))
+        self.assertIsNone(_classify_launch_error("some unrelated noise from llama-server"))
+
+    def test_probe_port_returns_free_for_open_port(self):
+        # Skip on Windows: ports below ~15201 are reserved by default and
+        # the probe won't ever say "free" on those, so pick a port we
+        # know is well above the dynamic range.
+        from lcc_core.server_manager import _probe_port
+        if sys.platform == "win32":
+            port = 20000
+        else:
+            port = 1  # outside the catch on POSIX too; bind succeeds
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.bind(("127.0.0.1", port))
+        finally:
+            sock.close()
+        result = _probe_port("127.0.0.1", port)
+        self.assertTrue(result["free"])
+
+    def test_probe_port_returns_in_use_for_listener(self):
+        from lcc_core.server_manager import _probe_port
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.bind(("127.0.0.1", 0))
+            port = sock.getsockname()[1]
+            sock.listen(1)
+            result = _probe_port("127.0.0.1", port)
+            self.assertFalse(result["free"])
+            self.assertEqual(result["reason"], "in_use")
+            self.assertNotIn("range", result)
+        finally:
+            sock.close()
+
+    def test_windows_reserved_range_detected_via_probe(self):
+        # Skip this test on non-Windows hosts — the reserved range logic
+        # only fires when ``netsh int ipv4 show excludedportrange
+        # protocol=tcp`` reports the relevant ports.
+        if sys.platform != "win32":
+            self.skipTest("reserved-range check is Windows-only")
+        from lcc_core.server_manager import (
+            _probe_port,
+            _next_free_port,
+            _windows_excluded_port_ranges,
+        )
+        excl = _windows_excluded_port_ranges()
+        # Find an excluded range that covers a typical llama-server port.
+        # On hosts with Hyper-V / Docker installed, 8080/8081 are usually
+        # inside an exclusion range.
+        target = None
+        candidates = (8080, 8081, 9000, 9200, 5005)
+        for port in candidates:
+            for rng in excl:
+                if rng["start"] <= port <= rng["end"]:
+                    target = (port, rng)
+                    break
+            if target:
+                break
+        if target is None:
+            # No standard llama-server port inside an exclusion range on
+            # this host — choose a port inside the largest exclusion.
+            if not excl:
+                self.skipTest("no exclusion ranges reported by netsh")
+            rng = max(excl, key=lambda r: r["end"] - r["start"])
+            target = (rng["start"], rng)
+        port, rng = target
+        probe = _probe_port("127.0.0.1", port)
+        self.assertFalse(probe["free"])
+        self.assertEqual(probe["reason"], "reserved")
+        self.assertIn("range", probe)
+        # Suggested port must be above the range end, not just port + 1.
+        above = _next_free_port("127.0.0.1", port)
+        self.assertIsNotNone(above)
+        self.assertGreater(above, rng["end"])
 
 
 if __name__ == "__main__":

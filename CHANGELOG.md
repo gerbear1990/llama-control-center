@@ -7,7 +7,107 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.13.0] - 2026-07-02
+### Removed
+- **Launch-script generation.** LCC no longer writes `.ps1`/`.sh` launch
+  scripts; the web UI has always started servers by building the
+  `llama-server` command directly. `models.json` entries now pin an explicit
+  `model_path` instead of referencing a script (existing manifests were
+  migrated in-repo). The `/api/launch-scripts*` endpoints and the
+  "Auto-generate launch scripts" setting are gone; profile auto-registration
+  moved to `lcc_core/profile_registry.py` and `POST /api/profiles/scan`.
+- **Portable CLI.** `python -m lcc_core` (inventory/profiles/prepare/servers/
+  stop/logs) and PORTABLE_CORE.md are removed; the web UI and HTTP API are
+  the supported interfaces.
+
+### Fixed
+- Server-metrics formatter test now decodes node output as UTF-8 explicitly,
+  so the suite passes on machines whose locale encoding is not UTF-8.
+
+## [0.15.0] - 2026-07-10
+
+### Added
+- **Portable config export (from feature suggestions).** "Export portable config" button in Settings dialog and Portability panel. Uses pure `buildPortableExportSnapshot(config, inventory)` (shipped, testable via vm extraction) to produce a v1 JSON snapshot of model/runtime dirs + key portable settings (no secrets). Copies to clipboard with toast; surfaced for discoverability. ([lcc_api/static/app.js](lcc_api/static/app.js), [lcc_api/static/index.html](lcc_api/static/index.html))
+- **Keyboard command support + minimal palette (from feature suggestions).** Ctrl+Shift+K opens a lightweight command palette. Registry + `getCommands`/`executeCommand` drive real handlers for focus-search, open-settings, refresh (plus existing Ctrl+K). Arrow nav, filter, Escape supported. Pure registry exposed for tests. ([lcc_api/static/app.js](lcc_api/static/app.js), [lcc_api/static/index.html](lcc_api/static/index.html), [lcc_api/static/styles.css](lcc_api/static/styles.css))
+- **Light animations throughout the UI.** Panel minimize/expand (with opacity + grid height), nav link "bounce" transitions to target panels, settings modal open (scale + fade) and close, Parameters section (estimate cards, applied fields flash), live hardware (bars, sparklines), chat messages pop-in, card hovers (lift/shadow on servers, models, metrics), button presses, nav hovers, etc. Plus sidebar label fades on collapse.
+- **Chat moved to main content panel** with its own navbar link. Now a full multi-turn chat experience (history preserved per mode, proper bubbles).
+- **Servers nav link now targets the main Active Servers panel** (instead of the mini inspector version).
+- **Portability & Paths panel fixes:** proper padding so buttons no longer clip, can now be minimized/expanded.
+- **Improved Needs Setup tooltip:** now has descriptive help text explaining what counts and how to fix (instead of literal placeholder).
+- **Settings dialog animations:** smooth open/close with scale/fade instead of instant appear.
+- **Animations for Parameters:** updating estimates flash, applied field highlights, smooth transitions on fields/sections.
+
+### Fixed
+- **Settings menu padding/spacing.** Scoped rules in `.settings-form *` now guarantee >=8px separation (form padding 16px, group padding 14px + 12px inter-group mt, title mb 8px, help mb 12px, field/row gap 8px, check-row, modal-actions). Removed 4px abutments and inline tight margins. No elements overlap or touch directly. ([lcc_api/static/styles.css](lcc_api/static/styles.css), [lcc_api/static/index.html](lcc_api/static/index.html))
+- **Live Hardware stuck on "Waiting for first sample…"** Fixed variable reference bug from history refactoring, improved empty state logic for RAM-only cases, forced first sample fetch, better sparklines (separate util/vram history, fill under line, dots).
+- **Portability & Paths** now properly minimizable with padding fixes for buttons.
+
+### Fixed / Hardened (M1 Reliability)
+
+- **All manifest reads now go through `load_manifest_safely`.**
+  `load_profiles()` (used by inventory, profile resolution, CLI, launch scripts,
+  estimates, prepare, and autoscan) now uses the safe loader. On corrupt or
+  unreadable `models.json`, callers receive a `ManifestReadError` (or a clear
+  error payload) instead of an empty list that could lead to destructive
+  overwrites on subsequent saves. API, CLI, server_manager, and launch_scripts
+  paths now handle the error explicitly. ([lcc_core/manifest.py](lcc_core/manifest.py),
+  [lcc_api/app.py](lcc_api/app.py), [lcc_core/cli.py](lcc_core/cli.py),
+  [lcc_core/launch_scripts.py](lcc_core/launch_scripts.py),
+  [lcc_core/server_manager.py](lcc_core/server_manager.py))
+
+- **Windows process & port detection centralized and hardened.**
+  `pid_is_running` and `find_process_on_port` (plus `_port_in_use_info`) now
+  prefer `psutil` (already a dependency) for reliable PID existence and TCP
+  listener lookup — no locale-dependent netstat/tasklist text scraping in the
+  happy path. Improved fallback parsers (CSV-aware tasklist, less brittle
+  netstat matching, host/wildcard handling). Launchers (`start-lcc.py`) now
+  delegate to the shared robust helpers. ([lcc_core/server_manager.py](lcc_core/server_manager.py),
+  [start-lcc.py](start-lcc.py))
+
+- Raw `load_manifest` retained only for legacy/internal use with a warning comment.
+
+### Added / M1.3 Reliability + M2 Observability (initial surfacing)
+
+- Expanded reliability tests (M1.3): 8+ new direct tests in `test_lcc_core.py` + `test_lcc_api.py` for manifest read failures (non-dict, non-list models), crash watchdog transitions (starting->crashed), `server_metrics` under missing psutil/nvidia + dead-pid/no-server paths, additional port/Windows pid edge cases. All drive the real functions; full `unittest discover -s tests -q` passes (148 tests in this run, including new pure formatter test + positive /logs success case).
+- Fixed P1 gap: `GET /api/servers/{server_id}/logs` route now exists in `lcc_api/app.py` (delegates to `server_manager.server_logs`). UI `loadLogs` and docs in PORTABLE_CORE.md now functional. Error + positive shapes tested.
+- Running server observability basics: refresh now enriches running/crashed servers with `/metrics`; `renderServers` + CSS show KV usage, tokens/sec, slots, RSS + GPU VRAM, crashed/oom badges, last stderr snippet, and a working Restart button (reuses start flow by mode). Stop/Logs preserved.
+- Launch gating and observability success now in committed tests per strategy restructure (tests/test_launch_smoke.py for Uvicorn + /servers on real state, run twice; extended metrics success stub in test_lcc_api). Evidence via in-repo capture script (exact "Ran N tests" output) + filtered delta. Full discover passes (151 in capture run with new tests).
+
+## [0.14.0] - 2026-07-08
+
+### Fixed
+
+- **Stop button was a silent no-op once the server history filled up.**
+  `trim_server_history()` kept the *oldest* `limit` entries (`servers[:limit]`)
+  while `_upsert_server()` appends new servers to the end, so every freshly
+  launched server was trimmed out of tracked state the instant it started. The
+  running process was then invisible to `_find_server()`, and Stop reported
+  success while killing nothing. Trim now keeps the newest entries
+  (`servers[-limit:]`), and `_find_server(mode=)` prefers a running match (then
+  the most recent) so Stop targets the live process instead of a stale entry.
+  ([server_manager.py](lcc_core/server_manager.py))
+- **Smart Fit could silently recommend a CPU-only config.** When a GPU is
+  present but free VRAM is low (e.g. a server is still holding it), every
+  GPU-offload candidate is rejected and the only survivor is `gpu_layers=0`.
+  `auto_tune_fit()` returned that as a clean success, so a tuned launch could
+  land on the CPU with no warning. It now sets a `cpu_fallback` flag and prepends
+  a loud note telling the user to free VRAM (usually: stop the server still
+  holding it) and re-run Smart Fit. ([smart_tune.py](lcc_core/smart_tune.py))
+
+### Added
+
+- **Selectable context up to 256K, capped at the model's trained window.**
+  `CTX_LADDER` now extends to `196608`/`262144` so Smart Fit can recommend up to
+  256K, but `_ctx_ladder_for_model()` caps the offered ladder at the model's
+  trained context so it never suggests a window the model wasn't trained for
+  (the model's exact trained length is included even when it isn't a standard
+  rung). The trained context (`<arch>.context_length`) is read in the same single
+  GGUF header pass as the KV dims and cached (meta cache v2→v3); the fit badge
+  also warns when a manually chosen context exceeds the trained window, since the
+  extra tokens just waste VRAM and quality degrades past the trained length. Adds
+  `model_max_context()`. ([estimates.py](lcc_core/estimates.py),
+  [smart_tune.py](lcc_core/smart_tune.py))
+
+## [0.13.0] - 2026-07-08
 
 ### Added
 
@@ -19,6 +119,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   whatever memory headroom is left after context and KV-cache quality are
   settled, without ever shrinking below the caller's starting batch.
   ([smart_tune.py](lcc_core/smart_tune.py))
+- **Expanded KV-cache quant ladder for Smart Fit.** The search now explores
+  `q5_0`, `q4_1`, and `iq4_nl` as rungs (in addition to `f16`/`q8_0`/`q5_1`/
+  `q4_0`), giving the asymmetric K/V tuner finer memory/quality landing spots.
+  The estimator already priced these; this is a search-space change only.
+  ([smart_tune.py](lcc_core/smart_tune.py))
+- **NVFP4 and MXFP4 KV-cache sizing + Smart Fit rungs.** The estimator now
+  prices the 4-bit float formats (NVFP4 = 36 B/64, MXFP4 = 17 B/32 per llama.cpp's
+  `block_nvfp4` / `block_mxfp4` layouts). On NVIDIA CUDA GPUs that
+  hardware-accelerate them (Blackwell, Hopper, Ada, A100, L4/L40), Smart Fit
+  adds `nvfp4`/`mxfp4` to the cache ladder and prefers the float format over
+  integer `q4_0` at the same byte rate. Non-NVIDIA hardware is unaffected.
+  ([estimates.py](lcc_core/estimates.py), [smart_tune.py](lcc_core/smart_tune.py))
+- **Live server metrics.** A new `GET /api/servers/{server_id}/metrics` endpoint
+  polls a running llama-server's `/metrics` (Prometheus), `/health`, and `/props`
+  for ground-truth KV-cache usage ratio, KV tokens, active/processing slots, and
+  prompt/decode tokens-per-second — turning the pre-launch estimate into
+  measurable runtime numbers. Returns the stderr tail when the server is
+  unreachable so the dashboard can show why.
+  ([server_metrics.py](lcc_core/server_metrics.py), [app.py](lcc_api/app.py))
+- **Crash/exit watchdog.** A tracked server whose PID died while its status was
+  still "running"/"starting" is now flagged `status: "crashed"` with the last
+  stderr lines and an exit timestamp, instead of being silently pruned on the
+  next `GET /api/servers`. The dashboard can surface the failure and offer
+  restart; terminal entries still age out via the existing server-history limit.
+  ([server_manager.py](lcc_core/server_manager.py))
+- **Live host hardware panel.** A new `GET /api/system/live` endpoint polls
+  `nvidia-smi` (utilization.gpu, utilization.memory, temperature.gpu, memory
+  total/free/used) and system RAM on demand, TTL-cached behind a lock so a
+  dashboard polling every few seconds never fans out into overlapping
+  subprocesses. First-time failure latches a graceful disable so a faulted
+  driver doesn't spam. Shipped with a matching `#live-hardware` dashboard panel
+  that polls at 3s, pauses when the tab is hidden or the panel is collapsed,
+  and renders GPU util/temp/VRAM bars plus a system-RAM bar with green/amber/red
+  thresholds. Pattern ported from SwarmUI's `NvidiaUtil.QueryNvidia` +
+  request-driven equivalent of its `SystemStatusMonitor` tick.
+  ([hardware.py](lcc_core/hardware.py), [app.py](lcc_api/app.py),
+  [index.html](lcc_api/static/index.html), [app.js](lcc_api/static/app.js),
+  [styles.css](lcc_api/static/styles.css))
+- **Per-process memory gauge for tracked servers.** The existing
+  `GET /api/servers/{id}/metrics` endpoint now also returns a `process` block
+  with RSS / CPU% (portable, via `psutil`) and per-PID GPU VRAM attribution
+  (NVIDIA only, via shared TTL-cached `nvidia-smi --query-compute-apps`).
+  Closes the ROADMAP "Live process memory gauge" item. psutil is a soft
+  dependency: when missing, every per-process field is None instead of erroring.
+  ([server_metrics.py](lcc_core/server_metrics.py))
+- **Crash watchdog OOM hint.** `refresh_server_states()` now appends each
+  refresh's RAM used/total ratio to a short rolling window (10 samples,
+  ~30s at the 3s UI poll cadence) and annotates freshly-crashed servers with
+  `oom_likely: true` when the window peak exceeded 80%. The dashboard can
+  surface "your model likely OOM'd" without needing per-process VRAM
+  attribution, mirroring SwarmUI's `NetworkBackendUtils` pre-crash
+  memory-overload heuristic.
+  ([server_manager.py](lcc_core/server_manager.py))
 
 ### Changed
 
@@ -32,6 +185,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   existing 16-bit-vs-quantized cache weighting is unchanged while CUDA GPUs
   known to run BF16 well get the better 16-bit KV default.
   ([smart_tune.py](lcc_core/smart_tune.py))
+- **Hybrid-SSM attention-layer detection is more robust.** The tensor scan in
+  `_extract_n_attn_layers` now recognizes every layer-naming convention the
+  layer-count scan uses (`blk.`/`block.`/`model.layers.`/`transformer.layer.`/
+  `h[N]`), so KV-cache sizing for hybrid SSM+attention models (Qwen3.5, Jamba)
+  won't fall back to the full block count when a GGUF uses non-`blk.` naming.
+  Attention-tensor detection also matches HF-style `k_proj`/`v_proj` names.
+  ([estimates.py](lcc_core/estimates.py))
+- **psutil added as a soft dependency** (>=5.9.0) in `requirements.txt` and
+  `pyproject.toml`. Server-level metrics work without it; only the per-process
+  block needs it.
 
 ### Fixed
 
@@ -48,6 +211,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `layer_fraction` between the two. A pure-CPU run (`gpu_layers: 0`) also now
   counts the compute buffer against RAM instead of nothing.
   ([estimates.py](lcc_core/estimates.py))
+- **`_cache_bytes` two-tier logic is now documented and extends to FP4.** The
+  tier-2 bare-prefix fallback (for unqualified quants like `q8`/`q5`/`q4`) is
+  now clearly separated from the exact-name dict lookup, and handles `nvfp`/
+  `mxfp` prefixes. No behavior change for existing inputs.
+  ([estimates.py](lcc_core/estimates.py))
+- **Typo: `_estimate_gpu_gpu_speed` renamed.** The bandwidth-ceiling helper is
+  now `_estimate_gpu_bandwidth_speed` (private, no external callers).
+  ([estimates.py](lcc_core/estimates.py))
+- **Duplicate ROADMAP line removed**, and the stray `odysseus_comparison.md`
+  scratch doc moved under `docs/`.
 
 ## [0.12.1] - 2026-06-28
 

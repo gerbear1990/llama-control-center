@@ -37,6 +37,10 @@ class ModelFile:
     params_b: float | None = None
     mmproj_path: str | None = None
     split_total: int | None = None
+    # Unix mtime of the primary GGUF on disk (set by discover_models). The UI
+    # uses this to render a "Updated" column for each profile row; cheap to
+    # stat because the gguf_meta_cache already keys on (size, mtime).
+    mtime: float | None = None
     details: dict[str, Any] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
 
@@ -51,9 +55,6 @@ class ModelProfile:
     mode: str
     name: str
     description: str
-    script: str | None
-    script_path: str | None
-    script_exists: bool
     model_path: str | None = None
     model_exists: bool | None = None
     model_size_gb: float | None = None

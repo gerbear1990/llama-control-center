@@ -17,7 +17,12 @@ const state = {
   paramPreviewPort: 8080,
   modelNotes: { hf: '', fit: '', benchmark: '' },
   profileFilter: 'all',
+  profileModelFilter: 'all',
+  hideUnavailableProfiles: localStorage.getItem('lcc-hide-unavailable-profiles') === '1',
+  hideNotInstalledRuntimes: localStorage.getItem('lcc-hide-not-installed-runtimes') === '1',
+  showAllRuntimes: false,
   query: '',
+  chatHistory: {},  // { [mode]: Array<{role: 'user'|'assistant', content: string}> }
   jinjaRecommended: false,
   theme: localStorage.getItem('lcc-theme') || 'light',
 };
@@ -102,6 +107,30 @@ function formatMib(mib) {
   return `${Math.round(value)} MiB`;
 }
 
+// Compact relative-time formatter for the profile Updated column. Unix
+// mtime in -> "Just now / Nm ago / Nh ago / N days ago / Mon DD" out.
+// Far-past dates fall back to a locale date so the cell never shows "NaN".
+function formatRelativeTime(mtime) {
+  if (mtime == null || !Number.isFinite(Number(mtime))) return '—';
+  const ms = Date.now() - Number(mtime) * 1000;
+  if (ms < 0) return 'Just now';
+  const sec = Math.floor(ms / 1000);
+  if (sec < 45) return 'Just now';
+  if (sec < 90) return '1 min ago';
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min} min ago`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr}h ago`;
+  const day = Math.floor(hr / 24);
+  if (day < 7) return `${day}d ago`;
+  const d = new Date(Number(mtime) * 1000);
+  // Older than a week: short "Mon DD" for the current year, else full date.
+  const sameYear = d.getFullYear() === new Date().getFullYear();
+  return d.toLocaleDateString(undefined, sameYear
+    ? { month: 'short', day: 'numeric' }
+    : { year: 'numeric', month: 'short', day: 'numeric' });
+}
+
 function fitStatusClass(status) {
   if (status === 'good') return 'ok';
   if (status === 'tight') return 'warn';
@@ -138,12 +167,84 @@ function escapeHtml(value) {
     .replaceAll("'", '&#039;');
 }
 
-function toast(message) {
+// Toasts are short text snippets shown in the bottom-right. They may carry
+// a single optional action button (e.g. 'Use port 18100') that the user can
+// click while the toast is still visible. ``toast.action(message, action)`` is
+// the recommended form; ``toast(message)`` keeps the simple text-only path
+// so existing call sites are unchanged.
+function toast(message, action) {
   const el = $('#toast');
-  el.textContent = message;
+  el.innerHTML = '';
+  const text = document.createElement('span');
+  text.textContent = message;
+  el.appendChild(text);
+  if (action && action.label && typeof action.onClick === 'function') {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'toast-action';
+    button.textContent = action.label;
+    button.addEventListener('click', () => {
+      window.clearTimeout(toast.timer);
+      el.classList.remove('show');
+      action.onClick();
+    });
+    el.appendChild(button);
+  }
   el.classList.add('show');
   window.clearTimeout(toast.timer);
-  toast.timer = window.setTimeout(() => el.classList.remove('show'), 2800);
+  toast.timer = window.setTimeout(() => el.classList.remove('show'), 5000);
+}
+
+// Live port-availability indicator next to the Port field. Probes
+// /api/system/check-port on every edit (debounced 350ms) and renders a
+// green dot when the port is free, a red dot when something else is
+// bound there, and a grey dot while the probe is in flight.
+let portCheckTimer = null;
+let portCheckSeq = 0;
+
+async function checkPortNow(port, host) {
+  const seq = ++portCheckSeq;
+  const statusEl = $('#param-port-status');
+  if (!statusEl) return;
+  statusEl.className = 'port-status checking';
+  statusEl.title = 'Checking…';
+  try {
+    const qs = `port=${encodeURIComponent(port)}&host=${encodeURIComponent(host || '127.0.0.1')}`;
+    const data = await api(`/api/system/check-port?${qs}`);
+    if (seq !== portCheckSeq) return; // a newer probe has superseded us
+    if (data.free) {
+      statusEl.className = 'port-status free';
+      statusEl.title = `Port ${data.port} is free`;
+    } else if (data.port_in_use_reason === 'reserved') {
+      // The OS denies bind on this port even though nothing is listening.
+      // That's the failure mode Windows machines hit when the default
+      // dynamic port range (1024-15200) covers a profile's default port.
+      statusEl.className = 'port-status busy';
+      const rng = data.reserved_range || {};
+      statusEl.title = `Port ${data.port} is inside the Windows reserved range ${rng.start ?? '?'}-${rng.end ?? '?'}. Pick a port above ${rng.end ?? '?'}. Suggested free port: ${data.suggested_port ?? 'none'}`;
+    } else {
+      const holder = data.port_holder;
+      const who = holder?.process_name && holder?.pid
+        ? `${holder.process_name} (PID ${holder.pid})`
+        : holder?.process_name || holder?.pid || 'another process';
+      statusEl.className = 'port-status busy';
+      statusEl.title = `Port ${data.port} is bound by ${who}. Suggested free port: ${data.suggested_port ?? 'none'}`;
+    }
+  } catch {
+    statusEl.className = 'port-status unknown';
+    statusEl.title = 'Could not check port';
+  }
+}
+
+function schedulePortCheck() {
+  window.clearTimeout(portCheckTimer);
+  portCheckTimer = window.setTimeout(() => {
+    const portInput = $('#param-port');
+    const port = numericValue(portInput);
+    if (!port) return;
+    const host = $('#param-host')?.value.trim() || '127.0.0.1';
+    checkPortNow(port, host);
+  }, 350);
 }
 
 async function withBusy(button, fn) {
@@ -352,7 +453,13 @@ async function api(path, options = {}) {
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
     const detail = data.detail || data.error || response.statusText;
-    throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail));
+    const err = new Error(typeof detail === 'string' ? detail : JSON.stringify(detail));
+    // Preserve the original structured detail (FastAPI wraps non-2xx bodies
+    // as {detail: ...}; keep it accessible so callers can branch on richer
+    // fields like ``port_in_use`` or ``suggested_port``).
+    err.detail = detail;
+    err.status = response.status;
+    throw err;
   }
   return data;
 }
@@ -445,15 +552,6 @@ function runtimeLocation(env) {
   return env.binary_path || env.details?.python_module || 'Not found on disk';
 }
 
-function runtimeLine(label, value, extraClass = '') {
-  return `
-    <div class="runtime-line ${extraClass}">
-      <span>${escapeHtml(label)}</span>
-      <code title="${escapeHtml(value || '-')}">${escapeHtml(value || '-')}</code>
-    </div>
-  `;
-}
-
 function renderSummary() {
   const summary = state.inventory?.summary || {};
   $('#metric-runtimes').textContent = `${summary.available_environment_count ?? 0}/${summary.environment_count ?? 0}`;
@@ -462,6 +560,23 @@ function renderSummary() {
   const needsSetup = state.profiles.filter((profile) => !profile.launchable).length + (summary.legacy_portability_issue_count ?? 0);
   $('#metric-setup').textContent = needsSetup;
   $('#summary-line').textContent = `${state.profiles.length} profiles, ${summary.model_count ?? 0} models, ${summary.legacy_portability_issue_count ?? 0} portability issues.`;
+}
+
+// Clicking the Needs setup metric filters the Profiles table to show only items needing attention.
+const setupWrapper = $('#metric-setup-wrapper');
+if (setupWrapper) {
+  setupWrapper.style.cursor = 'pointer';
+  setupWrapper.addEventListener('click', () => {
+    state.profileFilter = 'setup';
+    // Also unhide unavailable so user sees the problems
+    state.hideUnavailableProfiles = false;
+    const toggle = $('#hide-unavailable-profiles');
+    if (toggle) toggle.checked = false;
+    renderProfiles();
+    // Scroll to profiles
+    const profilesPanel = $('#profiles');
+    if (profilesPanel) profilesPanel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
 }
 
 function primaryGpu() {
@@ -600,8 +715,7 @@ function renderParamProfileOptions() {
 function renderRuntimeOptions(selectedValue) {
   const select = $('#param-runtime');
   if (!select) return;
-  // Launch is wired for llama.cpp only; other detected runtimes are selectable
-  // but the backend returns a clear "not launchable yet" error for them.
+  const launchableRuntimes = new Set(['llama.cpp', 'vllm-wsl']);
   const envs = state.inventory?.environments || [];
   const options = envs.length
     ? envs.map((env) => ({ value: env.id, label: env.name || env.id, available: env.available }))
@@ -611,7 +725,9 @@ function renderRuntimeOptions(selectedValue) {
     options.push({ value: selected, label: selected, available: false });
   }
   select.innerHTML = options.map((opt) => {
-    const suffix = opt.value === 'llama.cpp' ? '' : opt.available ? ' (not launchable yet)' : ' (not detected)';
+    const suffix = launchableRuntimes.has(opt.value)
+      ? (opt.available ? '' : ' (not detected)')
+      : (opt.available ? ' (not launchable yet)' : ' (not detected)');
     return `<option value="${escapeHtml(opt.value)}">${escapeHtml(opt.label)}${suffix}</option>`;
   }).join('');
   select.value = selected;
@@ -639,6 +755,8 @@ function renderParameters() {
   setFieldValue('#param-port', params.port);
   setFieldValue('#param-acceleration', params.acceleration_backend || 'auto');
   setFieldValue('#param-device', params.device || 'auto');
+  // Probe the resolved port for the live status dot.
+  schedulePortCheck();
   setFieldValue('#param-ctx', params.ctx_size);
   setFieldValue('#param-threads', params.threads);
   setFieldValue('#param-threads-batch', params.threads_batch ?? params.threads);
@@ -776,12 +894,15 @@ function renderRuntimes() {
       ? `${available} of ${envs.length} runtime${envs.length === 1 ? '' : 's'} available.${suffix}`
       : 'No runtimes detected.';
   }
-  $('#runtime-grid').innerHTML = envs.map((env) => {
+  let filteredEnvs = envs;
+  if (state.hideNotInstalledRuntimes) {
+    filteredEnvs = filteredEnvs.filter((env) => env.available);
+  }
+  const visibleEnvs = state.showAllRuntimes ? filteredEnvs : filteredEnvs.slice(0, 4);
+  const hiddenCount = Math.max(0, filteredEnvs.length - visibleEnvs.length);
+  const rows = visibleEnvs.map((env) => {
     const url = runtimeUrl(env);
     const port = runtimePort(env);
-    // ponytail: only surface warnings for runtimes that were actually detected.
-    // An undetected runtime is an expected state, not an error worth showing.
-    const warning = env.available ? (env.warnings?.[0] || env.details?.probe_error || '') : '';
     const update = runtimeUpdateFor(env.id || env.kind);
     const isLlamaCpp = env.id === 'llama.cpp' || env.kind === 'local_binary';
     const previewHost = state.paramPreviewHost || '127.0.0.1';
@@ -793,44 +914,61 @@ function renderRuntimes() {
     const urlClass = isLlamaCpp && (url !== `http://${previewHost}:${previewPort}`) ? '' : (url ? '' : 'muted');
     const portClass = isLlamaCpp && (port !== String(previewPort)) ? '' : (port ? '' : 'muted');
     const updateBadge = update?.update_available
-      ? `<a class="badge update-badge" href="${escapeHtml(update.release_url || '#')}" target="_blank" rel="noopener noreferrer" title="Update available: ${escapeHtml(update.latest_version || '')} (you have ${escapeHtml(update.current_version || 'unknown')})">Update: v${escapeHtml(update.latest_version || '?')}</a>`
+      ? `<a class="mini-button icon-button update-badge" href="${escapeHtml(update.release_url || '#')}" target="_blank" rel="noopener noreferrer" title="Update available: ${escapeHtml(update.latest_version || '')} (you have ${escapeHtml(update.current_version || 'unknown')})">v${escapeHtml(update.latest_version || '?')}</a>`
       : '';
-    // Recheck button only for runtimes that actually support update checks
-    // (i.e. were checked and produced an update entry).
     const recheckButton = update
       ? `<button class="mini-button" type="button" data-action="recheck-runtime" data-runtime="${escapeHtml(update.runtime_id)}" title="Recheck this runtime for updates">Recheck</button>`
       : '';
-    return `
-      <article class="runtime-card">
-        <div class="runtime-card-top">
-          <span class="badge ${env.available ? 'ok' : 'warn'}">${env.available ? 'ready' : 'not found'}</span>
-          <span class="runtime-kind">${escapeHtml(env.kind || env.id || 'runtime')}</span>
-        </div>
-        <strong>${escapeHtml(env.name)}</strong>
-        ${env.version ? `<small>${escapeHtml(env.version)}</small>` : ''}
-        <div class="runtime-facts">
-          ${runtimeLine('Location', runtimeLocation(env), env.binary_path ? '' : 'muted')}
-          ${runtimeLine('URL', urlDisplay, urlClass)}
-          ${runtimeLine('Port', portDisplay, portClass)}
-        </div>
-        ${updateBadge || recheckButton ? `<div class="runtime-actions">${updateBadge}${recheckButton}</div>` : ''}
-        ${warning ? `<p class="runtime-warning">${escapeHtml(warning)}</p>` : ''}
-      </article>
+    const actions = `
+      <div class="runtime-actions">
+        <button class="mini-button icon-button" type="button" data-action="runtime-menu" title="Runtime actions" aria-label="Runtime actions">...</button>
+        ${updateBadge}${recheckButton}
+      </div>
     `;
-  }).join('') || '<div class="loading">No runtimes detected.</div>';
+    const name = isLlamaCpp && env.available ? `${env.name} (CUDA)` : env.name;
+    const version = env.version ? `<div class="runtime-version">${escapeHtml(env.version)}</div>` : '';
+    return `
+      <tr class="runtime-row ${env.available ? 'is-ready' : 'is-missing'}">
+        <td>
+          <strong>${escapeHtml(name)}</strong>
+          ${version}
+        </td>
+        <td><span class="badge ${env.available ? 'ok' : 'warn'}">${env.available ? 'ready' : 'not found'}</span></td>
+        <td>${escapeHtml(env.kind || env.id || 'runtime')}</td>
+        <td><code class="${env.binary_path ? '' : 'muted'}" title="${escapeHtml(runtimeLocation(env))}">${escapeHtml(runtimeLocation(env))}</code></td>
+        <td><code class="${urlClass}" title="${escapeHtml(urlDisplay)}">${escapeHtml(urlDisplay)}</code></td>
+        <td>${escapeHtml(portDisplay)}</td>
+        <td>${actions}</td>
+      </tr>
+    `;
+  }).join('');
+  const toggle = envs.length > 4
+    ? `<div class="runtime-footer"><button class="runtime-more" type="button" data-action="toggle-runtimes">${state.showAllRuntimes ? 'Show fewer runtimes' : `Show ${hiddenCount} more runtimes`} <span aria-hidden="true">${state.showAllRuntimes ? '⌃' : '⌄'}</span></button></div>`
+    : '';
+  $('#runtime-grid').innerHTML = rows ? `
+    <div class="runtime-table-wrap">
+      <table class="runtime-table">
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Status</th>
+            <th>Type</th>
+            <th>Location</th>
+            <th>URL</th>
+            <th>Port</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+    ${toggle}
+  ` : '<div class="loading">No runtimes detected.</div>';
 }
 
 function serverRunningForMode(mode) {
   const server = state.servers?.find((s) => s.mode === mode && s.running);
   return server || null;
-}
-
-function _profileActionButtons(profile) {
-  const runningServer = serverRunningForMode(profile.mode);
-  if (runningServer) {
-    return `<button class="mini-button danger" type="button" data-action="stop" data-mode="${escapeHtml(profile.mode)}">Stop</button>`;
-  }
-  return `<button class="mini-button primary" type="button" data-action="start" data-mode="${escapeHtml(profile.mode)}" ${profile.launchable ? '' : 'disabled'}>Start</button>`;
 }
 
 function statusBadge(profile) {
@@ -854,12 +992,21 @@ function fitBadge(profile) {
   return `<span class="badge ${fitStatusClass(status)}" title="${escapeHtml(title)}">${escapeHtml(fit.label || fitStatusLabel(status))}</span>`;
 }
 
+function profileIsUnavailable(profile) {
+  return !profile.launchable || !profile.model?.path;
+}
+
 function filteredProfiles() {
   return state.profiles
     .filter((profile) => {
       if (state.profileFilter === 'launchable') return profile.launchable;
       if (state.profileFilter === 'setup') return !profile.launchable;
       return true;
+    })
+    .filter((profile) => !state.hideUnavailableProfiles || !profileIsUnavailable(profile))
+    .filter((profile) => {
+      if (!state.profileModelFilter || state.profileModelFilter === 'all') return true;
+      return (profile.model?.name || 'Unresolved model') === state.profileModelFilter;
     })
     .filter(profileMatches);
 }
@@ -902,6 +1049,47 @@ function toggleGroup(modelName) {
   }
   saveCollapsedGroups(collapsedGroups);
   renderProfiles();
+}
+
+function shortModelVariant(profile) {
+  const name = profile.model?.name || profile.mode || 'Unresolved model';
+  const quant = profile.model?.quant;
+  if (quant && !name.toLowerCase().includes(String(quant).toLowerCase())) {
+    return `${name.split(/[\\/]/).pop()} ${quant}`;
+  }
+  return name
+    .replace(/-gguf$/i, '')
+    .replace(/\.gguf$/i, '')
+    .replace(/[-_]+/g, ' ')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
+
+function profileRuntimeLabel(profile) {
+  const runtime = profile.params?.runtime || 'llama.cpp';
+  const acceleration = String(profile.params?.acceleration_backend || 'auto').toLowerCase();
+  if (runtime === 'llama.cpp' && (acceleration === 'cuda' || acceleration === 'auto')) return 'llama.cpp (CUDA)';
+  return runtime;
+}
+
+function updateProfileToolbar(filteredCount) {
+  const filterInput = $('#profile-filter-input');
+  if (filterInput && filterInput.value !== state.query) filterInput.value = state.query;
+  const modelSelect = $('#profile-model-filter');
+  if (modelSelect) {
+    const models = Array.from(new Set(state.profiles.map((profile) => profile.model?.name || 'Unresolved model'))).sort((a, b) => a.localeCompare(b));
+    if (state.profileModelFilter !== 'all' && !models.includes(state.profileModelFilter)) {
+      state.profileModelFilter = 'all';
+    }
+    modelSelect.innerHTML = '<option value="all">All models</option>' + models.map((model) => (
+      `<option value="${escapeHtml(model)}">${escapeHtml(model)}</option>`
+    )).join('');
+    modelSelect.value = state.profileModelFilter || 'all';
+  }
+  const availabilityToggle = $('#hide-unavailable-profiles');
+  if (availabilityToggle) availabilityToggle.checked = state.hideUnavailableProfiles;
+  const count = $('#profiles-count');
+  if (count) count.textContent = `Showing ${filteredCount} of ${state.profiles.length} profiles`;
 }
 
 function openRenameDialog(mode, currentName) {
@@ -952,44 +1140,144 @@ async function saveProfileName(mode, currentName) {
   }
 }
 
+// Open the row context menu for a profile. Triggered by the row's "..." button
+// (data-action="profile-menu"). The menu replaces the previous stub that only
+// triggered Rename — Delete is gated by a confirm modal and refuses while a
+// tracked server is still running (the backend enforces the same rule).
+function openProfileMenu(button, mode) {
+  const profile = state.profiles.find((p) => p.mode === mode);
+  if (!profile) return;
+  const serverRunning = state.servers?.some(
+    (server) => server.mode === mode && server.running,
+  );
+  showPopupMenu(button, [
+    {
+      label: 'Rename profile…',
+      onSelect: () => saveProfileName(mode, profile.name || profile.mode),
+    },
+    {
+      label: 'Save as copy…',
+      disabled: !profile.launchable,
+      title: profile.launchable
+        ? 'Save the current parameters under a new profile name.'
+        : 'Profile is not launchable; nothing to copy.',
+      onSelect: () => openSaveAsCopyModal(profile),
+    },
+    { separator: true },
+    {
+      label: 'Delete profile',
+      danger: true,
+      disabled: serverRunning,
+      title: serverRunning
+        ? 'A tracked server is still running for this profile. Stop it first.'
+        : 'Remove this profile from models.json.',
+      onSelect: () => deleteProfileConfirm(mode),
+    },
+  ]);
+}
+
+// Open the save-profile modal pre-filled with `<current-name> copy`. The save
+// endpoint matches on mode, so this updates the same entry with the new name
+// (effectively: "rename + snapshot current params"). Useful for keeping a
+// "tuned" variant alongside the original.
+function openSaveAsCopyModal(profile) {
+  const modal = $('#save-profile-modal');
+  const nameInput = $('#save-profile-name');
+  const descInput = $('#save-profile-desc');
+  if (!modal || !nameInput) return;
+  nameInput.value = `${profile.name || profile.mode} copy`.trim();
+  descInput.value = profile.description || '';
+  modal.hidden = false;
+  document.body.classList.add('modal-open');
+  nameInput.focus();
+  nameInput.select();
+}
+
+async function deleteProfileConfirm(mode) {
+  const profile = state.profiles.find((p) => p.mode === mode);
+  const displayName = profile?.name || mode;
+  const ok = await confirmAction({
+    title: 'Delete profile',
+    message: `Delete profile "${displayName}" (${mode})? This removes it from models.json. This cannot be undone.`,
+    confirmLabel: 'Delete',
+    confirmKind: 'danger',
+  });
+  if (!ok) return;
+  try {
+    const result = await api('/api/profiles/delete', {
+      method: 'POST',
+      body: JSON.stringify({ mode }),
+    });
+    if (result.success) {
+      toast(result.message || 'Profile deleted');
+      if (state.selectedProfileMode === mode) {
+        state.selectedProfileMode = null;
+      }
+      await refresh();
+    } else {
+      toast(result.message || 'Delete failed');
+    }
+  } catch (error) {
+    toast(`Delete failed: ${error.message}`);
+  }
+}
+
+// Open the row context menu for a runtime. Triggered by the runtime row's
+// "..." button. Currently exposes Recheck (the runtime's own refresh) — the
+// row already has the full update badge + Recheck button next to it, so this
+// menu is intentionally minimal but provides a future extension point.
+function openRuntimeMenu(button, runtimeId) {
+  if (!runtimeId) return;
+  showPopupMenu(button, [
+    {
+      label: 'Recheck for updates',
+      onSelect: () => recheckRuntime(runtimeId, button),
+    },
+  ]);
+}
+
 function renderProfiles() {
-  const groupedProfiles = groupProfilesByModel(filteredProfiles());
+  const profiles = filteredProfiles();
+  updateProfileToolbar(profiles.length);
+  const groupedProfiles = groupProfilesByModel(profiles);
   let html = '';
   groupedProfiles.forEach((group) => {
     const isCollapsed = collapsedGroups.has(group.model);
     html += `
-      <thead class="profile-group-header">
-        <tr>
-          <td colspan="7">
-            <span class="group-toggle" data-model="${escapeHtml(group.model)}" role="button" tabindex="0" aria-label="${isCollapsed ? 'Expand' : 'Collapse'} ${escapeHtml(group.model)}">${isCollapsed ? '▸' : '▾'} ${escapeHtml(group.model)}</span>
-          </td>
-        </tr>
-      </thead>
+      <tr class="profile-group-header">
+        <td colspan="9">
+          <button class="group-toggle" type="button" data-model="${escapeHtml(group.model)}" aria-expanded="${String(!isCollapsed)}" aria-label="${isCollapsed ? 'Expand' : 'Collapse'} ${escapeHtml(group.model)}">
+            <span aria-hidden="true">${isCollapsed ? '▸' : '▾'}</span>
+            <span>${escapeHtml(group.model)}</span>
+            <span class="profile-group-count">${group.profiles.length}</span>
+          </button>
+        </td>
+      </tr>
     `;
     if (!isCollapsed) {
       group.profiles.forEach((profile) => {
         const selected = profile.mode === state.selectedProfileMode;
-        const modelName = profile.model?.name || 'Unresolved model';
-        const warningText = profile.warnings?.[0] || profile.missing?.join(', ') || '';
         html += `
           <tr class="profile-row ${selected ? 'selected' : ''}" data-profile-mode="${escapeHtml(profile.mode)}" tabindex="0" role="button" aria-label="Select profile ${escapeHtml(profile.name || profile.mode)}">
+            <td>
+              <div class="cell-title">${escapeHtml(shortModelVariant(profile))}</div>
+            </td>
             <td>
               <div class="cell-title">${escapeHtml(profile.name || profile.mode)}</div>
               <div class="cell-subtitle">${escapeHtml(profile.mode)}</div>
             </td>
-            <td>
-              <div class="cell-title">${escapeHtml(modelName)}</div>
-              <div class="cell-subtitle">${escapeHtml(warningText || `${Math.round((profile.confidence || 0) * 100)}% match`)}</div>
-            </td>
-            <td>${statusBadge(profile)}</td>
-            <td>${fitBadge(profile)}</td>
+            <td>${escapeHtml(profileRuntimeLabel(profile))}</td>
             <td>${escapeHtml(profile.params?.ctx_size || '-')}</td>
-            <td>${escapeHtml(profile.params?.port || '-')}</td>
+            <td>${escapeHtml(profile.params?.threads || '-')}</td>
+            <td>${escapeHtml(profile.params?.gpu_layers ?? '-')}</td>
+            <td><span class="updated-cell" title="${escapeHtml(new Date((profile.model?.mtime || 0) * 1000).toISOString())}">${escapeHtml(formatRelativeTime(profile.model?.mtime))}</span></td>
+            <td>${statusBadge(profile)}</td>
             <td>
               <div class="row-actions">
-                <button class="mini-button" type="button" data-action="prepare" data-mode="${escapeHtml(profile.mode)}">Prepare</button>
-                <button class="mini-button" type="button" data-action="rename" data-mode="${escapeHtml(profile.mode)}" title="Rename profile">Rename</button>
-                ${_profileActionButtons(profile)}
+                ${serverRunningForMode(profile.mode)
+                  ? `<button class="mini-button icon-button danger" type="button" data-action="stop" data-mode="${escapeHtml(profile.mode)}" title="Stop server" aria-label="Stop server">■</button>`
+                  : `<button class="mini-button icon-button" type="button" data-action="start" data-mode="${escapeHtml(profile.mode)}" ${profile.launchable ? '' : 'disabled'} title="Start server" aria-label="Start server">▷</button>`}
+                <button class="mini-button icon-button" type="button" data-action="profile-menu" data-mode="${escapeHtml(profile.mode)}" title="More profile actions" aria-label="More profile actions">...</button>
               </div>
             </td>
           </tr>
@@ -997,7 +1285,7 @@ function renderProfiles() {
       });
     }
   });
-  $('#profiles-table').innerHTML = html || '<tr><td colspan="7"><div class="empty-state">No profiles match the current filter.</div></td></tr>';
+  $('#profiles-table').innerHTML = html || '<tr><td colspan="9"><div class="empty-state">No profiles match the current filter.</div></td></tr>';
 }
 
 function renderModels() {
@@ -1015,27 +1303,103 @@ function renderModels() {
   `).join('') || '<div class="loading">No models match the current search.</div>';
 }
 
+function formatServerMetricsLine(m) {
+  // Pure formatter for AC3: always join non-empty parts with ' · ' (single rule, no ad-hoc concat).
+  // Drives the shipped UI display of KV/tps/slots/context/memory.
+  if (!m) return '';
+  const sum = m.summary || m.metrics || {};
+  const proc = m.process || {};
+  const parts = [];
+  if (sum.kv_cache_usage_ratio != null) parts.push(`${(sum.kv_cache_usage_ratio * 100).toFixed(0)}% KV`);
+  if (sum.predicted_tokens_per_second != null) parts.push(`${sum.predicted_tokens_per_second.toFixed(1)} t/s`);
+  else if (sum.prompt_tokens_per_second != null) parts.push(`${sum.prompt_tokens_per_second.toFixed(1)} prompt t/s`);
+  if (sum.slots_active != null || sum.slots_processing != null) parts.push(`slots ${sum.slots_active || 0}/${sum.slots_processing || 0}`);
+  if (m.props && m.props.n_ctx != null) parts.push(`ctx ${m.props.n_ctx}`);
+  else if (sum.kv_cache_tokens != null) parts.push(`kv ${sum.kv_cache_tokens}`);
+  if (proc.rss_bytes) parts.push(`RSS ${formatBytes(proc.rss_bytes)}`);
+  if (proc.gpu_used_bytes) parts.push(`VRAM ${formatBytes(proc.gpu_used_bytes)}`);
+  return parts.filter(Boolean).join(' · ');
+}
+
 function renderServers() {
   const servers = state.servers || [];
   if (!servers.length) {
     $('#server-box').innerHTML = '<div class="empty-state">No tracked servers. Start a launchable profile to track one here.</div>';
     $('#log-preview').textContent = 'No tracked server selected.';
+    renderActiveServers([]); // keep main panel in sync
     return;
   }
-  $('#server-box').innerHTML = servers.map((server) => `
-    <article class="server-item" data-server-id="${escapeHtml(server.id)}">
-      <span class="badge ${server.running ? 'ok' : 'warn'}">${server.running ? 'running' : server.status || 'stopped'}</span>
+  const html = servers.map((server) => buildServerItemHtml(server)).join('');
+  $('#server-box').innerHTML = html;
+  renderActiveServers(servers);
+}
+
+function buildServerItemHtml(server) {
+  const isRunning = !!server.running;
+  const status = server.status || (isRunning ? 'running' : 'stopped');
+  const isCrashed = status === 'crashed' || (!isRunning && server.last_stderr);
+  const oom = server.oom_likely ? ' <span class="badge error" title="Likely OOM">OOM</span>' : '';
+  const metricsLine = formatServerMetricsLine(server.metrics) ? `<div class="server-metrics">${formatServerMetricsLine(server.metrics)}</div>` : '';
+  const stderrSnippet = (isCrashed && server.last_stderr) ? `<pre class="server-stderr" title="Last stderr (truncated)">${escapeHtml(String(server.last_stderr).slice(0, 300))}</pre>` : '';
+  const restartBtn = !isRunning ? `<button class="mini-button" type="button" data-action="restart" data-server-id="${escapeHtml(server.id)}">Restart</button>` : '';
+  const stopBtn = `<button class="mini-button" type="button" data-action="stop" data-server-id="${escapeHtml(server.id)}" ${isRunning ? '' : 'disabled'}>Stop</button>`;
+  const badgeClass = isCrashed ? 'error' : (isRunning ? 'ok' : 'warn');
+  const badgeText = isCrashed ? 'crashed' : (isRunning ? 'running' : status);
+  const selectAttr = `data-server-id="${escapeHtml(server.id)}"`;
+  return `
+    <article class="server-item" ${selectAttr}>
+      <span class="badge ${badgeClass}">${badgeText}</span>${oom}
       <strong>${escapeHtml(server.mode)}</strong>
-      <p>PID ${escapeHtml(server.pid)} on ${escapeHtml(server.host)}:${escapeHtml(server.port)}</p>
+      <p>PID ${escapeHtml(server.pid || '-')} on ${escapeHtml(server.host || '127.0.0.1')}:${escapeHtml(server.port || '-')}</p>
+      ${metricsLine}
+      ${stderrSnippet}
       <div class="row-actions">
         <button class="mini-button" type="button" data-action="logs" data-server-id="${escapeHtml(server.id)}">Open logs</button>
-        <button class="mini-button" type="button" data-action="stop" data-server-id="${escapeHtml(server.id)}" ${server.running ? '' : 'disabled'}>Stop</button>
+        ${restartBtn}
+        ${stopBtn}
       </div>
-    </article>
-  `).join('');
+    </article>`;
+}
+
+function renderActiveServers(servers) {
+  const container = $('#active-servers-list');
+  if (!container) return;
+  const active = (servers || state.servers || []).filter((s) => s.running || (s.status && s.status !== 'stopped'));
+  if (!active.length) {
+    container.innerHTML = '<div class="empty-state">No active or recent tracked servers. Launch a profile to see one here (and in the side pane under Servers).</div>';
+    return;
+  }
+  container.innerHTML = active.map((server) => {
+    const isRunning = !!server.running;
+    const status = server.status || (isRunning ? 'running' : 'stopped');
+    const isCrashed = status === 'crashed' || (!isRunning && server.last_stderr);
+    const oom = server.oom_likely ? ' <span class="badge error">OOM</span>' : '';
+    const metrics = formatServerMetricsLine(server.metrics);
+    const metricsHtml = metrics ? `<div class="server-metrics">${metrics}</div>` : '';
+    const badgeClass = isCrashed ? 'error' : (isRunning ? 'ok' : 'warn');
+    const badgeText = isCrashed ? 'crashed' : (isRunning ? 'running' : status);
+    const stopBtn = isRunning ? `<button class="mini-button danger" data-action="stop" data-server-id="${escapeHtml(server.id)}">Stop</button>` : '';
+    const logsBtn = `<button class="mini-button" data-action="logs" data-server-id="${escapeHtml(server.id)}">Logs</button>`;
+    const restartBtn = !isRunning ? `<button class="mini-button" data-action="restart" data-server-id="${escapeHtml(server.id)}">Restart</button>` : '';
+    return `
+      <article class="active-server-row" data-server-id="${escapeHtml(server.id)}">
+        <div class="active-server-head">
+          <span class="badge ${badgeClass}">${badgeText}</span>${oom}
+          <strong>${escapeHtml(server.mode)}</strong>
+          <span class="muted">· PID ${escapeHtml(server.pid || '-')} · ${escapeHtml(server.host || '127.0.0.1')}:${escapeHtml(server.port || '-')}</span>
+        </div>
+        ${metricsHtml}
+        <div class="row-actions">
+          ${logsBtn}
+          ${restartBtn}
+          ${stopBtn}
+        </div>
+      </article>`;
+  }).join('');
 }
 
 function renderIssues() {
+  // Legacy combined feed for small lists (kept for compatibility).
   const profileIssues = state.profiles
     .filter((profile) => !profile.launchable || profile.warnings?.length)
     .slice(0, 5)
@@ -1059,6 +1423,26 @@ function renderIssues() {
   `).join('') || '<div class="empty-state">No setup issues detected.</div>';
 }
 
+function renderPortability() {
+  // Richer view for the reworked Portability & Paths panel.
+  const summaryEl = $('#portability-summary');
+  if (!summaryEl) return;
+  const inv = state.inventory || {};
+  const roots = (inv.scan_roots || []).map((r) => escapeHtml(r)).join('<br>') || 'Using defaults';
+  const cfg = state.config || {};
+  const rtRoots = (cfg.runtime_dirs && cfg.runtime_dirs.length ? cfg.runtime_dirs : (inv.runtime_dirs || [])).map((r) => escapeHtml(r)).join('<br>') || 'Auto (PATH + detected)';
+  const issueCount = (inv.portability_issues || []).length + state.profiles.filter((p) => !p.launchable).length;
+  summaryEl.innerHTML = `
+    <div class="portability-roots">
+      <div><strong>Model scan roots</strong><br><span class="mono">${roots}</span></div>
+      <div><strong>Runtime search</strong><br><span class="mono">${rtRoots}</span></div>
+      <div><strong>Issues surfaced</strong><br><span class="badge ${issueCount ? 'warn' : 'ok'}">${issueCount}</span></div>
+    </div>
+  `;
+  // Also refresh the compact issue list underneath
+  renderIssues();
+}
+
 // Model Notes keeps HF info, fit-test, and benchmark results in separate slots
 // so running a benchmark no longer wipes the fit recommendation (and vice
 // versa); each is rendered in its own titled block, clearly separated.
@@ -1075,13 +1459,17 @@ function setModelNote(slot, html) {
 function renderTpsEstimate(estimate) {
   const value = $('#tps-estimate');
   const detail = $('#tps-detail');
+  const card = $('#speed-estimate-card');
+  if (card) card.classList.add('updating');
   if (!estimate) {
     value.textContent = '-';
     detail.textContent = 'Waiting for model and hardware details.';
+    if (card) setTimeout(() => card.classList.remove('updating'), 400);
     return;
   }
   value.textContent = `${estimate.estimate_tps} tok/s`;
   detail.textContent = `${estimate.low_tps}-${estimate.high_tps} tok/s range, ${estimate.confidence} confidence`;
+  if (card) setTimeout(() => card.classList.remove('updating'), 400);
 }
 
 function renderMeasuredTps(tokensPerSecond, elapsed) {
@@ -1110,9 +1498,11 @@ function renderFitEstimate(fit) {
   const detail = $('#fit-detail');
   const card = $('#fit-estimate-card');
   card.classList.remove('status-good', 'status-tight', 'status-near-limit');
+  if (card) card.classList.add('updating');
   if (!fit) {
     value.textContent = '-';
     detail.textContent = 'Waiting for model and hardware details.';
+    if (card) setTimeout(() => card.classList.remove('updating'), 400);
     return;
   }
   const estimated = fit.estimated || {};
@@ -1129,6 +1519,7 @@ function renderFitEstimate(fit) {
     details.push(`RAM use ${formatMib(estimated.ram_used_mib)}`);
   }
   detail.textContent = details.join(' · ');
+  if (card) setTimeout(() => card.classList.remove('updating'), 400);
 }
 
 function clearMeasuredTps() {
@@ -1325,11 +1716,15 @@ function renderSettings() {
   $('#settings-update-channel').value = config.update_channel || 'stable';
   $('#settings-server-history-limit').value = config.server_history_limit || 5;
   $('#settings-extra-args').value = listToLines(config.extra_llama_args);
+  // New/expanded toggles
+  const autoScan = $('#settings-auto-scan');
+  if (autoScan) autoScan.checked = config.auto_scan_on_startup !== false;
 }
 
 function openSettings() {
   renderSettings();
   const modal = $('#settings-modal');
+  modal.classList.remove('closing');
   modal.hidden = false;
   modal.dataset.openedBy = document.activeElement?.id || '';
   document.body.classList.add('modal-open');
@@ -1339,16 +1734,20 @@ function openSettings() {
 
 function closeSettings() {
   const modal = $('#settings-modal');
-  modal.hidden = true;
-  document.body.classList.remove('modal-open');
-  const openerId = modal.dataset.openedBy;
-  if (openerId) {
-    const opener = document.getElementById(openerId);
-    if (opener && typeof opener.focus === 'function') opener.focus();
-  } else {
-    const button = $('#settings-button');
-    if (button) button.focus();
-  }
+  modal.classList.add('closing');
+  setTimeout(() => {
+    modal.hidden = true;
+    modal.classList.remove('closing');
+    document.body.classList.remove('modal-open');
+    const openerId = modal.dataset.openedBy;
+    if (openerId) {
+      const opener = document.getElementById(openerId);
+      if (opener && typeof opener.focus === 'function') opener.focus();
+    } else {
+      const button = $('#settings-button');
+      if (button) button.focus();
+    }
+  }, 200);
 }
 
 function focusableInside(container) {
@@ -1382,6 +1781,7 @@ function collectSettings() {
     update_channel: $('#settings-update-channel').value || 'stable',
     server_history_limit: Number($('#settings-server-history-limit').value) || 5,
     extra_llama_args: linesToList($('#settings-extra-args').value),
+    auto_scan_on_startup: $('#settings-auto-scan') ? $('#settings-auto-scan').checked : true,
   };
 }
 
@@ -1399,6 +1799,151 @@ async function saveSettings(event) {
   } catch (error) {
     toast(`Settings failed: ${error.message}`);
   }
+}
+
+// Pure, side-effect free export snapshot builder (for AC2 + testability).
+// Takes plain config + optional inventory; returns pretty JSON string.
+// No DOM, no state mutation, no network. Directly callable from tests (via vm) and handlers.
+function buildPortableExportSnapshot(config, inventory) {
+  const c = config || {};
+  const inv = inventory || {};
+  const snap = {
+    schema_version: "lcc-portable-export-v1",
+    exported_at: new Date().toISOString(),
+    // Core portable roots (the main thing for reproducibility)
+    model_dirs: Array.isArray(c.model_dirs) ? [...c.model_dirs] : [],
+    runtime_dirs: Array.isArray(c.runtime_dirs) ? [...c.runtime_dirs] : [],
+    // Selected direct overrides and defaults (no secrets, no per-profile state)
+    llama_server_path: c.llama_server_path || "",
+    llama_fit_params_path: c.llama_fit_params_path || "",
+    default_host: c.default_host || "127.0.0.1",
+    default_port: Number(c.default_port) || 8080,
+    default_backend: c.default_backend || "llama.cpp",
+    update_channel: c.update_channel || "stable",
+    server_history_limit: Number(c.server_history_limit) || 5,
+    auto_scan_on_startup: c.auto_scan_on_startup !== false,
+    // Discovered scan roots for context (read-only snapshot)
+    scan_roots: Array.isArray(inv.scan_roots) ? [...inv.scan_roots] : [],
+    // Note: extra_llama_args omitted from minimal portable to keep clean; add if needed
+  };
+  return JSON.stringify(snap, null, 2);
+}
+
+// Plain command registry (pure mapping of id -> real shipped handler fn).
+// Directly testable; no DOM creation here. Used by palette and shortcuts (AC3).
+const COMMAND_REGISTRY = {
+  'focus-search': () => {
+    const s = $('#search-input');
+    if (s) { s.focus(); s.select(); }
+  },
+  'open-settings': () => openSettings(),
+  'refresh': () => { refresh(); },
+  // Future: add 'start-server' etc but keep to the required three + palette infra
+};
+
+function getCommands() {
+  return [
+    { id: 'focus-search', label: 'Focus search', shortcut: 'Ctrl+K' },
+    { id: 'open-settings', label: 'Open Settings', shortcut: 'via button / palette' },
+    { id: 'refresh', label: 'Refresh inventory', shortcut: 'via button / palette' },
+  ];
+}
+
+function executeCommand(id) {
+  const fn = COMMAND_REGISTRY[id];
+  if (typeof fn === 'function') {
+    fn();
+    return true;
+  }
+  return false;
+}
+
+async function exportPortableConfig(trigger) {
+  try {
+    const json = buildPortableExportSnapshot(state.config, state.inventory);
+    // Use clipboard API (modern browsers); fallback to toast with text if blocked
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(json);
+      toast('Portable config copied to clipboard');
+    } else {
+      // Rare fallback: show in toast + console for manual copy
+      toast('Export ready (clipboard unavailable) — see console');
+      console.log('LCC portable export:\n' + json);
+    }
+    // Also briefly show a hint in model notes or just rely on toast
+  } catch (err) {
+    toast('Export failed: ' + (err && err.message ? err.message : err));
+  }
+}
+
+let paletteVisible = false;
+function showCommandPalette() {
+  const back = $('#command-palette');
+  if (!back) return;
+  back.hidden = false;
+  document.body.classList.add('modal-open');
+  paletteVisible = true;
+  renderPaletteList('');
+  const filter = $('#palette-filter');
+  if (filter) {
+    filter.value = '';
+    filter.focus();
+    filter.oninput = () => renderPaletteList(filter.value);
+    // Basic keyboard nav for palette list (up/down/enter)
+    filter.onkeydown = (ev) => {
+      const items = Array.from($('#palette-list').querySelectorAll('li[data-cmd]'));
+      if (!items.length) return;
+      let sel = items.findIndex(i => i.classList.contains('selected'));
+      if (sel < 0) sel = 0;
+      if (ev.key === 'ArrowDown') {
+        ev.preventDefault();
+        if (sel >= 0 && items[sel]) items[sel].classList.remove('selected');
+        sel = (sel + 1) % items.length;
+        items[sel].classList.add('selected');
+        items[sel].scrollIntoView({block:'nearest'});
+      } else if (ev.key === 'ArrowUp') {
+        ev.preventDefault();
+        if (sel >= 0 && items[sel]) items[sel].classList.remove('selected');
+        sel = (sel - 1 + items.length) % items.length;
+        items[sel].classList.add('selected');
+        items[sel].scrollIntoView({block:'nearest'});
+      } else if (ev.key === 'Enter') {
+        ev.preventDefault();
+        const chosen = items[sel >=0 ? sel : 0];
+        if (chosen) {
+          const id = chosen.dataset.cmd;
+          hideCommandPalette();
+          executeCommand(id);
+        }
+      }
+    };
+  }
+}
+function hideCommandPalette() {
+  const back = $('#command-palette');
+  if (back) back.hidden = true;
+  document.body.classList.remove('modal-open');
+  paletteVisible = false;
+}
+function renderPaletteList(filterText) {
+  const list = $('#palette-list');
+  if (!list) return;
+  const q = (filterText || '').toLowerCase().trim();
+  const cmds = getCommands().filter(c => !q || c.label.toLowerCase().includes(q) || c.id.includes(q));
+  list.innerHTML = cmds.map((c, idx) => `
+    <li data-cmd="${escapeHtml(c.id)}" class="${idx===0 ? 'selected' : ''}">
+      <span>${escapeHtml(c.label)}</span>
+      <kbd>${escapeHtml(c.shortcut || '')}</kbd>
+    </li>
+  `).join('') || '<li class="empty">No matching commands</li>';
+  // click to execute
+  list.querySelectorAll('li[data-cmd]').forEach(li => {
+    li.addEventListener('click', () => {
+      const id = li.dataset.cmd;
+      hideCommandPalette();
+      executeCommand(id);
+    });
+  });
 }
 
 function updateHfCliUi(hfData) {
@@ -1496,12 +2041,13 @@ function reconcileSelectedMode() {
 const DASHBOARD_RESOURCES = [
   { label: 'profiles', path: '/api/profiles', apply: (d) => { state.profiles = d.profiles || []; }, render: () => { reconcileSelectedMode(); renderProfiles(); renderParameters(); renderSummary(); } },
   { label: 'servers', path: '/api/servers', apply: (d) => { state.servers = d.servers || []; }, render: renderServers },
-  { label: 'inventory', path: '/api/inventory', apply: (d) => { state.inventory = d; }, render: () => { renderSummary(); renderModels(); renderIssues(); renderRuntimes(); renderRuntimeOptions($('#param-runtime')?.value); } },
-  { label: 'settings', path: '/api/config', apply: (d) => { state.config = d; }, render: () => { renderSettings(); renderParameters(); } },
+  { label: 'inventory', path: '/api/inventory', apply: (d) => { state.inventory = d; }, render: () => { renderSummary(); renderModels(); renderIssues(); renderRuntimes(); renderRuntimeOptions($('#param-runtime')?.value); renderPortability(); } },
+  { label: 'settings', path: '/api/config', apply: (d) => { state.config = d; }, render: () => { renderSettings(); renderParameters(); renderPortability(); } },
   { label: 'hardware', path: '/api/system', apply: (d) => { state.hardware = d; }, render: () => { renderHardware(); renderParameters(); } },
   { label: 'meta', path: '/api/meta', apply: (d) => { state.meta = d; }, render: renderVersion },
   { label: 'runtime-updates', path: '/api/runtime-updates', apply: (d) => { state.runtimeUpdates = d; }, render: renderRuntimes },
   { label: 'hf-cli', path: '/api/hf-cli', apply: (d) => { updateHfCliUi(d); }, render: () => {} },
+  { label: 'benchmarks', path: '/api/benchmarks', apply: (d) => { state.benchmarks = d.benchmarks || []; }, render: renderBenchmarkHistory },
 ];
 
 async function refresh() {
@@ -1522,6 +2068,27 @@ async function refresh() {
       toast(`Refresh partial: ${summary}${suffix}`);
     } else {
       setApiStatus(true, 'API ready');
+    }
+
+    // M2 observability (M1.3/M2.1): extend polling to fetch /metrics for running/crashed
+    // servers on refresh. Attach to the server objects in state so renderers can use them.
+    // Logs remain on-demand via loadLogs (already wired in UI).
+    try {
+      const servers = state.servers || [];
+      const toPoll = servers.filter((s) => s.running || s.status === 'crashed' || s.status === 'startup_timeout');
+      if (toPoll.length > 0) {
+        await Promise.all(toPoll.map(async (srv) => {
+          try {
+            const m = await api(`/api/servers/${encodeURIComponent(srv.id)}/metrics`);
+            srv.metrics = m;
+          } catch (_) {
+            // non-fatal; render will show what it has
+          }
+        }));
+        renderServers();
+      }
+    } catch (_) {
+      // enrichment must never break refresh
     }
   } catch (error) {
     setApiStatus(false, 'API error', `API error: ${error.message}`);
@@ -1629,7 +2196,54 @@ async function startProfile(mode, trigger) {
     await refresh();
     renderProfiles();
   } catch (error) {
-    toast(`Start failed: ${error.message}`);
+    const detail = error.detail;
+    if (detail && detail.port_in_use) {
+      const suggested = detail.suggested_port;
+      if (detail.port_in_use_reason === 'reserved') {
+        // Windows-reserved-range case: no holder to report, but the
+        // suggested_port is already chosen above the range end.
+        const rng = detail.reserved_range || {};
+        toast(
+          `Port ${detail.port} is inside the Windows reserved range ${rng.start ?? '?'}-${rng.end ?? '?'}. Pick a port above ${rng.end ?? '?'}.`,
+          suggested
+            ? {
+                label: `Use port ${suggested}`,
+                onClick: () => {
+                  const portInput = $('#param-port');
+                  if (portInput) {
+                    portInput.value = String(suggested);
+                    portInput.dispatchEvent(new Event('input', { bubbles: true }));
+                    portInput.focus();
+                  }
+                },
+              }
+            : undefined,
+        );
+      } else {
+        const holder = detail.port_holder || {};
+        const who = holder.process_name && holder.pid
+          ? `${holder.process_name} (PID ${holder.pid})`
+          : holder.process_name || holder.pid || 'another process';
+        toast(
+          `Port ${detail.port} is already bound by ${who}.`,
+          suggested
+            ? {
+                label: `Use port ${suggested}`,
+                onClick: () => {
+                  const portInput = $('#param-port');
+                  if (portInput) {
+                    portInput.value = String(suggested);
+                    portInput.dispatchEvent(new Event('input', { bubbles: true }));
+                    portInput.focus();
+                  }
+                },
+              }
+            : undefined,
+        );
+      }
+    } else {
+      toast(`Start failed: ${error.message}`);
+    }
   } finally {
     setActionsBusy(targetMode, false);
   }
@@ -1872,41 +2486,140 @@ function renderBenchmarkSummary(result) {
   `;
 }
 
+function renderBenchmarkHistory() {
+  const container = $('#benchmark-history');
+  const list = $('#benchmark-history-list');
+  if (!container || !list) return;
+
+  const all = state.benchmarks || [];
+  const currentMode = selectedMode();
+  const recent = all.slice(-5).reverse(); // newest first
+
+  if (!recent.length) {
+    container.style.display = 'none';
+    return;
+  }
+  container.style.display = '';
+
+  let html = '<table><thead><tr><th>When</th><th>Mode</th><th>t/s</th><th>tok</th><th>Action</th></tr></thead><tbody>';
+  recent.forEach((b, i) => {
+    const bm = b.benchmark || b;
+    const when = b.timestamp ? new Date(b.timestamp).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}) : '–';
+    const mode = b.mode || '–';
+    const tps = bm.tokens_per_second ? bm.tokens_per_second.toFixed(1) : '–';
+    const toks = bm.completion_tokens || bm.total_tokens || '–';
+    const isCurrent = currentMode && mode === currentMode;
+    const cls = isCurrent ? 'current' : '';
+    html += `<tr class="${cls}"><td>${escapeHtml(when)}</td><td>${escapeHtml(mode)}</td><td>${tps}</td><td>${toks}</td>`;
+    html += `<td><button class="mini-button" data-bench-idx="${all.length - 1 - i}">Use</button></td></tr>`;
+  });
+  html += '</tbody></table>';
+  list.innerHTML = html;
+
+  list.querySelectorAll('button[data-bench-idx]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const idx = parseInt(btn.dataset.benchIdx);
+      const entry = all[idx];
+      if (entry && entry.mode) {
+        state.selectedProfileMode = entry.mode;
+        renderParameters();
+        renderProfiles();
+        toast('Loaded params from benchmark history (approximate)');
+      }
+    });
+  });
+}
+
 async function sendTestPrompt() {
   const mode = selectedMode();
   if (!mode) {
     toast('Select a profile first');
     return;
   }
-  const input = $('#test-prompt-input');
-  const prompt = (input.value || '').trim();
-  if (!prompt) {
-    toast('Enter a prompt to send');
-    return;
-  }
   if (!serverRunningForMode(mode)) {
     toast(`Start the server for "${mode}" first`);
     return;
   }
-  const meta = $('#test-prompt-meta');
-  const output = $('#test-prompt-output');
-  output.hidden = false;
-  output.textContent = 'Sending…';
-  meta.hidden = true;
+  const input = $('#test-prompt-input');
+  const prompt = (input.value || '').trim();
+  if (!prompt) {
+    toast('Enter a message to send');
+    return;
+  }
+
+  // Maintain history for this mode
+  if (!state.chatHistory[mode]) state.chatHistory[mode] = [];
+  const history = state.chatHistory[mode];
+
+  // Append user message
+  history.push({ role: 'user', content: prompt });
+  renderChatLog(mode);
+
+  input.value = '';
+
   await withBusy($('#test-prompt-send'), async () => {
     try {
+      // Send full history so backend can do proper multi-turn
       const result = await api('/api/servers/test-prompt', {
         method: 'POST',
-        body: JSON.stringify({ mode, prompt, max_tokens: 256 }),
+        body: JSON.stringify({
+          mode,
+          messages: history,           // full conversation
+          max_tokens: 512,
+        }),
       });
-      output.textContent = result.reply || '(empty response)';
-      meta.hidden = false;
-      meta.textContent = `${result.tokens_per_second} tok/s · ${result.completion_tokens} tokens · ${result.elapsed_seconds}s`;
+
+      if (result.success && result.reply) {
+        history.push({ role: 'assistant', content: result.reply });
+        renderChatLog(mode);
+
+        // Show last-turn stats
+        const meta = $('#test-prompt-meta');
+        if (meta) {
+          meta.hidden = false;
+          meta.textContent = `${result.tokens_per_second || '?'} tok/s · ${result.completion_tokens || '?'} tokens · ${result.elapsed_seconds || '?'}s`;
+        }
+      } else {
+        // rollback the user message on failure
+        history.pop();
+        renderChatLog(mode);
+        toast(result.error || 'Chat failed');
+      }
     } catch (error) {
-      output.textContent = `Error: ${error.message}`;
-      meta.hidden = true;
+      history.pop();
+      renderChatLog(mode);
+      toast(`Chat error: ${error.message}`);
     }
   });
+}
+
+function renderChatLog(mode) {
+  const container = $('#chat-log');
+  if (!container) return;
+
+  const history = state.chatHistory[mode] || [];
+  if (history.length === 0) {
+    container.innerHTML = '<div class="empty-state" style="padding:8px;font-size:12px;">No messages yet. Start chatting with the running server.</div>';
+    return;
+  }
+
+  container.innerHTML = history.map(msg => {
+    const cls = msg.role === 'user' ? 'user' : 'assistant';
+    const label = msg.role === 'user' ? 'You' : 'Model';
+    return `<div class="chat-message ${cls}"><strong>${label}:</strong> ${escapeHtml(msg.content)}</div>`;
+  }).join('');
+
+  // scroll to bottom
+  container.scrollTop = container.scrollHeight;
+}
+
+function clearChat() {
+  const mode = selectedMode();
+  if (!mode) return;
+  state.chatHistory[mode] = [];
+  renderChatLog(mode);
+  const meta = $('#test-prompt-meta');
+  if (meta) meta.hidden = true;
 }
 
 async function runBenchmark() {
@@ -1952,6 +2665,7 @@ async function runBenchmark() {
       ].join('\n');
       toast(`Benchmark: ${result.benchmark.tokens_per_second} tok/s`);
       await refresh();
+      renderBenchmarkHistory();
       const currentKey = estimateKey(selectedMode() || '', collectOverrides());
       if (currentKey === state.lastBenchmarkKey && state.measuredTps) {
         renderMeasuredTps(state.measuredTps, state.measuredElapsed);
@@ -2039,6 +2753,50 @@ async function checkModelUpdate() {
   });
 }
 
+async function searchHfBrowser() {
+  const input = $('#hf-search-input');
+  const q = (input.value || '').trim();
+  const resEl = $('#hf-browser-results');
+  if (!q || !resEl) return;
+  resEl.innerHTML = '<div class="loading">Fetching info…</div>';
+  try {
+    const data = await api('/api/models/hf-info', {
+      method: 'POST',
+      body: JSON.stringify({ repo_id: q }),
+    });
+    if (!data.success) {
+      resEl.innerHTML = `<div class="empty-state">${escapeHtml(data.error || 'No results')}</div>`;
+      return;
+    }
+    let html = `<strong>${escapeHtml(data.model_id || q)}</strong><br>`;
+    html += `Downloads: ${data.downloads || '–'} · Likes: ${data.likes || '–'}<br>`;
+    if (data.summary) html += `<small>${escapeHtml(String(data.summary).slice(0,120))}</small><br>`;
+
+    // Try to show files if present in card or matches (heuristic)
+    const files = data.files || (data.matches && data.matches[0] && data.matches[0].files) || [];
+    // For GGUF focused browser, show common quants or link to download
+    const commonQuants = ['Q4_K_M', 'Q5_K_M', 'Q8_0', 'Q3_K_M', 'IQ4_NL'];
+    html += '<div style="margin-top:4px"><strong>Quick quants (example):</strong></div>';
+    commonQuants.forEach(qt => {
+      const fnameGuess = `${data.model_id ? data.model_id.split('/').pop() : q}-${qt}.gguf`;
+      html += `<div class="hf-file-row"><span>${qt}</span> <button class="mini-button" data-hf-repo="${escapeHtml(q)}" data-hf-file="${escapeHtml(fnameGuess)}">Download</button></div>`;
+    });
+    resEl.innerHTML = html;
+
+    resEl.querySelectorAll('button[data-hf-repo]').forEach(btn => {
+      btn.addEventListener('click', async (e) => {
+        const repo = btn.dataset.hfRepo;
+        const file = btn.dataset.hfFile;
+        // use existing download, dest can be first model dir or prompt
+        const dest = (state.inventory && state.inventory.scan_roots && state.inventory.scan_roots[0]) || '';
+        await downloadModelUpdate(repo, file, dest, btn);
+      });
+    });
+  } catch (err) {
+    resEl.innerHTML = `<div class="empty-state">Error: ${escapeHtml(err.message)}</div>`;
+  }
+}
+
 async function downloadModelUpdate(repo, file, dest, trigger) {
   const confirmed = await confirmAction({
     title: 'Download model file',
@@ -2078,6 +2836,36 @@ async function stopTracked(serverId, trigger) {
       renderProfiles();
     } catch (error) {
       toast(`Stop failed: ${error.message}`);
+    }
+  });
+}
+
+async function restartTracked(serverId, trigger) {
+  // M2.2: Restart re-uses the tracked mode to launch again (for crashed servers mainly).
+  const server = (state.servers || []).find((s) => s.id === serverId);
+  const mode = server && server.mode;
+  if (!mode) {
+    toast('No mode available to restart');
+    return;
+  }
+  const confirmed = await confirmAction({
+    title: 'Restart server',
+    message: `Restart "${mode}"? This will launch a fresh instance.`,
+    confirmLabel: 'Restart',
+    confirmKind: 'primary',
+  });
+  if (!confirmed) return;
+  await withBusy(trigger, async () => {
+    try {
+      await api('/api/servers/start', {
+        method: 'POST',
+        body: JSON.stringify({ mode, wait_ready: true, ready_timeout_seconds: 45 }),
+      });
+      toast(`Restarted ${mode}`);
+      await refresh();
+      renderProfiles();
+    } catch (error) {
+      toast(`Restart failed: ${error.message}`);
     }
   });
 }
@@ -2122,8 +2910,25 @@ async function loadLogs(serverId, trigger) {
   });
 }
 
+async function purgeServers(onlyNonRunning = true, trigger = null, clearAll = false) {
+  const label = clearAll ? 'Clear all server history' : (onlyNonRunning ? 'Purge stopped/crashed servers' : 'Purge servers');
+  const ok = await confirmAction({ title: label, message: clearAll ? 'This will remove every tracked server entry (running or not). Continue?' : 'Remove non-running server entries from history?', confirmLabel: 'Purge', confirmKind: clearAll ? 'danger' : 'primary' });
+  if (!ok) return;
+  await withBusy(trigger, async () => {
+    try {
+      const params = clearAll ? { all: 'true' } : { only_non_running: onlyNonRunning ? 'true' : 'false' };
+      const qs = new URLSearchParams(params).toString();
+      const res = await api(`/api/servers/purge?${qs}`, { method: 'POST' });
+      toast(res.message || 'Server history purged');
+      await refresh();
+    } catch (error) {
+      toast(`Purge failed: ${error.message}`);
+    }
+  });
+}
+
 const PANEL_COLLAPSE_KEY = 'lcc-collapsed-panels';
-const DEFAULT_COLLAPSED_PANELS = ['test-prompt', 'logs', 'portability', 'hf-tools'];
+const DEFAULT_COLLAPSED_PANELS = ['chat', 'logs', 'portability', 'hf-tools'];
 
 function loadCollapsedPanels() {
   try {
@@ -2202,6 +3007,13 @@ function enhanceSidebar() {
   });
 }
 
+function syncSearchInputs(value) {
+  ['#search-input', '#profile-filter-input'].forEach((selector) => {
+    const input = $(selector);
+    if (input && input.value !== value) input.value = value;
+  });
+}
+
 function wireEvents() {
   applyTheme();
   enhanceTooltips();
@@ -2213,6 +3025,7 @@ function wireEvents() {
   $('#refresh-button').addEventListener('click', refresh);
   $('#check-updates-button').addEventListener('click', (event) => refreshRuntimeUpdates(event.currentTarget));
   $('#settings-button').addEventListener('click', openSettings);
+  $('#settings-nav-button')?.addEventListener('click', openSettings);
   $('#settings-close-button').addEventListener('click', closeSettings);
   $('#settings-cancel-button').addEventListener('click', closeSettings);
   $('#settings-modal').addEventListener('click', (event) => {
@@ -2225,6 +3038,30 @@ function wireEvents() {
   $('#settings-use-runtime-roots').addEventListener('click', () => {
     $('#settings-runtime-dirs').value = listToLines(detectedRuntimeRoots());
   });
+  $('#settings-reset-defaults')?.addEventListener('click', () => {
+    // Reset the form fields to sensible portable defaults (does not save until user clicks Save)
+    $('#settings-model-dirs').value = '';
+    $('#settings-runtime-dirs').value = '';
+    $('#settings-llama-server').value = '';
+    $('#settings-llama-fit').value = '';
+    $('#settings-default-host').value = '127.0.0.1';
+    $('#settings-default-port').value = '8080';
+    $('#settings-default-backend').value = 'llama.cpp';
+    $('#settings-update-channel').value = 'stable';
+    $('#settings-server-history-limit').value = '5';
+    $('#settings-extra-args').value = '';
+    const a2 = $('#settings-auto-scan'); if (a2) a2.checked = true;
+    toast('Form reset to defaults (click Save to apply)');
+  });
+  $('#settings-export-button')?.addEventListener('click', async (e) => {
+    await exportPortableConfig(e.currentTarget);
+  });
+  $('#portability-export')?.addEventListener('click', async (e) => {
+    await exportPortableConfig(e.currentTarget);
+  });
+  // Palette backdrop close
+  const palBack = $('#command-palette');
+  if (palBack) palBack.addEventListener('click', (e) => { if (e.target.id === 'command-palette') hideCommandPalette(); });
   $('#theme-button').addEventListener('click', () => {
     state.theme = state.theme === 'dark' ? 'light' : 'dark';
     localStorage.setItem('lcc-theme', state.theme);
@@ -2232,8 +3069,51 @@ function wireEvents() {
   });
   $('#search-input').addEventListener('input', (event) => {
     state.query = event.target.value;
+    syncSearchInputs(state.query);
     renderProfiles();
     renderModels();
+  });
+  $('#profile-filter-input')?.addEventListener('input', (event) => {
+    state.query = event.target.value;
+    syncSearchInputs(state.query);
+    renderProfiles();
+    renderModels();
+  });
+  $('#profile-model-filter')?.addEventListener('change', (event) => {
+    state.profileModelFilter = event.target.value || 'all';
+    renderProfiles();
+  });
+  $('#hide-unavailable-profiles')?.addEventListener('change', (event) => {
+    state.hideUnavailableProfiles = event.target.checked;
+    localStorage.setItem('lcc-hide-unavailable-profiles', state.hideUnavailableProfiles ? '1' : '0');
+    renderProfiles();
+  });
+  const hideNotInstalled = $('#hide-not-installed-runtimes');
+  if (hideNotInstalled) {
+    hideNotInstalled.checked = !!state.hideNotInstalledRuntimes;
+    hideNotInstalled.addEventListener('change', (event) => {
+      state.hideNotInstalledRuntimes = event.target.checked;
+      localStorage.setItem('lcc-hide-not-installed-runtimes', state.hideNotInstalledRuntimes ? '1' : '0');
+      renderRuntimes();
+    });
+  }
+  $('#new-profile-button')?.addEventListener('click', () => $('#save-profile-button')?.click());
+  $('#profile-menu-button')?.addEventListener('click', () => {
+    const mode = state.selectedProfileMode;
+    if (!mode) {
+      toast('Select a profile row first');
+      return;
+    }
+    const profile = state.profiles.find((p) => p.mode === mode);
+    if (!profile) {
+      toast('Selected profile not found');
+      return;
+    }
+    if (!profile.launchable) {
+      toast('Selected profile is not launchable; nothing to save');
+      return;
+    }
+    openSaveAsCopyModal(profile);
   });
   $$('.segment').forEach((button) => {
     button.addEventListener('click', () => {
@@ -2273,6 +3153,25 @@ function wireEvents() {
     }
   });
   document.body.addEventListener('click', (event) => {
+    // Server selection (clicking the card itself, not action buttons inside)
+    const serverCard = event.target.closest('.server-item, .active-server-row');
+    if (serverCard && !event.target.closest('button')) {
+      const sid = serverCard.dataset.serverId;
+      if (sid) {
+        state.selectedServerId = sid;
+        const server = (state.servers || []).find(s => s.id === sid);
+        if (server && server.mode) {
+          renderChatLog(server.mode);
+        }
+        // If logs pane is visible, optionally auto-load; for now just remember selection.
+        // User can hit "Open logs" or the per-item Logs button.
+        const preview = $('#log-preview');
+        if (preview && preview.textContent.includes('No tracked')) {
+          preview.textContent = `Selected server ${sid}. Use Logs button or Open logs for details.`;
+        }
+      }
+    }
+
     const target = event.target.closest('button');
     if (!target) return;
     const { action, mode, serverId, runtime, repo, file, dest } = target.dataset;
@@ -2281,14 +3180,23 @@ function wireEvents() {
       renderParameters();
     }
     if (action === 'download-model') downloadModelUpdate(repo, file, dest, target);
+    else if (action === 'toggle-runtimes') {
+      state.showAllRuntimes = !state.showAllRuntimes;
+      renderRuntimes();
+    }
     else if (action === 'recheck-runtime') recheckRuntime(runtime, target);
     else if (action === 'prepare') prepareProfile(mode, target);
     else if (action === 'start') startProfile(mode, target);
     else if (action === 'logs') loadLogs(serverId, target);
+    else if (action === 'restart') {
+      if (serverId) restartTracked(serverId, target);
+    }
     else if (action === 'stop') {
       if (serverId) stopTracked(serverId, target);
       else if (mode) stopProfileByMode(mode, target);
     }
+    else if (action === 'profile-menu') openProfileMenu(target, mode);
+    else if (action === 'runtime-menu') openRuntimeMenu(target, runtime);
     else if (action === 'rename') {
       const profile = state.profiles.find((p) => p.mode === mode);
       if (profile) saveProfileName(mode, profile.name || profile.mode);
@@ -2299,10 +3207,17 @@ function wireEvents() {
     if (serverId) loadLogs(serverId);
     else toast('No tracked server to open logs for');
   });
+  // Active Servers main panel + side pane purge controls
+  $('#active-servers-purge-stopped')?.addEventListener('click', (e) => purgeServers(true, e.currentTarget));
+  $('#active-servers-purge-all')?.addEventListener('click', (e) => purgeServers(false, e.currentTarget, true));
+  $('#servers-purge-stopped')?.addEventListener('click', (e) => purgeServers(true, e.currentTarget));
+  $('#servers-clear-history')?.addEventListener('click', (e) => purgeServers(false, e.currentTarget, true));
   $('#param-profile').addEventListener('change', (event) => {
     state.selectedProfileMode = event.target.value;
     renderParameters();
     renderProfiles();
+    const mode = selectedMode();
+    if (mode) renderChatLog(mode);
   });
   $('#reset-params-button').addEventListener('click', () => {
     const mode = selectedMode();
@@ -2311,6 +3226,8 @@ function wireEvents() {
     toast('Parameters reset');
   });
   $('#prepare-selected-button').addEventListener('click', (event) => prepareProfile(selectedMode(), event.currentTarget));
+  $('#start-selected-button')?.addEventListener('click', (event) => startProfile(selectedMode(), event.currentTarget));
+  $('#stop-selected-button')?.addEventListener('click', (event) => stopProfileByMode(selectedMode(), event.currentTarget));
   $('#smart-fit-button').addEventListener('click', runAutoTune);
   $('#model-info-box').addEventListener('click', (event) => {
     const button = event.target.closest('[data-tune-index]');
@@ -2320,10 +3237,26 @@ function wireEvents() {
   $('#fit-button').addEventListener('click', runFitTest);
   $('#benchmark-button').addEventListener('click', runBenchmark);
   $('#test-prompt-send').addEventListener('click', sendTestPrompt);
+  $('#test-prompt-send-bottom')?.addEventListener('click', sendTestPrompt);
+  $('#chat-clear')?.addEventListener('click', clearChat);
   $('#test-prompt-input').addEventListener('keydown', (event) => {
-    if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') sendTestPrompt();
+    if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
+      sendTestPrompt();
+    } else if (event.key === 'Enter' && !event.shiftKey) {
+      // allow normal enter to send (like many chats)
+      event.preventDefault();
+      sendTestPrompt();
+    }
   });
   $('#hf-info-button').addEventListener('click', fetchHFInfo);
+  // Portability reworked panel actions
+  $('#portability-open-settings')?.addEventListener('click', () => openSettings());
+  $('#portability-rescan')?.addEventListener('click', async (e) => {
+    await withBusy(e.currentTarget, async () => {
+      await refresh();
+      toast('Rescanned inventory and portability issues');
+    });
+  });
   $('#hf-update-button').addEventListener('click', checkModelUpdate);
   $('#hf-check-updates-button').addEventListener('click', (event) => {
     event.preventDefault();
@@ -2359,6 +3292,10 @@ function wireEvents() {
         toast(`Install failed: ${error.message}`);
       }
     });
+  });
+  $('#hf-search-btn')?.addEventListener('click', searchHfBrowser);
+  $('#hf-search-input')?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') searchHfBrowser();
   });
   $('#suggest-draft-button').addEventListener('click', suggestDraftModels);
   $('#save-profile-button').addEventListener('click', async () => {
@@ -2429,13 +3366,17 @@ function wireEvents() {
     state.paramPreviewHost = $('#param-host').value.trim() || '127.0.0.1';
     state.paramPreviewPort = numericValue('#param-port') || 8080;
     scheduleTpsEstimate();
+    schedulePortCheck();
   });
   $('#param-form').addEventListener('input', () => {
     saveCurrentOverrides();
     state.paramPreviewHost = $('#param-host').value.trim() || '127.0.0.1';
     state.paramPreviewPort = numericValue('#param-port') || 8080;
     scheduleTpsEstimate();
+    schedulePortCheck();
   });
+  // Click the dot to force an immediate re-probe (bypass the debounce).
+  $('#param-port-status')?.addEventListener('click', () => schedulePortCheck());
   // Preset picker writes into #param-ctx (the source of truth), then resets so it
   // always reads "Presets" and never filters its options by the current value.
   $('#param-ctx-preset').addEventListener('change', (event) => {
@@ -2448,9 +3389,26 @@ function wireEvents() {
     ctx.dispatchEvent(new Event('change', { bubbles: true }));
   });
   document.addEventListener('keydown', (event) => {
+    // AC3: Check Ctrl+Shift+K (more specific) BEFORE plain Ctrl+K so palette trigger works
+    if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === 'k') {
+      event.preventDefault();
+      if (paletteVisible) hideCommandPalette(); else showCommandPalette();
+      return;
+    }
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
+      event.preventDefault();
+      const search = $('#search-input');
+      search?.focus();
+      search?.select();
+      return;
+    }
     if (event.key === 'Escape') {
       if (!$('#settings-modal').hidden) {
         closeSettings();
+        return;
+      }
+      if (paletteVisible) {
+        hideCommandPalette();
         return;
       }
     }
@@ -2475,13 +3433,384 @@ function wireEvents() {
   window.addEventListener('resize', hideFloatingTooltip);
   window.addEventListener('scroll', hideFloatingTooltip, true);
   $$('.nav-item').forEach((item) => {
-    item.addEventListener('click', () => {
+    item.addEventListener('click', (e) => {
       $$('.nav-item').forEach((nav) => nav.classList.remove('active'));
       item.classList.add('active');
+
+      // Bounce transition to linked panel
+      const href = item.getAttribute('href');
+      if (href && href.startsWith('#')) {
+        const target = document.querySelector(href);
+        if (target) {
+          // Prevent instant jump if we want custom scroll
+          if (item.tagName === 'A') {
+            e.preventDefault();
+          }
+          target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          target.classList.add('bounce-target');
+          // Remove after animation
+          setTimeout(() => {
+            target.classList.remove('bounce-target');
+          }, 700);
+        }
+      }
     });
   });
+}
+
+// ----- Popup menu component -------------------------------------------------
+// One shared <ul> element reused across the dashboard. Anchors to a trigger
+// element, positions itself below it, closes on outside click / Escape, and
+// supports keyboard arrow nav. Items: { id?, label, danger?, disabled?, onSelect }.
+let popupMenuEl = null;
+let popupMenuItems = [];
+let popupMenuActiveIndex = 0;
+let popupMenuOutsideHandler = null;
+let popupMenuKeyHandler = null;
+
+function closePopupMenu() {
+  if (popupMenuEl) {
+    popupMenuEl.remove();
+    popupMenuEl = null;
+  }
+  popupMenuItems = [];
+  document.removeEventListener('mousedown', popupMenuOutsideHandler, true);
+  document.removeEventListener('keydown', popupMenuKeyHandler, true);
+  popupMenuOutsideHandler = null;
+  popupMenuKeyHandler = null;
+}
+
+function showPopupMenu(trigger, items) {
+  closePopupMenu();
+  if (!Array.isArray(items) || items.length === 0) return;
+  popupMenuItems = items.filter((item) => !item.hidden);
+
+  const menu = document.createElement('ul');
+  menu.className = 'popup-menu';
+  menu.setAttribute('role', 'menu');
+  popupMenuItems.forEach((item, index) => {
+    if (item.separator) {
+      const sep = document.createElement('li');
+      sep.className = 'popup-menu-separator';
+      sep.setAttribute('role', 'separator');
+      menu.appendChild(sep);
+      return;
+    }
+    const li = document.createElement('li');
+    li.setAttribute('role', 'menuitem');
+    li.className = `popup-menu-item${item.danger ? ' danger' : ''}${item.disabled ? ' disabled' : ''}`;
+    li.tabIndex = -1;
+    li.textContent = item.label;
+    li.title = item.title || '';
+    li.dataset.index = String(index);
+    if (!item.disabled) {
+      li.addEventListener('click', (event) => {
+        event.stopPropagation();
+        closePopupMenu();
+        try { item.onSelect?.(); } catch (err) { console.error(err); }
+      });
+    }
+    menu.appendChild(li);
+  });
+  document.body.appendChild(menu);
+  popupMenuEl = menu;
+
+  // Position below the trigger, flipping above if it would overflow viewport.
+  const rect = trigger.getBoundingClientRect();
+  menu.style.visibility = 'hidden';
+  requestAnimationFrame(() => {
+    const menuRect = menu.getBoundingClientRect();
+    const fitsBelow = rect.bottom + menuRect.height + 8 <= window.innerHeight;
+    const top = fitsBelow
+      ? rect.bottom + window.scrollY + 4
+      : rect.top + window.scrollY - menuRect.height - 4;
+    const left = Math.min(
+      rect.left + window.scrollX,
+      window.scrollX + window.innerWidth - menuRect.width - 8,
+    );
+    menu.style.top = `${Math.max(top, window.scrollY + 4)}px`;
+    menu.style.left = `${Math.max(left, window.scrollX + 4)}px`;
+    menu.style.visibility = 'visible';
+    popupMenuActiveIndex = 0;
+    const first = menu.querySelector('.popup-menu-item:not(.disabled)');
+    first?.classList.add('active');
+    first?.focus();
+  });
+
+  popupMenuOutsideHandler = (event) => {
+    if (!popupMenuEl) return;
+    if (popupMenuEl.contains(event.target) || trigger.contains(event.target)) return;
+    closePopupMenu();
+  };
+  popupMenuKeyHandler = (event) => {
+    if (!popupMenuEl) return;
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      closePopupMenu();
+      trigger.focus();
+      return;
+    }
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault();
+      const step = event.key === 'ArrowDown' ? 1 : -1;
+      // Skip separators; only enabled non-separator items are focusable.
+      const enabled = popupMenuItems
+        .map((item, idx) => ({ item, idx }))
+        .filter(({ item }) => !item.disabled && !item.separator);
+      if (enabled.length === 0) return;
+      const pos = enabled.findIndex(({ idx }) => idx === popupMenuActiveIndex);
+      const next = enabled[(pos + step + enabled.length) % enabled.length];
+      popupMenuActiveIndex = next.idx;
+      menu.querySelectorAll('.popup-menu-item').forEach((el, idx) => {
+        el.classList.toggle('active', idx === popupMenuActiveIndex);
+      });
+      menu.querySelector(`.popup-menu-item[data-index="${popupMenuActiveIndex}"]`)?.focus();
+      return;
+    }
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      const current = popupMenuItems[popupMenuActiveIndex];
+      if (current && !current.disabled) {
+        closePopupMenu();
+        try { current.onSelect?.(); } catch (err) { console.error(err); }
+      }
+    }
+  };
+  // Use capture so the outside-click fires before any handler bound to the
+  // trigger element (e.g. our row-click listener).
+  setTimeout(() => {
+    document.addEventListener('mousedown', popupMenuOutsideHandler, true);
+    document.addEventListener('keydown', popupMenuKeyHandler, true);
+  }, 0);
+}
+
+// ----- Live Hardware polling (sidebar widget) -------------------------------
+// Polls /api/system/live every few seconds, pauses when the tab is hidden or
+// the sidebar is collapsed, and renders GPU util/temp/VRAM bars plus a RAM
+// bar inside the sidebar just above the API footer.
+const LIVE_HARDWARE_INTERVAL_MS = 3000;
+let liveHardwareTimer = null;
+const LIVE_HISTORY_MAX = 20; // ~60 seconds of history
+let liveGpuUtilHistory = {}; // { idx: number[] }
+let liveGpuVramHistory = {}; // { idx: number[] }
+let liveRamHistory = []; // number[]
+
+function liveBarClass(percent) {
+  if (percent >= 90) return 'danger';
+  if (percent >= 70) return 'warn';
+  return '';
+}
+
+function drawSparkline(canvas, values, color = '#20aeb5') {
+  if (!canvas || !values || values.length < 2) {
+    if (canvas) {
+      const ctx = canvas.getContext('2d');
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+    }
+    return;
+  }
+  const ctx = canvas.getContext('2d');
+  const w = canvas.width;
+  const h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
+
+  const n = values.length;
+  const max = Math.max(...values, 100);
+  const min = Math.min(...values, 0);
+  const range = (max - min) || 1;
+
+  // subtle fill under the line
+  ctx.beginPath();
+  values.forEach((v, i) => {
+    const x = (i / (n - 1)) * w;
+    const y = h - ((v - min) / range) * h;
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  });
+  ctx.lineTo(w, h);
+  ctx.lineTo(0, h);
+  ctx.closePath();
+  ctx.fillStyle = color + '22'; // very transparent
+  ctx.fill();
+
+  // line
+  ctx.beginPath();
+  values.forEach((v, i) => {
+    const x = (i / (n - 1)) * w;
+    const y = h - ((v - min) / range) * h;
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  });
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1.8;
+  ctx.lineJoin = 'round';
+  ctx.stroke();
+
+  // small end dot
+  const lastX = w;
+  const lastY = h - ((values[values.length-1] - min) / range) * h;
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.arc(lastX - 1, lastY, 2, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function renderLiveGpu(gpu) {
+  const usedPct = gpu.total_memory_bytes > 0
+    ? (gpu.used_memory_bytes / gpu.total_memory_bytes) * 100
+    : 0;
+  const utilPct = Number.isFinite(gpu.utilization_gpu_percent) ? gpu.utilization_gpu_percent : null;
+  const temp = Number.isFinite(gpu.temperature_c) ? `${Math.round(gpu.temperature_c)}°C` : '–';
+  const utilText = utilPct === null ? '–' : `${Math.round(utilPct)}%`;
+  // Shorten common GPU name prefixes so they fit the narrow sidebar column.
+  const displayName = String(gpu.name || '')
+    .replace(/^NVIDIA GeForce /, '')
+    .replace(/^NVIDIA /, '')
+    .replace(/^AMD Radeon /, '')
+    .replace(/^Intel /, '');
+  const idx = gpu.index ?? 0;
+  return `
+    <div class="live-gpu-card" data-gpu-index="${escapeHtml(idx)}">
+      <div class="live-gpu-card-head">
+        <span class="gpu-name" title="${escapeHtml(gpu.name)}">${escapeHtml(displayName)}</span>
+        <span class="gpu-stats">${utilText} · ${temp}</span>
+      </div>
+      <div class="live-bar-label"><span>VRAM</span><span>${formatBytes(gpu.used_memory_bytes)} / ${formatBytes(gpu.total_memory_bytes)}</span></div>
+      <div class="live-bar"><div class="live-bar-fill ${liveBarClass(usedPct)}" style="width:${usedPct.toFixed(1)}%"></div></div>
+      <canvas class="sparkline" width="120" height="18" data-type="vram" title="VRAM % history"></canvas>
+      <div class="live-bar-label" style="margin-top:2px"><span>Util %</span></div>
+      <canvas class="sparkline" width="120" height="18" data-type="util" title="GPU util history"></canvas>
+    </div>`;
+}
+
+function renderLiveRam(ram) {
+  if (!ram || ram.total_bytes == null) {
+    return '<p class="live-empty">System RAM not detected.</p>';
+  }
+  const used = ram.total_bytes - (ram.free_bytes ?? ram.total_bytes);
+  const pct = ram.total_bytes > 0 ? (used / ram.total_bytes) * 100 : 0;
+  return `
+    <div class="live-bar-label">
+      <span class="label-title">System RAM</span>
+      <span>${formatBytes(used)} / ${formatBytes(ram.total_bytes)}</span>
+    </div>
+    <div class="live-bar"><div class="live-bar-fill ${liveBarClass(pct)}" style="width:${pct.toFixed(1)}%"></div></div>
+    <canvas class="sparkline" width="120" height="16" data-type="ram" title="RAM usage % history"></canvas>`;
+}
+
+function renderLiveHardware(data) {
+  const gpuGrid = $('#live-gpu-grid');
+  const ramRow = $('#live-ram-row');
+  const empty = $('#live-empty');
+  const badge = $('#live-source-badge');
+  if (!gpuGrid) return;
+
+  const gpus = Array.isArray(data?.gpus) ? data.gpus : [];
+  const hasGpus = gpus.length > 0;
+  const hasRam = !!(data?.system_ram && data.system_ram.total_bytes != null);
+
+  if (hasGpus) {
+    gpuGrid.innerHTML = gpus.map(renderLiveGpu).join('');
+    empty.hidden = true;
+    // draw sparklines after DOM update
+    gpuGrid.querySelectorAll('.live-gpu-card').forEach(card => {
+      const idx = parseInt(card.dataset.gpuIndex || '0', 10);
+      const utilH = liveGpuUtilHistory[idx] || [];
+      const vramH = liveGpuVramHistory[idx] || [];
+      const utilCan = card.querySelector('canvas[data-type="util"]');
+      const vramCan = card.querySelector('canvas[data-type="vram"]');
+      if (utilCan) drawSparkline(utilCan, utilH, '#20aeb5');
+      if (vramCan) drawSparkline(vramCan, vramH, '#e26962');
+    });
+  } else {
+    gpuGrid.innerHTML = '';
+    empty.hidden = hasRam;  // hide the placeholder if we at least have RAM data
+    if (!hasRam) {
+      empty.textContent = data?.source === 'none'
+        ? 'GPU data unavailable (no nvidia-smi detected).'
+        : 'Waiting for first sample…';
+    }
+  }
+  ramRow.innerHTML = hasRam ? renderLiveRam(data.system_ram) : '';
+  const ramCan = ramRow.querySelector('canvas[data-type="ram"]');
+  if (ramCan) drawSparkline(ramCan, liveRamHistory, '#087f86');
+
+  if (badge) {
+    const age = data?.cached_age_ms;
+    const label = hasGpus
+      ? `nvidia-smi · ${age != null ? `${age}ms` : 'live'}`
+      : 'RAM only';
+    badge.textContent = label;
+    badge.hidden = false;
+  }
+}
+
+async function pollLiveHardware() {
+  const widget = $('#sidebar-live-hardware');
+  // Pause when the tab is hidden or when the sidebar is collapsed to the icon
+  // rail. ``enhanceSidebar`` toggles ``.sidebar-collapsed`` on ``.app-shell``,
+  // so check there (the ``.sidebar`` element itself never gets that class).
+  if (!widget || document.hidden) return;
+  if (document.querySelector('.app-shell')?.classList.contains('sidebar-collapsed')) return;
+  try {
+    const data = await api('/api/system/live');
+    recordLiveHistory(data);
+    renderLiveHardware(data);
+  } catch {
+    // Transient — next tick will retry.
+  }
+}
+
+function recordLiveHistory(data) {
+  const gpus = Array.isArray(data?.gpus) ? data.gpus : [];
+  gpus.forEach((gpu, i) => {
+    const idx = gpu.index ?? i;
+    const util = Number.isFinite(gpu.utilization_gpu_percent) ? gpu.utilization_gpu_percent : 0;
+    if (!liveGpuUtilHistory[idx]) liveGpuUtilHistory[idx] = [];
+    liveGpuUtilHistory[idx].push(util);
+    if (liveGpuUtilHistory[idx].length > LIVE_HISTORY_MAX) liveGpuUtilHistory[idx].shift();
+
+    const vramPct = (gpu.total_memory_bytes > 0) ? (gpu.used_memory_bytes / gpu.total_memory_bytes * 100) : 0;
+    if (!liveGpuVramHistory[idx]) liveGpuVramHistory[idx] = [];
+    liveGpuVramHistory[idx].push(vramPct);
+    if (liveGpuVramHistory[idx].length > LIVE_HISTORY_MAX) liveGpuVramHistory[idx].shift();
+  });
+
+  const ram = data?.system_ram;
+  if (ram && ram.total_bytes) {
+    const used = ram.total_bytes - (ram.free_bytes ?? ram.total_bytes);
+    const pct = ram.total_bytes > 0 ? (used / ram.total_bytes) * 100 : 0;
+    liveRamHistory.push(pct);
+    if (liveRamHistory.length > LIVE_HISTORY_MAX) liveRamHistory.shift();
+  }
+}
+
+function startLiveHardwarePolling() {
+  if (liveHardwareTimer) return;
+  // Always fetch the first sample immediately (even if sidebar collapsed at load).
+  // Subsequent interval updates will respect the pause checks inside pollLiveHardware.
+  (async () => {
+    try {
+      const data = await api('/api/system/live');
+      recordLiveHistory(data);
+      renderLiveHardware(data);
+    } catch {
+      // will retry on interval
+    }
+  })();
+  liveHardwareTimer = setInterval(pollLiveHardware, LIVE_HARDWARE_INTERVAL_MS);
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) pollLiveHardware();
+  });
+  // Note: a previous draft added a ``transitionend`` re-poll on the sidebar.
+  // That listener amplified polling ~7x because ``.live-bar-fill`` itself
+  // has ``transition: width 0.4s`` and every render restarts the bar from
+  // ``width: 0%`` — each transition bubbled ``transitionend`` back to the
+  // sidebar and fired another poll. Removed; the 3 s cadence is short enough
+  // that the worst-case post-expand wait is acceptable.
 }
 
 wireEvents();
 loadSamplingPresets();
 refresh();
+startLiveHardwarePolling();

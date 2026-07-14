@@ -7,6 +7,7 @@ import subprocess
 import urllib.error
 import urllib.request
 import importlib.util
+import shlex
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -209,6 +210,99 @@ def detect_vllm() -> Environment:
     )
 
 
+def detect_wsl_vllm(config: AppConfig | None = None) -> Environment:
+    app_config = config or AppConfig.load()
+    if not is_windows():
+        return Environment(
+            id="vllm-wsl",
+            kind="wsl_runtime",
+            name="vLLM (WSL2)",
+            available=False,
+            details={"reason": "The WSL launcher is only available on Windows."},
+        )
+    wsl = shutil.which("wsl.exe") or shutil.which("wsl")
+    if not wsl:
+        return Environment(
+            id="vllm-wsl",
+            kind="wsl_runtime",
+            name="vLLM (WSL2)",
+            available=False,
+            warnings=["wsl.exe was not found on PATH."],
+        )
+
+    distro = app_config.wsl_distro or "Ubuntu-24.04"
+    venv = app_config.vllm_wsl_venv or "/opt/lcc-vllm"
+    executable = f"{venv.rstrip('/')}/bin/vllm"
+    python = f"{venv.rstrip('/')}/bin/python"
+    # `vllm --version` imports the full multimodal stack and can take tens of
+    # seconds on a cold WSL process. Package metadata is instant and is enough
+    # to prove this managed environment is installed.
+    version_code = (
+        "import importlib.metadata,importlib.util,json,os,shutil; "
+        "print(json.dumps({'version':importlib.metadata.version('vllm'),"
+        "'cc':bool(shutil.which('cc')),'ninja':bool(shutil.which('ninja')),"
+        "'nvcc':os.access('/usr/local/cuda/bin/nvcc',os.X_OK),"
+        "'flashinfer_jit_cache':bool(importlib.util.find_spec('flashinfer_jit_cache'))}))"
+    )
+    linux_path = "/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    probe = (
+        f"export PATH={shlex.quote(linux_path)}; "
+        f"test -x {shlex.quote(executable)} && {shlex.quote(python)} -c {shlex.quote(version_code)}"
+    )
+    version = None
+    prerequisites: dict[str, bool] = {}
+    error = None
+    try:
+        result = subprocess.run(
+            [wsl, "-d", distro, "--", "bash", "-lc", probe],
+            capture_output=True,
+            text=True,
+            timeout=12,
+            check=False,
+        )
+        if result.returncode == 0:
+            payload = json.loads((result.stdout or result.stderr).strip().splitlines()[0])
+            version = str(payload.pop("version", ""))[:240] or None
+            prerequisites = {str(key): bool(value) for key, value in payload.items()}
+        else:
+            error = (result.stderr or result.stdout).strip() or f"probe exited {result.returncode}"
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError, IndexError) as exc:
+        error = str(exc)
+
+    api_url = _normalize_base_url(os.environ.get("VLLM_WSL_HOST"), "http://127.0.0.1:18027")
+    ok, payload, api_error = _request_json(f"{api_url}/v1/models")
+    model_count = len(payload.get("data", []) or []) if ok and isinstance(payload, dict) else None
+    missing = [name for name, present in prerequisites.items() if not present]
+    available = bool((version and not missing) or ok)
+    warnings: list[str] = []
+    if not version and not ok:
+        warnings.append(f"vLLM was not found at {executable} in WSL distro {distro}.")
+    if missing:
+        warnings.append(f"vLLM WSL build prerequisites are missing: {', '.join(missing)}.")
+    return Environment(
+        id="vllm-wsl",
+        kind="wsl_runtime",
+        name="vLLM (WSL2)",
+        available=available,
+        binary_path=wsl if available else None,
+        api_url=api_url if ok else None,
+        version=version,
+        model_count=model_count,
+        details={
+            "wsl_binary": wsl,
+            "distro": distro,
+            "venv": venv,
+            "vllm_executable": executable,
+            "prerequisites": prerequisites,
+            "missing_prerequisites": missing,
+            "probe_error": error,
+            "api_probe_error": None if ok else api_error,
+            "launchable": available,
+        },
+        warnings=warnings,
+    )
+
+
 def detect_mlx() -> Environment:
     module_available = importlib.util.find_spec("mlx_lm") is not None
     is_macos = os.uname().sysname == "Darwin" if hasattr(os, "uname") else False
@@ -291,13 +385,14 @@ def detect_all(project_root: Path | None = None, config: AppConfig | None = None
         detect_ollama(),
         detect_lm_studio(),
         detect_vllm(),
+        detect_wsl_vllm(config),
         detect_mlx(),
     ]
 
 
 # Runtimes whose launch path is actually wired into prepare_launch_command.
 # Others are detectable (and selectable in the UI) but cannot be started yet.
-LAUNCHABLE_RUNTIMES = ("llama.cpp",)
+LAUNCHABLE_RUNTIMES = ("llama.cpp", "vllm-wsl")
 
 
 def detect_runtime(
@@ -311,6 +406,8 @@ def detect_runtime(
         return detect_llama_cpp(project_root, config=config)
     if runtime_id == "wsl-llama.cpp":
         return detect_wsl_llama_cpp()
+    if runtime_id == "vllm-wsl":
+        return detect_wsl_vllm(config)
     detectors = {
         "ollama": detect_ollama,
         "lm-studio": detect_lm_studio,

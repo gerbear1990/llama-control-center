@@ -8,6 +8,15 @@ import time
 import subprocess
 from pathlib import Path
 
+# Prefer the hardened, centralized implementations from the core package.
+# Fall back to the local definitions (for very early bootstrap or unusual installs).
+try:
+    from lcc_core.server_manager import pid_is_running as _core_pid_is_running
+    from lcc_core.server_manager import find_process_on_port as _core_find_process_on_port
+except Exception:
+    _core_pid_is_running = None  # type: ignore
+    _core_find_process_on_port = None  # type: ignore
+
 APP_NAME = "llama-control-center"
 PID_FILENAME = "lcc-api.pid"
 STDOUT_LOG = "lcc-api-out.log"
@@ -31,6 +40,12 @@ def get_pid() -> int | None:
 
 
 def pid_is_running(pid: int) -> bool:
+    if _core_pid_is_running is not None:
+        try:
+            return bool(_core_pid_is_running(pid))
+        except Exception:
+            pass
+    # Local fallback (should rarely be reached)
     if sys.platform == "win32":
         try:
             subprocess.run(
@@ -61,6 +76,12 @@ def remove_pid() -> None:
 
 
 def find_process_on_port(port: int) -> int | None:
+    if _core_find_process_on_port is not None:
+        try:
+            return _core_find_process_on_port(port)
+        except Exception:
+            pass
+    # Local fallback with slightly hardened parsing (still best-effort)
     if sys.platform == "win32":
         try:
             result = subprocess.run(
@@ -69,13 +90,17 @@ def find_process_on_port(port: int) -> int | None:
                 text=True,
                 check=True,
             )
+            target = f":{port}"
             for line in result.stdout.splitlines():
-                parts = line.strip().split()
-                for part in parts:
-                    if part == f":{port}":
-                        idx = parts.index(part) + 1
-                        if idx < len(parts):
-                            return int(parts[idx])
+                line = line.strip()
+                if target not in line:
+                    continue
+                parts = line.split()
+                # Typical: Proto LocalAddr ForeignAddr State PID
+                # The last token is usually the PID for LISTENING lines
+                if parts and parts[-1].isdigit():
+                    # crude but better than pure index-by-match
+                    return int(parts[-1])
         except (subprocess.CalledProcessError, ValueError, IndexError):
             pass
     else:

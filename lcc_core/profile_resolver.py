@@ -56,7 +56,7 @@ def _tokens(value: str, stopwords: set[str] = DEFAULT_STOPWORDS) -> set[str]:
 
 
 def _profile_text(profile: ModelProfile) -> str:
-    parts = [profile.mode, profile.name, profile.description, profile.script or ""]
+    parts = [profile.mode, profile.name, profile.description]
     params = profile.recommended_params
     for key in ["alias"]:
         value = params.get(key)
@@ -127,6 +127,7 @@ def _best_model(profile: ModelProfile, models: list[ModelFile]) -> tuple[ModelFi
 
 def _resolved_params(profile: ModelProfile) -> dict[str, Any]:
     params = dict(profile.recommended_params)
+    runtime = str(params.get("runtime") or "llama.cpp")
     description = profile.description.lower()
     mode = profile.mode.lower()
     reasoning_disabled = any(token in description for token in ["no reasoning", "reasoning off", "non-reasoning"])
@@ -152,6 +153,17 @@ def _resolved_params(profile: ModelProfile) -> dict[str, Any]:
         params.setdefault("jinja", recommend_jinja(profile.model_path, probe=False)["recommended"])
     params.setdefault("acceleration_backend", "auto")
     params.setdefault("device", "auto")
+    if runtime == "vllm-wsl":
+        params.setdefault("ctx_size", 4096)
+        params.setdefault("max_model_len", params.get("ctx_size", 4096))
+        params.setdefault("gpu_memory_utilization", 0.9)
+        params.setdefault("max_num_seqs", 32)
+        params.setdefault("max_num_batched_tokens", 2048)
+        params.setdefault("trust_remote_code", True)
+        params.setdefault("enable_auto_tool_choice", True)
+        params.setdefault("tool_call_parser", "qwen3_coder")
+        params.setdefault("reasoning_parser", "qwen3")
+        params.setdefault("ready_timeout_seconds", 600)
     return params
 
 
@@ -163,8 +175,9 @@ def _validate_resolved(profile: ModelProfile, model: ModelFile | None, params: d
     if confidence < 0.45 and model:
         warnings.append(f"Low-confidence model match ({confidence:.2f}); confirm before launching.")
 
+    runtime = str(params.get("runtime") or "llama.cpp")
     text = " ".join([profile.mode, profile.name, profile.description]).lower()
-    if "mtp" in text:
+    if "mtp" in text and runtime == "llama.cpp":
         draft_model = str(params.get("draft_model", "")).strip()
         if not draft_model:
             missing.append("draft_model")
@@ -174,7 +187,11 @@ def _validate_resolved(profile: ModelProfile, model: ModelFile | None, params: d
         if model and "mtp" not in model.path.lower() and "gemma" not in text:
             warnings.append("MTP profile matched a non-MTP model path; this may require a WSL or custom backend.")
 
-    required = ["ctx_size", "threads", "cache_type_k", "cache_type_v", "gpu_layers"]
+    required = (
+        ["ctx_size", "max_model_len", "gpu_memory_utilization"]
+        if runtime == "vllm-wsl"
+        else ["ctx_size", "threads", "cache_type_k", "cache_type_v", "gpu_layers"]
+    )
     for key in required:
         if key not in params:
             missing.append(f"param:{key}")

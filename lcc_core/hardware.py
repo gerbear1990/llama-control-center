@@ -7,6 +7,8 @@ import platform
 import re
 import shutil
 import subprocess
+import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -350,6 +352,126 @@ def _nvidia_smi_gpus() -> list[dict[str, Any]]:
             }
         )
     return gpus
+
+
+# ---------------------------------------------------------------------------
+# Live hardware monitoring (TTL-cached, poll-on-demand)
+#
+# Mirrors SwarmUI's NvidiaUtil.QueryNvidia + SystemStatusMonitor pattern: a
+# short subprocess poll of nvidia-smi for live utilization/temperature/used
+# VRAM, cached behind a TTL + a lock so a dashboard polling every few seconds
+# can never fire overlapping or too-frequent queries. The one-shot inventory
+# above (_nvidia_smi_gpus) stays the source of static facts (name, bus width,
+# bandwidth, driver); this layer reports only the numbers that move.
+# ---------------------------------------------------------------------------
+
+_LIVE_CACHE_TTL_SECONDS = 2.0
+_live_lock = threading.Lock()
+_live_cache: dict[str, Any] | None = None
+_live_cache_ts: float = 0.0
+# One-shot graceful disable: once nvidia-smi fails on a host, stop retrying so
+# a faulted driver doesn't spam every poll. Mirrors SwarmUI's HasNvidiaGPU flag.
+_nvidia_live_unavailable = False
+
+
+def _float_or_none(value: Any) -> float | None:
+    try:
+        if value in (None, ""):
+            return None
+        return float(str(value).replace("%", "").strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _nvidia_live_snapshot() -> list[dict[str, Any]] | None:
+    """One nvidia-smi poll for live util/temp/VRAM per GPU, or None if unavailable.
+
+    Returns utilization.gpu, utilization.memory, temperature.gpu, and
+    memory.total/free/used (the SwarmUI field set plus explicit used). Values
+    are normalized: percents as floats, VRAM in bytes. ``[N/A]`` (some GPUs
+    report no memory clock) is parsed to None.
+    """
+    binary = shutil.which("nvidia-smi") or shutil.which("nvidia-smi.exe")
+    if not binary:
+        return None
+    result = _run(
+        [
+            binary,
+            "--query-gpu=index,name,utilization.gpu,utilization.memory,temperature.gpu,memory.total,memory.free,memory.used",
+            "--format=csv,noheader,nounits",
+        ],
+        timeout=2.5,
+    )
+    if not result or result.returncode != 0:
+        return None
+    gpus: list[dict[str, Any]] = []
+    for raw_line in result.stdout.splitlines():
+        parts = [part.strip() for part in raw_line.split(",")]
+        if len(parts) < 7:
+            continue
+        total_mib = _int_or_none(parts[5])
+        free_mib = _int_or_none(parts[6])
+        used_mib = _int_or_none(parts[7])
+        gpus.append(
+            {
+                "index": _int_or_none(parts[0]),
+                "name": parts[1],
+                "utilization_gpu_percent": _float_or_none(parts[2]),
+                "utilization_memory_percent": _float_or_none(parts[3]),
+                "temperature_c": _float_or_none(parts[4]),
+                "total_memory_bytes": total_mib * 1024 * 1024 if total_mib is not None else None,
+                "free_memory_bytes": free_mib * 1024 * 1024 if free_mib is not None else None,
+                "used_memory_bytes": used_mib * 1024 * 1024 if used_mib is not None else None,
+            }
+        )
+    return gpus or None
+
+
+def live_system_status() -> dict[str, Any]:
+    """Live host-side CPU/RAM/GPU snapshot, TTL-cached for poll-heavy callers.
+
+    Returns ``{system_ram:{total,used,free}, gpus:[...], source, cached_age_ms}``
+    where ``source`` is ``"nvidia-smi"`` when GPU data was available, ``"ram-only"``
+    when nvidia-smi is absent/faulted, or ``"none"``. RAM always refreshes (cheap,
+    cross-platform via the existing memory helpers); GPU data is the cached,
+    lock-guarded nvidia-smi poll. Safe to call from FastAPI request threads.
+    """
+    global _live_cache, _live_cache_ts, _nvidia_live_unavailable
+
+    # RAM is cheap and cross-platform — always fresh.
+    ram = _windows_memory_info() if is_windows() else _posix_memory_info()
+    total = ram.get("total_bytes")
+    available = ram.get("available_bytes")
+    used = (total - available) if (total is not None and available is not None) else None
+
+    now = time.monotonic()
+    gpus: list[dict[str, Any]] = []
+    source_gpu = "none"
+    with _live_lock:
+        fresh = _live_cache is not None and (now - _live_cache_ts) < _LIVE_CACHE_TTL_SECONDS
+        if not fresh and not _nvidia_live_unavailable:
+            snapshot = _nvidia_live_snapshot()
+            if snapshot is None:
+                # First-time failure latches the disable; later polls short-circuit
+                # here and fall through to serving RAM-only data.
+                _nvidia_live_unavailable = True
+                _live_cache = None
+            else:
+                _live_cache = {"gpus": snapshot}
+                _live_cache_ts = now
+                gpus = snapshot
+                source_gpu = "nvidia-smi"
+        elif _live_cache is not None:
+            gpus = _live_cache.get("gpus", [])
+            source_gpu = "nvidia-smi"
+
+    cached_age_ms = int((now - _live_cache_ts) * 1000) if _live_cache is not None else None
+    return {
+        "system_ram": {"total_bytes": total, "used_bytes": used, "free_bytes": available},
+        "gpus": gpus,
+        "source": source_gpu if gpus else ("ram-only" if not _nvidia_live_unavailable or total is not None else "none"),
+        "cached_age_ms": cached_age_ms,
+    }
 
 
 def _nvidia_bus_width_from_name(name: str) -> int | None:

@@ -60,6 +60,16 @@ def _api_base(server: dict[str, Any]) -> str:
     return f"http://{host}:{int(server.get('port') or 8080)}"
 
 
+def _model_name(server: dict[str, Any], mode: str) -> str:
+    return str(server.get("model_alias") or mode)
+
+
+def _runtime_chat_options(server: dict[str, Any]) -> dict[str, Any]:
+    if server.get("runtime") == "vllm-wsl":
+        return {"chat_template_kwargs": {"enable_thinking": bool(server.get("reasoning", False))}}
+    return {}
+
+
 def _completion_text(payload: dict[str, Any]) -> str:
     choices = payload.get("choices") or []
     if not choices:
@@ -77,30 +87,39 @@ def _fallback_token_count(text: str) -> int:
 
 def send_chat_prompt(
     mode: str,
-    prompt: str,
+    prompt: str = "",
     max_tokens: int = 256,
     temperature: float = 0.7,
     timeout_seconds: int = 120,
+    messages: list[dict] | None = None,
 ) -> dict[str, Any]:
     """Send one chat prompt to an already-running tracked server and return the reply.
 
     Unlike run_profile_benchmark, this never starts or restarts the server — it only
     talks to a server this app already has running for the given mode.
     """
-    prompt = (prompt or "").strip()
-    if not prompt:
-        return {"success": False, "error": "Prompt is empty."}
+    if messages and isinstance(messages, list) and messages:
+        # Use provided conversation history (for multi-turn chat)
+        chat_messages = messages
+    else:
+        prompt = (prompt or "").strip()
+        if not prompt:
+            return {"success": False, "error": "Prompt is empty."}
+        chat_messages = [{"role": "user", "content": prompt}]
+
     server = _server_for_mode(mode)
     if not server:
         return {"success": False, "error": f"No running tracked server for '{mode}'. Start it first."}
 
     base_url = _api_base(server)
+
     request_payload = {
-        "model": mode,
-        "messages": [{"role": "user", "content": prompt}],
+        "model": _model_name(server, mode),
+        "messages": chat_messages,
         "temperature": float(temperature),
         "max_tokens": int(max_tokens),
         "stream": False,
+        **_runtime_chat_options(server),
     }
     raw = json.dumps(request_payload).encode("utf-8")
     req = urllib.request.Request(
@@ -162,7 +181,7 @@ def run_profile_benchmark(
 
     base_url = _api_base(server)
     request_payload = {
-        "model": params.get("alias") or mode,
+        "model": params.get("alias") or _model_name(server, mode),
         "messages": [
             {"role": "system", "content": "You are benchmarking local inference. Answer directly."},
             {"role": "user", "content": prompt or DEFAULT_PROMPT},
@@ -170,6 +189,7 @@ def run_profile_benchmark(
         "temperature": float(params.get("temperature", 0.2) or 0.2),
         "max_tokens": int(completion_tokens),
         "stream": False,
+        **_runtime_chat_options(server),
     }
     raw = json.dumps(request_payload).encode("utf-8")
     req = urllib.request.Request(

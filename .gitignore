@@ -21,6 +21,10 @@ metrics.json
 lcc-api.pid
 
 # Local backups and scratch space
+terminals/
+graphify/
+graphify-out/
+lcc_smoke_*.log
 backups/
 .sandbox-home/
 .sandbox-tmp/

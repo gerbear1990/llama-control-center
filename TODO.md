@@ -1,5 +1,9 @@
 # Llama Control Center TODO
 
+> **New**: Full code review (engineering + UI/UX) was completed on 2026-07-09.  
+> All findings, priorities, and chunked work are tracked in **[REVIEW_MILESTONES.md](./REVIEW_MILESTONES.md)**.  
+> This document (TODO.md) is retained for historical quick-list items. New work should primarily use the milestones doc.
+
 ## Current Feature Pass
 
 - [x] CUDA estimate automatically updates when settings are manually changed.
@@ -34,11 +38,12 @@
 - [x] RAM/VRAM speed and bandwidth should feed into tokens/sec estimates and fit scoring when useful. _v0.6.0 (bandwidth applied as a decode ceiling)._
 - [x] Add a button to check Hugging Face for updates to the selected model. _v0.6.2 — resolves the model's HF repo, compares remote vs local file (size diff primary, repo last-modified fallback), and offers a confirm-gated re-download of just that file._
 - [x] Add a test-prompt box that sends a chat completion to a running server and shows the reply plus measured tokens/sec. _v0.9.0._
-- [ ] Show live server metrics from llama.cpp (`/metrics`, `/health`, `/props`): KV-cache usage, slots in use, decode tokens/sec, context fill %.
-- [ ] Show live process memory (resident RAM + GPU memory) for a running tracked server to confirm the fit estimate and catch OOMs.
-- [ ] Add a crash/exit watchdog that flags tracked servers that died unexpectedly and offers restart with last log lines.
-- [ ] Capture detached server stdout/stderr and tail it in a log panel in the UI.
+- [x] Show live server metrics from llama.cpp (`/metrics`, `/health`, `/props`): KV-cache usage, slots in use, decode tokens/sec, context fill %. _Backend + endpoint shipped (v0.13.1); UI panel still TODO._
+- [x] Show live process memory (resident RAM + GPU memory) for a running tracked server to confirm the fit estimate and catch OOMs. _`process` block in `/api/servers/{id}/metrics` (psutil RSS + nvidia-smi --query-compute-apps). UI surfacing still TODO._
+- [x] Add a crash/exit watchdog that flags tracked servers that died unexpectedly and offers restart with last log lines. _Backend detection + `oom_likely` annotation shipped (v0.13.1); UI surfacing still TODO._
+- [ ] Capture detached server stdout/stderr and tail it in a log panel in the UI. _(stderr_log paths are already captured per server and exposed via the logs endpoint; a dedicated tail panel is still TODO.)_
 - [ ] Add a per-repo quant picker that lists every available quant with size and a fit verdict so the user picks the largest that fits.
+- [x] Live host hardware panel: GPU util %, temperature, VRAM bar, RAM bar, polled every few seconds via `GET /api/system/live`. _Shipped (Unreleased)._
 - [x] Smart fit auto-tune: search launch params (gpu-layers, ctx-size, KV cache type) against the estimator to maximize memory use without overflow, with one-click apply and a before/after fit + speed summary. _v0.6.3._
 - [x] Smart sampling suggestions: recommend temp, top-k, top-p, min-p, and repeat penalty from a chosen task intent (coding, factual, balanced, creative) with a one-line rationale per field. _v0.6.3._
 - [ ] Add full Ollama support so users can use Ollama as a preferred model/runtime source instead of Hugging Face.

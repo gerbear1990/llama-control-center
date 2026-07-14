@@ -4,11 +4,7 @@
 > runtimes, preparing `llama.cpp` launch commands, running fit tests, and managing
 > tracked local inference servers.
 
-**v0.12.1** — Fixes a major VRAM overestimate for **hybrid SSM+attention
-models** (Qwen3.5, Qwen3.5-MoE, and similar architectures where only a fraction
-of layers carry KV cache). Also corrects quantized KV-cache byte rates to match
-llama.cpp block sizes and adds CUDA context overhead to the estimate.
-See [CHANGELOG.md](./CHANGELOG.md) for details.
+**v0.15.0** — Major UI refresh: Chat moved to main content panel with its own nav link, light animations everywhere (panel min/expand with fade, nav "bounce" to panels, settings modal scale+fade open/close, Parameters updates, live hardware, hovers/lifts on cards, chat pop-ins, button presses), portable export feature, keyboard command palette (Ctrl+Shift+K), settings padding/spacing fixes and reworks, live hardware fixes and improved sparklines, portability fixes. See [CHANGELOG.md](./CHANGELOG.md) for details.
 
 The app is designed to be portable: paths live in user settings or environment
 variables, not in source code.
@@ -33,10 +29,8 @@ variables, not in source code.
   RTX 40-series, RTX 30/20-series, GTX 16/10-series, Tesla/A/L-series,
   and AMD RX 9000/8000/7000/6000 series.
 - Resolves `models.json` profiles against discovered local model files.
-- Auto-generates portable `llama.cpp` launch scripts for every discovered model
-  (into the project `scripts/` folder), registers brand-new models as launchable
-  profiles, and repairs broken `models.json` script references so matching is exact.
-  Hand-written scripts in the same folder are never overwritten.
+- Auto-registers newly discovered models as launchable profiles in
+  `models.json`, pinned by explicit model path so matching is exact.
 - Shows profile fit badges: Good, Tight, or Near Limit based on estimated
   accelerator memory and host RAM pressure.
 - Groups profiles by matched model in the Profiles table with collapsible
@@ -76,6 +70,11 @@ variables, not in source code.
 - Optional: `llama-fit-params` for automated fit recommendations.
 - Optional: `huggingface-cli` for pulling draft models and HF CLI management.
 - Optional runtimes: Ollama, LM Studio, vLLM, or MLX.
+
+For native NVFP4 checkpoints on NVIDIA Blackwell GPUs, see
+[NVFP4 on Windows with LCC](docs/NVFP4_WSL.md). LCC can discover a sharded
+safetensors checkpoint directory and launch it through a managed vLLM runtime
+inside WSL2.
 
 Install Python dependencies:
 
@@ -184,6 +183,7 @@ Use these when you want repeatable setup without editing settings in the UI:
 - `OLLAMA_HOST`: Ollama API base URL.
 - `LMSTUDIO_HOST`: LM Studio API base URL.
 - `VLLM_HOST`: vLLM OpenAI-compatible API base URL.
+- `VLLM_WSL_HOST`: probe URL for the managed vLLM-in-WSL runtime.
 - `HF_HOME`: Hugging Face cache root.
 
 ## Models And Profiles
@@ -265,16 +265,4 @@ Check the static JavaScript:
 
 ```powershell
 node --check .\lcc_api\static\app.js
-```
-
-Run the portable inventory from the command line:
-
-```powershell
-python -m lcc_core inventory --pretty
-```
-
-Resolve profiles:
-
-```powershell
-python -m lcc_core profiles --pretty
 ```
