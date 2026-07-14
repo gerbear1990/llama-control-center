@@ -13,7 +13,11 @@ from pathlib import Path
 try:
     from lcc_core.server_manager import pid_is_running as _core_pid_is_running
     from lcc_core.server_manager import find_process_on_port as _core_find_process_on_port
-except Exception:
+except Exception as _core_exc:
+    # Surface this loudly: a broken lcc_core (e.g. a half-resolved merge or bad
+    # edit) otherwise hides behind the fallbacks and produces misleading
+    # messages like "port in use by <your browser's PID>".
+    print(f"Warning: could not import lcc_core ({_core_exc}); using local fallbacks.", file=sys.stderr)
     _core_pid_is_running = None  # type: ignore
     _core_find_process_on_port = None  # type: ignore
 
@@ -75,6 +79,31 @@ def remove_pid() -> None:
         pid_file.unlink()
 
 
+def _parse_netstat_for_port(output: str, port: int) -> int | None:
+    """Return the PID LISTENING on ``port`` from ``netstat -ano`` output.
+
+    Only LISTENING lines whose *local* address ends in ``:{port}`` count.
+    Client-side connections that merely mention the port as a foreign
+    address (a browser talking to the dashboard) must never match.
+    """
+    target = f":{port}"
+    for line in output.splitlines():
+        parts = line.split()
+        # Typical: Proto LocalAddr ForeignAddr State PID
+        if len(parts) < 5:
+            continue
+        proto, local_addr, _foreign, state, pid = parts[0], parts[1], parts[2], parts[3], parts[-1]
+        if not proto.upper().startswith("TCP"):
+            continue
+        if state.upper() != "LISTENING":
+            continue
+        if not local_addr.endswith(target):
+            continue
+        if pid.isdigit():
+            return int(pid)
+    return None
+
+
 def find_process_on_port(port: int) -> int | None:
     if _core_find_process_on_port is not None:
         try:
@@ -90,17 +119,7 @@ def find_process_on_port(port: int) -> int | None:
                 text=True,
                 check=True,
             )
-            target = f":{port}"
-            for line in result.stdout.splitlines():
-                line = line.strip()
-                if target not in line:
-                    continue
-                parts = line.split()
-                # Typical: Proto LocalAddr ForeignAddr State PID
-                # The last token is usually the PID for LISTENING lines
-                if parts and parts[-1].isdigit():
-                    # crude but better than pure index-by-match
-                    return int(parts[-1])
+            return _parse_netstat_for_port(result.stdout, port)
         except (subprocess.CalledProcessError, ValueError, IndexError):
             pass
     else:

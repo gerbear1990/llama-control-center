@@ -16,6 +16,36 @@ def _load_launcher():
     return module
 
 
+class NetstatFallbackParsingTests(unittest.TestCase):
+    """The netstat fallback must only report LISTENING sockets on the port.
+
+    Regression: a browser's client-side connection to the dashboard
+    (foreign address :8716, ESTABLISHED/TIME_WAIT) was reported as the
+    process 'using' the port, telling the user to stop their browser.
+    """
+
+    NETSTAT = "\n".join([
+        "  Proto  Local Address          Foreign Address        State           PID",
+        "  TCP    127.0.0.1:52321        127.0.0.1:8716         ESTABLISHED     8284",
+        "  TCP    127.0.0.1:52999        127.0.0.1:8716         TIME_WAIT       0",
+        "  TCP    127.0.0.1:87161        0.0.0.0:0              LISTENING       4242",
+    ])
+
+    def setUp(self) -> None:
+        self.launcher = _load_launcher()
+
+    def test_client_connections_to_port_are_not_matches(self) -> None:
+        self.assertIsNone(self.launcher._parse_netstat_for_port(self.NETSTAT, 8716))
+
+    def test_listening_socket_is_matched(self) -> None:
+        output = self.NETSTAT + "\n  TCP    127.0.0.1:8716         0.0.0.0:0              LISTENING       16960"
+        self.assertEqual(self.launcher._parse_netstat_for_port(output, 8716), 16960)
+
+    def test_ipv6_listener_is_matched(self) -> None:
+        output = "  TCP    [::1]:8716             [::]:0                 LISTENING       31337"
+        self.assertEqual(self.launcher._parse_netstat_for_port(output, 8716), 31337)
+
+
 class StopModelServersTests(unittest.TestCase):
     def setUp(self) -> None:
         self.launcher = _load_launcher()

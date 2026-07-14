@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **`start-lcc.py` netstat fallback could blame an innocent process for the
+  port.** When `lcc_core` fails to import, the port-conflict check falls back
+  to parsing `netstat -ano` — and matched *any* line mentioning `:8716`,
+  including a browser's client-side connections to the dashboard (reporting
+  "Port 8716 is already in use by process <browser PID>"). The fallback now
+  only matches LISTENING sockets whose local address ends in the port, and a
+  failed `lcc_core` import prints a visible warning instead of being silently
+  swallowed. ([start-lcc.py](start-lcc.py))
+
 ## [0.16.0] - 2026-07-14
 
 ### Added
