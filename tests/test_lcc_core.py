@@ -20,6 +20,7 @@ from lcc_core.models import discover_models, parse_params, parse_quant
 from lcc_core.paths import find_project_root
 from lcc_core.portability import scan_portability_issues
 from lcc_core.profile_resolver import resolve_profiles
+from lcc_core.vllm_args import build_wsl_vllm_args, windows_to_wsl_path
 
 
 class VersionConsistencyTests(unittest.TestCase):
@@ -116,6 +117,27 @@ class ModelDiscoveryTests(unittest.TestCase):
         self.assertLessEqual(mtime, after + 2)
         # to_dict() must surface it for the JS layer.
         self.assertEqual(models[0].to_dict()["mtime"], mtime)
+
+    def test_discovers_transformers_nvfp4_checkpoint_as_one_model(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "models"
+            model_dir = root / "Qwen3.6-27B-NVFP4"
+            model_dir.mkdir(parents=True)
+            (model_dir / "config.json").write_text(
+                json.dumps({"model_type": "qwen3_5", "architectures": ["Qwen3_5ForConditionalGeneration"], "quantization_config": {"format": "nvfp4"}}),
+                encoding="utf-8",
+            )
+            (model_dir / "model-00001-of-00002.safetensors").write_bytes(b"a" * 10)
+            (model_dir / "model-00002-of-00002.safetensors").write_bytes(b"b" * 12)
+            (model_dir / "model.safetensors.index.json").write_text("{}", encoding="utf-8")
+
+            models = discover_models([root])
+
+        self.assertEqual(len(models), 1)
+        self.assertEqual(models[0].format, "Safetensors")
+        self.assertEqual(models[0].quant, "NVFP4")
+        self.assertEqual(models[0].size_bytes, 22)
+        self.assertEqual(models[0].path, str(model_dir))
 
 
 class ManifestTests(unittest.TestCase):
@@ -390,6 +412,38 @@ class ProfileResolverTests(unittest.TestCase):
         self.assertGreaterEqual(profiles[0].confidence, 0.55)
         self.assertTrue(profiles[0].launchable)
 
+    def test_vllm_profile_resolves_explicit_checkpoint_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            model_dir = root / "models" / "Qwen3.6-27B-NVFP4"
+            model_dir.mkdir(parents=True)
+            (model_dir / "config.json").write_text(
+                json.dumps({"model_type": "qwen3_5", "architectures": ["Qwen3_5ForConditionalGeneration"]}),
+                encoding="utf-8",
+            )
+            (model_dir / "model.safetensors").write_bytes(b"model")
+            manifest = {
+                "models": [{
+                    "mode": "qwen-nvfp4",
+                    "name": "Qwen NVFP4",
+                    "description": "vLLM test",
+                    "model_path": str(model_dir),
+                    "recommended_params": {
+                        "runtime": "vllm-wsl",
+                        "ctx_size": 4096,
+                        "max_model_len": 4096,
+                        "gpu_memory_utilization": 0.9,
+                    },
+                }]
+            }
+            (root / "models.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+            profiles = resolve_profiles(project_root=root, model_dirs=[root / "models"])
+
+        self.assertTrue(profiles[0].launchable)
+        self.assertEqual(profiles[0].model["format"], "Safetensors")
+        self.assertEqual(profiles[0].params["runtime"], "vllm-wsl")
+
 
 class LaunchArgsTests(unittest.TestCase):
     def test_builds_llama_server_args_without_shell_string_rebuild(self) -> None:
@@ -447,6 +501,34 @@ class LaunchArgsTests(unittest.TestCase):
             self.assertEqual(cmd.argv[cmd.argv.index("--gpu-layers") + 1], expected)
         fit = build_fit_args("llama-fit-params", "m.gguf", {"gpu_layers": "all"})
         self.assertEqual(fit[fit.index("-ngl") + 1], "-2")
+
+    def test_builds_wsl_vllm_command_and_converts_model_path(self) -> None:
+        self.assertEqual(windows_to_wsl_path(r"C:\Users\filth\models\Qwen NVFP4"), "/mnt/c/Users/filth/models/Qwen NVFP4")
+        cmd = build_wsl_vllm_args(
+            "wsl.exe",
+            "Ubuntu-24.04",
+            "/opt/lcc-vllm",
+            r"C:\Users\filth\models\Qwen NVFP4",
+            {
+                "host": "127.0.0.1",
+                "port": 18027,
+                "alias": "qwen-nvfp4",
+                "ctx_size": 8192,
+                "gpu_memory_utilization": 0.9,
+                "enable_auto_tool_choice": True,
+                "tool_call_parser": "qwen3_coder",
+                "reasoning_parser": "qwen3",
+            },
+            "/tmp/lcc-vllm/qwen.pid",
+        )
+        self.assertEqual(cmd.argv[:5], ["wsl.exe", "-d", "Ubuntu-24.04", "--", "bash"])
+        shell = cmd.argv[-1]
+        self.assertIn("/opt/lcc-vllm/bin/vllm serve", shell)
+        self.assertIn("'/mnt/c/Users/filth/models/Qwen NVFP4'", shell)
+        self.assertIn("--max-model-len 8192", shell)
+        self.assertIn("--max-num-seqs 32", shell)
+        self.assertIn("--max-num-batched-tokens 2048", shell)
+        self.assertIn("export CUDA_HOME=/usr/local/cuda", shell)
 
     def test_fit_args_and_output_parser(self) -> None:
         args = build_fit_args(
@@ -1173,6 +1255,17 @@ class ServerStopTests(unittest.TestCase):
         self.assertEqual(len(models), 1)
         self.assertIn("gemma-4-26B", models[0].name)
 
+    def test_diffusion_unet_ggufs_are_not_discovered_as_llms(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "models"
+            (root / "unet").mkdir(parents=True)
+            (root / "unet" / "Wan-I2V-Q8_0.gguf").write_bytes(b"diffusion")
+            (root / "Qwen-1B-Q8_0.gguf").write_bytes(b"llm")
+
+            models = discover_models([root])
+
+        self.assertEqual([model.name for model in models], ["Qwen-1B-Q8_0"])
+
     def test_find_project_root_falls_back_to_package_location(self) -> None:
         # The real repo has pyproject.toml, so find_project_root() should resolve.
         root = find_project_root(Path(__file__).parent.parent)
@@ -1192,8 +1285,8 @@ class RuntimeDispatchTests(unittest.TestCase):
         self.assertEqual(detect_runtime("ollama").id, "ollama")
         # Unknown id is rejected (no silent fallback to llama.cpp).
         self.assertIsNone(detect_runtime("nonsense-runtime"))
-        # llama.cpp is the only runtime wired into the launch path so far.
-        self.assertEqual(LAUNCHABLE_RUNTIMES, ("llama.cpp",))
+        self.assertIn("llama.cpp", LAUNCHABLE_RUNTIMES)
+        self.assertIn("vllm-wsl", LAUNCHABLE_RUNTIMES)
 
 
 class LayerIndexAndCacheBytesTests(unittest.TestCase):
@@ -1361,6 +1454,21 @@ class PrometheusMetricsParserTests(unittest.TestCase):
         from lcc_core.server_metrics import _parse_prometheus
         parsed = _parse_prometheus("# just a comment\nunrelated_metric 5\n")
         self.assertNotIn("kv_cache_usage_ratio", parsed)
+
+    def test_parses_vllm_metrics(self):
+        from lcc_core.server_metrics import _parse_prometheus
+        parsed = _parse_prometheus(
+            'vllm:kv_cache_usage_perc{engine="0"} 0.25\n'
+            'vllm:num_requests_running{engine="0"} 2\n'
+            'vllm:num_requests_waiting{engine="0"} 1\n'
+            'vllm:prompt_tokens_total{engine="0"} 100\n'
+            'vllm:generation_tokens_total{engine="0"} 75\n'
+        )
+        self.assertEqual(parsed["kv_cache_usage_ratio"], 0.25)
+        self.assertEqual(parsed["requests_in_flight"], 2.0)
+        self.assertEqual(parsed["requests_waiting"], 1.0)
+        self.assertEqual(parsed["prompt_tokens_total"], 100.0)
+        self.assertEqual(parsed["predicted_tokens_total"], 75.0)
 
 
 class LiveHardwareStatusTests(unittest.TestCase):

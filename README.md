@@ -73,6 +73,11 @@ variables, not in source code.
 - Optional: `huggingface-cli` for pulling draft models and HF CLI management.
 - Optional runtimes: Ollama, LM Studio, vLLM, or MLX.
 
+For native NVFP4 checkpoints on NVIDIA Blackwell GPUs, see
+[NVFP4 on Windows with LCC](docs/NVFP4_WSL.md). LCC can discover a sharded
+safetensors checkpoint directory and launch it through a managed vLLM runtime
+inside WSL2.
+
 Install Python dependencies:
 
 ```powershell
@@ -180,6 +185,7 @@ Use these when you want repeatable setup without editing settings in the UI:
 - `OLLAMA_HOST`: Ollama API base URL.
 - `LMSTUDIO_HOST`: LM Studio API base URL.
 - `VLLM_HOST`: vLLM OpenAI-compatible API base URL.
+- `VLLM_WSL_HOST`: probe URL for the managed vLLM-in-WSL runtime.
 - `HF_HOME`: Hugging Face cache root.
 
 ## Models And Profiles

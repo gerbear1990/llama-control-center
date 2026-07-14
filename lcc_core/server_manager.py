@@ -3,7 +3,9 @@ from __future__ import annotations
 import csv
 import json
 import os
+import shutil
 import socket
+import shlex
 import subprocess
 import time
 import urllib.request
@@ -19,6 +21,7 @@ from .llama_args import LaunchCommand, build_llama_server_args
 from .manifest import ManifestReadError
 from .paths import cache_dir, find_project_root, is_windows
 from .profile_resolver import ResolvedProfile, resolve_profiles
+from .vllm_args import build_wsl_vllm_args
 
 # psutil is a declared dependency; treat as hard for process introspection
 # but keep defensive checks in case of partial envs.
@@ -646,6 +649,9 @@ def stop_server(server_id: str | None = None, mode: str | None = None, timeout: 
         _update_server(server["id"], {"status": "stopped", "running": False, "stopped_at": _now()})
         return {"success": True, "message": f"Tracked PID {pid} is no longer running."}
 
+    if server.get("runtime") == "vllm-wsl":
+        return _stop_wsl_vllm(server, timeout)
+
     if is_windows():
         cmd = ["taskkill", "/PID", str(pid), "/T", "/F"]
     else:
@@ -728,6 +734,80 @@ def stop_server(server_id: str | None = None, mode: str | None = None, timeout: 
     }
 
 
+def _stop_wsl_vllm(server: dict[str, Any], timeout: int) -> dict[str, Any]:
+    """Stop the Linux vLLM process tree, then ensure its WSL client exits."""
+
+    pid = int(server["pid"])
+    distro = str(server.get("wsl_distro") or "Ubuntu-24.04")
+    pidfile = str(server.get("wsl_pidfile") or "")
+    wsl = str(server.get("wsl_binary") or shutil.which("wsl.exe") or "wsl.exe")
+    if not pidfile:
+        return {"success": False, "message": "Tracked vLLM server has no WSL pidfile.", "server": server}
+    # Pass Python directly through wsl.exe. A `bash -lc` script containing
+    # `$p`/`$(...)` is expanded once by WSL's command bridge before the target
+    # bash sees it, which breaks on Windows and can leave EngineCore children.
+    stop_script = f"""
+import os
+import signal
+import time
+
+pidfile = {pidfile!r}
+root = int(open(pidfile).read().strip()) if os.path.exists(pidfile) else 0
+parents = {{}}
+for entry in os.listdir('/proc'):
+    if not entry.isdigit():
+        continue
+    try:
+        parents[int(entry)] = int(open(f'/proc/{{entry}}/stat').read().split()[3])
+    except (FileNotFoundError, ProcessLookupError, ValueError):
+        pass
+descendants = []
+front = [root]
+for parent in front:
+    for child, ppid in parents.items():
+        if ppid == parent and child not in descendants:
+            descendants.append(child)
+            front.append(child)
+targets = list(reversed(descendants)) + ([root] if root else [])
+for sig in (signal.SIGTERM, signal.SIGKILL):
+    for target in targets:
+        try:
+            os.kill(target, sig)
+        except (ProcessLookupError, PermissionError):
+            pass
+    time.sleep(1)
+if os.path.exists(pidfile):
+    os.remove(pidfile)
+"""
+    try:
+        result = subprocess.run(
+            [wsl, "-d", distro, "--", "python3", "-c", stop_script],
+            capture_output=True,
+            text=True,
+            timeout=max(timeout, 15),
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        result = subprocess.CompletedProcess([], 1, "", str(exc))
+
+    if not _wait_gone(pid, 5) and is_windows():
+        subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, text=True, timeout=timeout, check=False)
+    stopped = not pid_is_running(pid)
+    patch = {
+        "status": "stopped" if stopped else "stop_failed",
+        "running": not stopped,
+        "stopped_at": _now(),
+        "stop_stdout": (result.stdout or "").strip(),
+        "stop_stderr": (result.stderr or "").strip(),
+    }
+    _update_server(server["id"], patch)
+    return {
+        "success": stopped,
+        "message": "Stopped WSL vLLM server." if stopped else "WSL vLLM process did not exit.",
+        "server": _find_server(server["id"]),
+    }
+
+
 def _update_server(server_id: str, patch: dict[str, Any]) -> None:
     state = read_state()
     servers = state.setdefault("servers", [])
@@ -804,22 +884,39 @@ def prepare_launch_command(
     params.setdefault("port", app_config.default_port)
 
     runtime = str(params.get("runtime") or "llama.cpp").strip() or "llama.cpp"
+    if runtime == "vllm-wsl":
+        env = detect_runtime(runtime, root, config=app_config)
+        if env is None:
+            return {"success": False, "error": f"Unknown runtime: {runtime}"}
+        if not env.available or not env.binary_path:
+            return {"success": False, "error": "vLLM is not installed in the configured WSL environment.", "environment": env.to_dict()}
+        pidfile = f"/tmp/lcc-vllm/{mode}.pid"
+        command = build_wsl_vllm_args(
+            env.binary_path,
+            str(env.details.get("distro") or app_config.wsl_distro),
+            str(env.details.get("venv") or app_config.vllm_wsl_venv),
+            resolved.model["path"],
+            params,
+            pidfile,
+        )
+        return {
+            "success": True,
+            "environment": env.to_dict(),
+            "profile": resolved.to_dict(),
+            "command": command.to_dict(),
+            "params": params,
+            "warnings": resolved.warnings + command.warnings,
+            "runtime_metadata": {
+                "wsl_binary": env.details.get("wsl_binary") or env.binary_path,
+                "wsl_distro": env.details.get("distro") or app_config.wsl_distro,
+                "wsl_pidfile": pidfile,
+            },
+        }
     if runtime != "llama.cpp":
         env = detect_runtime(runtime, root, config=app_config)
         if env is None:
             return {"success": False, "error": f"Unknown runtime: {runtime}"}
-        # llama.cpp is the only runtime wired into the launch path so far; report a
-        # clear error for the others instead of silently starting llama.cpp.
-        return {
-            "success": False,
-            "error": (
-                f"{env.name} is selected but cannot be launched from here yet — "
-                "only llama.cpp is wired into Start/Fit. Switch the Runtime back to "
-                "llama.cpp to launch this profile."
-            ),
-            "environment": env.to_dict(),
-            "profile": resolved.to_dict(),
-        }
+        return {"success": False, "error": f"{env.name} is detected but its launcher is not implemented.", "environment": env.to_dict()}
 
     llama = detect_llama_cpp(root, config=app_config)
     if not llama.binary_path:
@@ -974,18 +1071,24 @@ def start_profile(
         "host": host,
         "port": port,
         "model_path": prepared["profile"]["model"]["path"] if prepared["profile"].get("model") else None,
+        "model_alias": str(params.get("alias") or mode),
+        "reasoning": bool(params.get("reasoning", False)),
         "command_line": command.command_line,
         "stdout_log": str(stdout_path),
         "stderr_log": str(stderr_path),
         "started_at": _now(),
         "warnings": prepared.get("warnings", []),
+        "runtime": str(prepared["params"].get("runtime") or "llama.cpp"),
     }
+    server.update(prepared.get("runtime_metadata") or {})
     _upsert_server(server)
     app_config = AppConfig.load()
     trim_server_history(app_config.server_history_limit)
 
     if wait_ready:
-        ready = wait_until_ready(server["host"], server["port"], proc.pid, ready_timeout_seconds)
+        profile_timeout = int(prepared["params"].get("ready_timeout_seconds") or 0)
+        effective_timeout = max(ready_timeout_seconds, profile_timeout)
+        ready = wait_until_ready(server["host"], server["port"], proc.pid, effective_timeout)
         _update_server(
             server_id,
             {

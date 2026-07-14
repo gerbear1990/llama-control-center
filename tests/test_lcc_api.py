@@ -483,7 +483,9 @@ class ServerMetricsFormatterTests(unittest.TestCase):
 
         js_test = P(__file__).parent / "test_server_metrics_formatter.js"
         # node must be on PATH (verified in env)
-        out = subprocess.check_output(["node", str(js_test)], text=True, cwd=P(__file__).parent.parent)
+        # Node emits UTF-8; decode explicitly so the separator survives on
+        # machines whose locale encoding is not UTF-8 (e.g. cp1252 Windows).
+        out = subprocess.check_output(["node", str(js_test)], encoding="utf-8", cwd=P(__file__).parent.parent)
         data = json.loads(out.strip())
         line = data["line"]
 

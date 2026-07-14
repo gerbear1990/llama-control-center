@@ -284,7 +284,7 @@
                 </label>
                 <div class="param-section-title">Runtime</div>
                 <div class="field-grid">
-                  <label class="field wide" title="Which backend starts this model. Only llama.cpp can be launched from here today; other detected runtimes are selectable but report a clear error until their launch support lands.">
+                  <label class="field wide" title="Which backend starts this model. llama.cpp runs natively; vLLM (WSL2) runs supported safetensors/NVFP4 profiles through the configured WSL environment.">
                     <span>Runtime</span>
                     <select id="param-runtime" name="runtime">
                       <option value="llama.cpp">llama.cpp</option>

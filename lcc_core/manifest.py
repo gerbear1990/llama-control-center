@@ -122,13 +122,15 @@ def load_profiles(
         script_path = root / script_name if root and script_name else None
         if script_path and not script_path.is_file() and root:
             script_path = root / "scripts" / script_name
-        model_path = _parse_model_path(script_path)
+        # Modern non-GGUF runtimes can point directly at a checkpoint
+        # directory and do not need a generated PowerShell launch script.
+        model_path = entry.get("model_path") or _parse_model_path(script_path)
         recommended = entry.get("recommended_params", {}) or {}
         portable_warnings = []
         for location, value in _absolute_strings(recommended):
             portable_warnings.append(f"recommended_params.{location} contains an absolute path: {value}")
         if model_path and _is_absolute_path_like(model_path):
-            portable_warnings.append(f"launch script contains an absolute model path: {model_path}")
+            portable_warnings.append(f"profile contains an absolute model path: {model_path}")
 
         model_exists = None
         if model_path:

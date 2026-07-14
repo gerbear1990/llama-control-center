@@ -60,6 +60,16 @@ def _api_base(server: dict[str, Any]) -> str:
     return f"http://{host}:{int(server.get('port') or 8080)}"
 
 
+def _model_name(server: dict[str, Any], mode: str) -> str:
+    return str(server.get("model_alias") or mode)
+
+
+def _runtime_chat_options(server: dict[str, Any]) -> dict[str, Any]:
+    if server.get("runtime") == "vllm-wsl":
+        return {"chat_template_kwargs": {"enable_thinking": bool(server.get("reasoning", False))}}
+    return {}
+
+
 def _completion_text(payload: dict[str, Any]) -> str:
     choices = payload.get("choices") or []
     if not choices:
@@ -104,11 +114,12 @@ def send_chat_prompt(
     base_url = _api_base(server)
 
     request_payload = {
-        "model": mode,
+        "model": _model_name(server, mode),
         "messages": chat_messages,
         "temperature": float(temperature),
         "max_tokens": int(max_tokens),
         "stream": False,
+        **_runtime_chat_options(server),
     }
     raw = json.dumps(request_payload).encode("utf-8")
     req = urllib.request.Request(
@@ -170,7 +181,7 @@ def run_profile_benchmark(
 
     base_url = _api_base(server)
     request_payload = {
-        "model": params.get("alias") or mode,
+        "model": params.get("alias") or _model_name(server, mode),
         "messages": [
             {"role": "system", "content": "You are benchmarking local inference. Answer directly."},
             {"role": "user", "content": prompt or DEFAULT_PROMPT},
@@ -178,6 +189,7 @@ def run_profile_benchmark(
         "temperature": float(params.get("temperature", 0.2) or 0.2),
         "max_tokens": int(completion_tokens),
         "stream": False,
+        **_runtime_chat_options(server),
     }
     raw = json.dumps(request_payload).encode("utf-8")
     req = urllib.request.Request(

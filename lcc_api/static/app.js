@@ -715,8 +715,7 @@ function renderParamProfileOptions() {
 function renderRuntimeOptions(selectedValue) {
   const select = $('#param-runtime');
   if (!select) return;
-  // Launch is wired for llama.cpp only; other detected runtimes are selectable
-  // but the backend returns a clear "not launchable yet" error for them.
+  const launchableRuntimes = new Set(['llama.cpp', 'vllm-wsl']);
   const envs = state.inventory?.environments || [];
   const options = envs.length
     ? envs.map((env) => ({ value: env.id, label: env.name || env.id, available: env.available }))
@@ -726,7 +725,9 @@ function renderRuntimeOptions(selectedValue) {
     options.push({ value: selected, label: selected, available: false });
   }
   select.innerHTML = options.map((opt) => {
-    const suffix = opt.value === 'llama.cpp' ? '' : opt.available ? ' (not launchable yet)' : ' (not detected)';
+    const suffix = launchableRuntimes.has(opt.value)
+      ? (opt.available ? '' : ' (not detected)')
+      : (opt.available ? ' (not launchable yet)' : ' (not detected)');
     return `<option value="${escapeHtml(opt.value)}">${escapeHtml(opt.label)}${suffix}</option>`;
   }).join('');
   select.value = selected;

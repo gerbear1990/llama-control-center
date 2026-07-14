@@ -56,13 +56,17 @@ _METRIC_ALIASES = {
     "active_slots": "slots_active",
     "processing_slots": "slots_processing",
     "requests_in_flight": "requests_in_flight",
+    "kv_cache_usage_perc": "kv_cache_usage_ratio",
+    "num_requests_running": "requests_in_flight",
+    "num_requests_waiting": "requests_waiting",
+    "generation_tokens_total": "predicted_tokens_total",
 }
 
 
 # Namespace prefixes llama-server may prepend to its Prometheus metric names,
 # across builds: "llamacpp:" (colon form) and "llamacpp_" / "llama_server_"
 # (underscore form). Stripped so the alias lookup matches the bare stem.
-_METRIC_PREFIXES = ("llamacpp:", "llamacpp_", "llama_server_", "llama_")
+_METRIC_PREFIXES = ("llamacpp:", "llamacpp_", "llama_server_", "llama_", "vllm:", "vllm_")
 
 
 def _strip_metric_prefix(name: str) -> str:
@@ -229,9 +233,12 @@ def fetch_server_metrics(server_id: str | None = None, mode: str | None = None) 
             "stderr_tail": tail_file(server.get("stderr_log")),
         }
 
-    health_text = _safe(lambda: _get_text(f"{base}/health").strip(), "")
+    is_vllm = server.get("runtime") == "vllm-wsl"
+    models_payload = _safe(lambda: _get_json(f"{base}/v1/models"), {}) if is_vllm else {}
+    health_text = "ok" if models_payload else _safe(lambda: _get_text(f"{base}/health").strip(), "")
     metrics = _safe(lambda: _get_text(f"{base}/metrics"), "")
-    props = _safe(lambda: _get_json(f"{base}/props"), {})
+    props = _safe(lambda: _get_json(f"{base}/props"), {}) if not is_vllm else {}
+    vllm_model = ((models_payload.get("data") or [{}])[0] or {}) if isinstance(models_payload, dict) else {}
 
     if not health_text and not metrics and not props:
         return {
@@ -254,11 +261,11 @@ def fetch_server_metrics(server_id: str | None = None, mode: str | None = None) 
         "server": server,
         "health": health_text or "unknown",
         "props": {
-            "model_name": props.get("model_name") or props.get("default_generation_settings", {}).get("model"),
+            "model_name": vllm_model.get("id") or props.get("model_name") or props.get("default_generation_settings", {}).get("model"),
             "context_length": props.get("total_slots"),
             "chat_template": props.get("chat_template"),
-            "n_ctx": props.get("n_ctx"),
-            "build_info": props.get("build_info"),
+            "n_ctx": vllm_model.get("max_model_len") or props.get("n_ctx"),
+            "build_info": "vLLM" if is_vllm else props.get("build_info"),
         },
         "metrics": parsed_metrics,
         "process": {

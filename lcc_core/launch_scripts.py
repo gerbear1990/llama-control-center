@@ -634,6 +634,17 @@ def generate_all_launch_scripts(
             )
             continue
         model_path = profile.model["path"]
+        runtime = str(profile.params.get("runtime") or "llama.cpp")
+        if runtime != "llama.cpp" or str(profile.model.get("format") or "").upper() != "GGUF":
+            result.skipped.append(
+                {
+                    "mode": profile.mode,
+                    "reason": f"{runtime} profile is launched directly; no llama.cpp script is generated.",
+                }
+            )
+            handled_modes.add(profile.mode)
+            handled_model_paths.add(str(Path(model_path).expanduser().resolve()).lower())
+            continue
         try:
             payload = generate_launch_script(
                 mode=profile.mode,
@@ -683,6 +694,14 @@ def generate_all_launch_scripts(
         except OSError:
             resolved_path = str(model.path).lower()
         if resolved_path in handled_model_paths:
+            continue
+        if str(model.format).upper() != "GGUF":
+            result.skipped.append(
+                {
+                    "mode": _safe_slug(model.name or Path(model.path).stem),
+                    "reason": "Non-GGUF checkpoint requires an explicit non-llama.cpp runtime profile.",
+                }
+            )
             continue
         if resolved_path in draft_paths or _is_draft_model(model.path):
             result.skipped.append(
