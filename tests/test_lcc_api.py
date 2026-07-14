@@ -41,6 +41,7 @@ class ApiSmokeTests(unittest.TestCase):
             self.assertIn(key, payload)
         self.assertEqual(self.client.get("/api/launch-scripts").status_code, 404)
         self.assertEqual(self.client.post("/api/launch-scripts/scan").status_code, 404)
+        self.assertEqual(self.client.post("/api/hf-cli/install").status_code, 404)
 
     def test_health_config_and_servers(self) -> None:
         index = self.client.get("/")

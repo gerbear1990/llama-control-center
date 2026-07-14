@@ -20,7 +20,7 @@ from lcc_core.config import AppConfig
 from lcc_core.estimates import enrich_profiles_with_fit_status, estimate_memory_fit, estimate_tokens_per_second
 from lcc_core.fit import run_fit_test
 from lcc_core.hardware import detect_system_hardware
-from lcc_core.hf_cli import detect_hf_cli as hf_cli_detect, check_for_updates, install_hf_cli
+from lcc_core.hf_cli import detect_hf_cli as hf_cli_detect, check_for_updates
 from lcc_core.draft_models import suggest_draft_models, pull_draft_model, download_model_file
 from lcc_core.inventory import build_inventory
 from lcc_core.profile_registry import (
@@ -529,11 +529,6 @@ def pull_draft(request: DraftModelRequest) -> dict[str, Any]:
 @app.post("/api/hf-cli/check-updates")
 def check_hf_updates() -> dict[str, Any]:
     return check_for_updates()
-
-
-@app.post("/api/hf-cli/install")
-def install_hf_cli_endpoint() -> dict[str, Any]:
-    return install_hf_cli()
 
 
 class ProfileNameRequest(BaseModel):

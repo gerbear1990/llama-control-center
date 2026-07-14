@@ -3275,24 +3275,6 @@ function wireEvents() {
       }
     });
   });
-  $('#hf-install-button').addEventListener('click', (event) => {
-    event.preventDefault();
-    event.stopPropagation();
-    const trigger = $('#hf-install-button');
-    withBusy(trigger, async () => {
-      try {
-        const result = await api('/api/hf-cli/install', { method: 'POST' });
-        if (result.success) {
-          toast('Hugging Face CLI installed');
-          await refresh();
-        } else {
-          toast(result.message || 'Installation failed');
-        }
-      } catch (error) {
-        toast(`Install failed: ${error.message}`);
-      }
-    });
-  });
   $('#hf-search-btn')?.addEventListener('click', searchHfBrowser);
   $('#hf-search-input')?.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') searchHfBrowser();
