@@ -4,7 +4,7 @@
 > runtimes, preparing `llama.cpp` launch commands, running fit tests, and managing
 > tracked local inference servers.
 
-**v0.15.0** — Major UI refresh: Chat moved to main content panel with its own nav link, light animations everywhere (panel min/expand with fade, nav "bounce" to panels, settings modal scale+fade open/close, Parameters updates, live hardware, hovers/lifts on cards, chat pop-ins, button presses), portable export feature, keyboard command palette (Ctrl+Shift+K), settings padding/spacing fixes and reworks, live hardware fixes and improved sparklines, portability fixes. See [CHANGELOG.md](./CHANGELOG.md) for details.
+**v0.16.0** — vLLM-in-WSL managed runtime with native NVFP4 support on Blackwell GPUs, plus a web-UI-only cleanup: launch-script generation and the portable CLI are retired, `models.json` profiles pin explicit model paths, and profile auto-registration moved to `lcc_core/profile_registry.py` with a new `POST /api/profiles/scan` endpoint. See [CHANGELOG.md](./CHANGELOG.md) for details.
 
 The app is designed to be portable: paths live in user settings or environment
 variables, not in source code.

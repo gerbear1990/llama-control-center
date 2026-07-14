@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-07-14
+
+### Added
+- **vLLM-in-WSL runtime with native NVFP4 support.** New managed `vllm-wsl`
+  runtime: LCC detects vLLM inside a configurable WSL2 venv (`wsl_distro`,
+  `vllm_wsl_venv` settings, `VLLM_WSL_HOST` probe URL), discovers sharded
+  safetensors checkpoint directories, builds the `vllm serve` command
+  ([vllm_args.py](lcc_core/vllm_args.py)), and starts/stops the server through
+  `wsl.exe` with pidfile tracking. Lets NVIDIA Blackwell GPUs run native NVFP4
+  checkpoints from the same dashboard; see [docs/NVFP4_WSL.md](docs/NVFP4_WSL.md).
+
 ### Removed
 - **Launch-script generation.** LCC no longer writes `.ps1`/`.sh` launch
   scripts; the web UI has always started servers by building the
