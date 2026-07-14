@@ -268,15 +268,3 @@ Check the static JavaScript:
 ```powershell
 node --check .\lcc_api\static\app.js
 ```
-
-Run the portable inventory from the command line:
-
-```powershell
-python -m lcc_core inventory --pretty
-```
-
-Resolve profiles:
-
-```powershell
-python -m lcc_core profiles --pretty
-```

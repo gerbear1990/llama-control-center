@@ -300,7 +300,7 @@ def get_server_metrics(server_id: str) -> dict[str, Any]:
 
 @app.get("/api/servers/{server_id}/logs")
 def get_server_logs(server_id: str, lines: int = 200) -> dict[str, Any]:
-    """Return tail of stdout/stderr logs for a tracked server (M2 / documented in PORTABLE_CORE)."""
+    """Return tail of stdout/stderr logs for a tracked server."""
     from lcc_core.server_manager import server_logs
     result = server_logs(server_id=server_id, lines=lines)
     if not result.get("success"):
