@@ -4,7 +4,6 @@
       "mode": "deepreinforce-ai_ornith-1.0-35b-q4_k_m",
       "name": "deepreinforce-ai_Ornith-1.0-35B-Q4_K_M",
       "description": "Auto-generated from discovered model",
-      "script": "deepreinforce-ai_ornith-1.0-35b-q4_k_m.ps1",
       "recommended_params": {
         "ctx_size": 16384,
         "threads": 4,
@@ -16,13 +15,13 @@
         "cache_type_v": "q4_0",
         "flash_attn": true,
         "reasoning": false
-      }
+      },
+      "model_path": "C:/Users/filth/models/deepreinforce-ai_Ornith-1.0-35B-Q4_K_M.gguf"
     },
     {
       "mode": "devstral-small-2-24b-instruct-2512-gguf",
       "name": "Devstral-Small-2-24B-Instruct-2512-GGUF",
       "description": "Auto-generated from discovered model",
-      "script": "devstral-small-2-24b-instruct-2512-gguf.ps1",
       "recommended_params": {
         "ctx_size": 16384,
         "threads": 4,
@@ -34,13 +33,13 @@
         "cache_type_v": "q4_0",
         "flash_attn": true,
         "reasoning": false
-      }
+      },
+      "model_path": "C:/Users/filth/models/Devstral-Small-2-24B-Instruct-2512-GGUF/mistralai_Devstral-Small-2-24B-Instruct-2512-Q6_K_L.gguf"
     },
     {
       "mode": "gemma-4-26b-a4b-it-gguf-unsloth",
       "name": "gemma-4-26B-A4B-it-GGUF-unsloth",
       "description": "Auto-generated from discovered model",
-      "script": "gemma-4-26b-a4b-it-gguf-unsloth.ps1",
       "recommended_params": {
         "ctx_size": 16384,
         "threads": 4,
@@ -52,13 +51,13 @@
         "cache_type_v": "q4_0",
         "flash_attn": true,
         "reasoning": false
-      }
+      },
+      "model_path": "C:/Users/filth/models/gemma-4-26B-A4B-it-GGUF-unsloth/gemma-4-26B-A4B-it-UD-Q6_K_XL.gguf"
     },
     {
       "mode": "gemma-4-31b-it-nvfp4-turbo",
       "name": "gemma-4-31B-it-NVFP4-turbo",
       "description": "Auto-generated from discovered model",
-      "script": "gemma-4-31b-it-nvfp4-turbo.ps1",
       "recommended_params": {
         "ctx_size": 16384,
         "threads": 4,
@@ -70,13 +69,13 @@
         "cache_type_v": "q4_0",
         "flash_attn": true,
         "reasoning": false
-      }
+      },
+      "model_path": "C:/Users/filth/models/gemma-4-31B-it-NVFP4-turbo/gguf/gemma-4-31B-it-NVFP4-turbo.gguf"
     },
     {
       "mode": "gemma-4-31b-it-q5_k_l",
       "name": "gemma-4-31B-it-Q5_K_L",
       "description": "Auto-generated from discovered model",
-      "script": "gemma-4-31b-it-q5_k_l.ps1",
       "recommended_params": {
         "ctx_size": 16384,
         "threads": 4,
@@ -88,13 +87,13 @@
         "cache_type_v": "q4_0",
         "flash_attn": true,
         "reasoning": false
-      }
+      },
+      "model_path": "C:/Users/filth/models/gemma-4-31B-it-Q5_K_L.gguf"
     },
     {
       "mode": "gemma-4-31b-it-qat-ud-q4_k_xl",
       "name": "gemma-4-31B-it-qat-UD-Q4_K_XL",
       "description": "Auto-generated from discovered model",
-      "script": "gemma-4-31b-it-qat-ud-q4_k_xl.ps1",
       "recommended_params": {
         "ctx_size": 16384,
         "threads": 4,
@@ -106,13 +105,13 @@
         "cache_type_v": "q4_0",
         "flash_attn": true,
         "reasoning": false
-      }
+      },
+      "model_path": "C:/Users/filth/models/gemma-4-31B-it-qat-UD-Q4_K_XL.gguf"
     },
     {
       "mode": "gemma-4-31b-it-uncensored-q4_k_m",
       "name": "gemma-4-31B-it-uncensored-Q4_K_M",
       "description": "Auto-generated from discovered model",
-      "script": "gemma-4-31b-it-uncensored-q4_k_m.ps1",
       "recommended_params": {
         "ctx_size": 16384,
         "threads": 4,
@@ -124,13 +123,13 @@
         "cache_type_v": "q4_0",
         "flash_attn": true,
         "reasoning": false
-      }
+      },
+      "model_path": "C:/Users/filth/models/gemma-4-31B-it-uncensored-Q4_K_M.gguf"
     },
     {
       "mode": "huihui-qwable-3.6-27b-abliterated-q4_k_m_q8",
       "name": "Huihui-Qwable-3.6-27b-abliterated-Q4_K_M_Q8",
       "description": "Auto-generated from discovered model",
-      "script": "huihui-qwable-3.6-27b-abliterated-q4_k_m_q8.ps1",
       "recommended_params": {
         "ctx_size": 16384,
         "threads": 4,
@@ -142,13 +141,13 @@
         "cache_type_v": "q4_0",
         "flash_attn": true,
         "reasoning": false
-      }
+      },
+      "model_path": "C:/Users/filth/models/Huihui-Qwable-3.6-27b-abliterated-Q4_K_M_Q8.gguf"
     },
     {
       "mode": "qwable-27b_q4_k_m",
       "name": "Qwable-27b_Q4_K_M",
       "description": "Auto-generated from discovered model",
-      "script": "qwable-27b_q4_k_m.ps1",
       "recommended_params": {
         "ctx_size": 16384,
         "threads": 4,
@@ -160,13 +159,13 @@
         "cache_type_v": "q4_0",
         "flash_attn": true,
         "reasoning": false
-      }
+      },
+      "model_path": "C:/Users/filth/models/Qwable-27b_Q4_K_M.gguf"
     },
     {
       "mode": "qwen-agentworld-35b-a3b-ud-q4_k_xl",
       "name": "Qwen-AgentWorld-35B-A3B-UD-Q4_K_XL",
       "description": "Auto-generated from discovered model",
-      "script": "qwen-agentworld-35b-a3b-ud-q4_k_xl.ps1",
       "recommended_params": {
         "ctx_size": 16384,
         "threads": 4,
@@ -178,13 +177,13 @@
         "cache_type_v": "q4_0",
         "flash_attn": true,
         "reasoning": false
-      }
+      },
+      "model_path": "C:/Users/filth/models/Qwen-AgentWorld-35B-A3B-UD-Q4_K_XL.gguf"
     },
     {
       "mode": "qwen3-coder-30b-a3b-instruct-gguf",
       "name": "Qwen3-Coder-30B-A3B-Instruct-GGUF",
       "description": "Auto-generated from discovered model",
-      "script": "qwen3-coder-30b-a3b-instruct-gguf.ps1",
       "recommended_params": {
         "ctx_size": 16384,
         "threads": 4,
@@ -196,13 +195,13 @@
         "cache_type_v": "q4_0",
         "flash_attn": true,
         "reasoning": false
-      }
+      },
+      "model_path": "C:/Users/filth/models/Qwen3-Coder-30B-A3B-Instruct-GGUF/Qwen3-Coder-30B-A3B-Instruct-Q6_K.gguf"
     },
     {
       "mode": "qwen3-coder-next-gguf",
       "name": "Qwen3-Coder-Next-GGUF",
       "description": "Auto-generated from discovered model",
-      "script": "qwen3-coder-next-gguf.ps1",
       "recommended_params": {
         "ctx_size": 16384,
         "threads": 4,
@@ -214,13 +213,13 @@
         "cache_type_v": "q4_0",
         "flash_attn": true,
         "reasoning": false
-      }
+      },
+      "model_path": "C:/Users/filth/models/Qwen3-Coder-Next-GGUF/Qwen3-Coder-Next-Q4_K_M.gguf"
     },
     {
       "mode": "qwen3.6-27b-gguf",
       "name": "Qwen3.6-27B-GGUF",
       "description": "Auto-generated from discovered model",
-      "script": "qwen3.6-27b-gguf.ps1",
       "recommended_params": {
         "ctx_size": 16384,
         "threads": 4,
@@ -232,13 +231,13 @@
         "cache_type_v": "q4_0",
         "flash_attn": true,
         "reasoning": false
-      }
+      },
+      "model_path": "C:/Users/filth/models/Qwen3.6-27B-GGUF/Qwen3.6-27B-Q6_K.gguf"
     },
     {
       "mode": "qwen3.6-27b-q6_k-mtp",
       "name": "Qwen3.6-27B-Q6_K MTP",
       "description": "Auto-generated from discovered model",
-      "script": "qwen3.6-27b-q6_k-mtp.ps1",
       "recommended_params": {
         "ctx_size": 16384,
         "threads": 4,
@@ -250,13 +249,13 @@
         "cache_type_v": "q4_0",
         "flash_attn": true,
         "reasoning": false
-      }
+      },
+      "model_path": "C:/Users/filth/models/Qwen3.6-27B-Q6_K MTP/Qwen3.6-27B-Q6_K.gguf"
     },
     {
       "mode": "qwen3.6-35b-a3b-gguf",
       "name": "Qwen3.6-35B-A3B-GGUF",
       "description": "Auto-generated from discovered model",
-      "script": "qwen3.6-35b-a3b-gguf.ps1",
       "recommended_params": {
         "ctx_size": 16384,
         "threads": 4,
@@ -268,13 +267,13 @@
         "cache_type_v": "q4_0",
         "flash_attn": true,
         "reasoning": false
-      }
+      },
+      "model_path": "C:/Users/filth/models/Qwen3.6-35B-A3B-GGUF/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf"
     },
     {
       "mode": "stabilitymatrix",
       "name": "StabilityMatrix",
       "description": "Auto-generated from discovered model",
-      "script": "stabilitymatrix.ps1",
       "recommended_params": {
         "ctx_size": 16384,
         "threads": 4,
@@ -286,13 +285,13 @@
         "cache_type_v": "q4_0",
         "flash_attn": true,
         "reasoning": false
-      }
+      },
+      "model_path": "C:/Users/filth/models/SwarmUI/Models/unet/StabilityMatrix/Wan2.2-I2V-A14B-HighNoise-Q8_0.gguf"
     },
     {
       "mode": "stabilitymatrix-53e51d",
       "name": "StabilityMatrix",
       "description": "Auto-generated from discovered model",
-      "script": "stabilitymatrix-53e51d.ps1",
       "recommended_params": {
         "ctx_size": 16384,
         "threads": 4,
@@ -304,13 +303,13 @@
         "cache_type_v": "q4_0",
         "flash_attn": true,
         "reasoning": false
-      }
+      },
+      "model_path": "C:/Users/filth/models/SwarmUI/Models/unet/StabilityMatrix/Wan2.2-I2V-A14B-LowNoise-Q8_0.gguf"
     },
     {
       "mode": "stabilitymatrix-735149",
       "name": "StabilityMatrix",
       "description": "Auto-generated from discovered model",
-      "script": "stabilitymatrix-735149.ps1",
       "recommended_params": {
         "ctx_size": 16384,
         "threads": 4,
@@ -322,13 +321,13 @@
         "cache_type_v": "q4_0",
         "flash_attn": true,
         "reasoning": false
-      }
+      },
+      "model_path": "C:/Users/filth/models/SwarmUI/Models/unet/StabilityMatrix/Wan2.2-T2V-A14B-HighNoise-Q8_0.gguf"
     },
     {
       "mode": "stabilitymatrix-a03ca7",
       "name": "StabilityMatrix",
       "description": "Auto-generated from discovered model",
-      "script": "stabilitymatrix-a03ca7.ps1",
       "recommended_params": {
         "ctx_size": 16384,
         "threads": 4,
@@ -340,7 +339,8 @@
         "cache_type_v": "q4_0",
         "flash_attn": true,
         "reasoning": false
-      }
+      },
+      "model_path": "C:/Users/filth/models/SwarmUI/Models/unet/StabilityMatrix/Wan2.2-T2V-A14B-LowNoise-Q8_0.gguf"
     },
     {
       "mode": "qwen3.6-27b-nvfp4-vllm",
@@ -392,7 +392,6 @@
       "mode": "migtissera_tess-4-27b-gguf",
       "name": "migtissera_Tess-4-27B-GGUF",
       "description": "Auto-generated from discovered model",
-      "script": "migtissera_tess-4-27b-gguf.ps1",
       "recommended_params": {
         "ctx_size": 16384,
         "threads": 4,
@@ -404,7 +403,8 @@
         "cache_type_v": "q4_0",
         "flash_attn": true,
         "reasoning": false
-      }
+      },
+      "model_path": "C:/Users/filth/models/migtissera_Tess-4-27B-GGUF/migtissera_Tess-4-27B-Q5_K_M.gguf"
     }
   ]
 }
