@@ -56,7 +56,7 @@ def _tokens(value: str, stopwords: set[str] = DEFAULT_STOPWORDS) -> set[str]:
 
 
 def _profile_text(profile: ModelProfile) -> str:
-    parts = [profile.mode, profile.name, profile.description, profile.script or ""]
+    parts = [profile.mode, profile.name, profile.description]
     params = profile.recommended_params
     for key in ["alias"]:
         value = params.get(key)

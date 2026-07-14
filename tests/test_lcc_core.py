@@ -147,14 +147,12 @@ class ManifestTests(unittest.TestCase):
             model_path = root / "models" / "portable.gguf"
             model_path.parent.mkdir()
             model_path.write_bytes(b"gguf")
-            script = root / "start-portable.ps1"
-            script.write_text("$model = 'C:\\Users\\someone\\models\\portable.gguf'\n", encoding="utf-8")
             manifest = {
                 "models": [
                     {
                         "mode": "portable",
                         "name": "Portable",
-                        "script": script.name,
+                        "model_path": "C:\\Users\\someone\\models\\portable.gguf",
                         "recommended_params": {
                             "draft_model": "C:\\Users\\someone\\models\\draft.gguf",
                         },

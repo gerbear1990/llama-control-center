@@ -55,9 +55,6 @@ class ModelProfile:
     mode: str
     name: str
     description: str
-    script: str | None
-    script_path: str | None
-    script_exists: bool
     model_path: str | None = None
     model_exists: bool | None = None
     model_size_gb: float | None = None

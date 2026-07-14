@@ -9,8 +9,6 @@ from .paths import find_project_root
 from .schema import ModelProfile
 
 
-MODEL_ASSIGNMENT_RE = re.compile(r"(?im)^\s*\$model\s*=\s*['\"]([^'\"]+)['\"]")
-MODEL_ARG_RE = re.compile(r"(?im)(?:^|\s)-m['\"]?\s*,?\s*['\"]([^'\"]+\.gguf)['\"]")
 WINDOWS_ABSOLUTE_RE = re.compile(r"^[A-Za-z]:[\\/]")
 
 
@@ -32,20 +30,6 @@ def _absolute_strings(value: Any, prefix: str = "") -> list[tuple[str, str]]:
     elif isinstance(value, str) and _is_absolute_path_like(value):
         results.append((prefix, value))
     return results
-
-
-def _parse_model_path(script_path: Path | None) -> str | None:
-    if not script_path or not script_path.is_file():
-        return None
-    try:
-        content = script_path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return None
-    for pattern in [MODEL_ASSIGNMENT_RE, MODEL_ARG_RE]:
-        match = pattern.search(content)
-        if match:
-            return match.group(1)
-    return None
 
 
 def load_manifest(manifest_path: Path) -> dict[str, Any]:
@@ -118,13 +102,7 @@ def load_profiles(
     manifest = load_manifest_safely(path)
     profiles: list[ModelProfile] = []
     for entry in manifest.get("models", []) or []:
-        script_name = entry.get("script")
-        script_path = root / script_name if root and script_name else None
-        if script_path and not script_path.is_file() and root:
-            script_path = root / "scripts" / script_name
-        # Modern non-GGUF runtimes can point directly at a checkpoint
-        # directory and do not need a generated PowerShell launch script.
-        model_path = entry.get("model_path") or _parse_model_path(script_path)
+        model_path = entry.get("model_path")
         recommended = entry.get("recommended_params", {}) or {}
         portable_warnings = []
         for location, value in _absolute_strings(recommended):
@@ -141,9 +119,6 @@ def load_profiles(
                 mode=str(entry.get("mode", "")),
                 name=str(entry.get("name", "")),
                 description=str(entry.get("description", "")),
-                script=script_name,
-                script_path=str(script_path) if script_path else None,
-                script_exists=bool(script_path and script_path.is_file()),
                 model_path=model_path,
                 model_exists=model_exists,
                 model_size_gb=entry.get("model_size_gb"),
