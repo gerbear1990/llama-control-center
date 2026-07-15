@@ -1290,7 +1290,17 @@ function renderProfiles() {
 
 function renderModels() {
   const models = (state.inventory?.models || []).filter(modelMatches);
-  $('#model-list').innerHTML = models.map((model) => `
+  $('#model-list').innerHTML = models.map((model) => {
+    const profile = profileForModelPath(state.profiles, model.path);
+    const actions = profile
+      ? `
+        <button class="mini-button" type="button" data-model-action="params" data-model-path="${escapeHtml(model.path)}" title="Open this model in the Parameters editor">Parameters</button>
+        <button class="mini-button" type="button" data-model-action="fit" data-model-path="${escapeHtml(model.path)}" title="Run a fit test for this model">Fit test</button>
+        <button class="mini-button" type="button" data-model-action="tune" data-model-path="${escapeHtml(model.path)}" title="Smart-fit auto-tune this model">Auto-tune</button>
+        <button class="mini-button" type="button" data-model-action="hf" data-model-path="${escapeHtml(model.path)}" title="Hugging Face info + update check">HF check</button>`
+      : `
+        <button class="mini-button primary" type="button" data-model-action="register" data-model-path="${escapeHtml(model.path)}" title="Register this model as a launchable profile">Register</button>`;
+    return `
     <article class="model-row">
       <strong>${escapeHtml(model.name)}</strong>
       <div class="model-meta">
@@ -1299,8 +1309,9 @@ function renderModels() {
         <span class="badge">${escapeHtml(model.source)}</span>
       </div>
       <div class="model-path">${escapeHtml(model.path)}</div>
-    </article>
-  `).join('') || '<div class="loading">No models match the current search.</div>';
+      <div class="model-actions">${actions}</div>
+    </article>`;
+  }).join('') || '<div class="loading">No models match the current search.</div>';
 }
 
 // Pure matcher: resolve a model file/dir path to its profile. Case- and
@@ -2392,6 +2403,49 @@ async function runAutoTune() {
   });
 }
 
+// Select the profile that owns `path` in the Parameters editor (same code
+// path as the #param-profile dropdown), returning the profile or null.
+function selectProfileForModelPath(path) {
+  const profile = profileForModelPath(state.profiles, path);
+  if (!profile) {
+    toast('No profile for this model yet — click Register first');
+    return null;
+  }
+  state.selectedProfileMode = profile.mode;
+  const select = $('#param-profile');
+  if (select) select.value = profile.mode;
+  renderParameters();
+  renderProfiles();
+  return profile;
+}
+
+async function handleModelAction(action, path, trigger) {
+  if (action === 'register') {
+    await withBusy(trigger, async () => {
+      try {
+        const result = await api('/api/profiles/scan', { method: 'POST' });
+        toast(result.registered_count ? `Registered ${result.registered_count} profile(s)` : 'No new models to register');
+        await refresh();
+      } catch (error) {
+        toast(`Register failed: ${error.message}`);
+      }
+    });
+    return;
+  }
+  const profile = selectProfileForModelPath(path);
+  if (!profile) return;
+  if (action === 'params') {
+    $('#parameters')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  } else if (action === 'fit') {
+    await runFitTest();
+  } else if (action === 'tune') {
+    await runAutoTune();
+  } else if (action === 'hf') {
+    await fetchHFInfo();
+    await checkModelUpdate();
+  }
+}
+
 async function loadSamplingPresets() {
   const select = $('#sampling-intent');
   if (!select) return;
@@ -3251,6 +3305,11 @@ function wireEvents() {
   });
   $('#sampling-suggest-button').addEventListener('click', applySamplingPreset);
   $('#fit-button').addEventListener('click', runFitTest);
+  $('#model-list').addEventListener('click', (event) => {
+    const button = event.target.closest('[data-model-action]');
+    if (!button) return;
+    handleModelAction(button.dataset.modelAction, button.dataset.modelPath, button);
+  });
   $('#benchmark-button').addEventListener('click', runBenchmark);
   $('#test-prompt-send').addEventListener('click', sendTestPrompt);
   $('#test-prompt-send-bottom')?.addEventListener('click', sendTestPrompt);

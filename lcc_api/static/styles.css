@@ -1291,6 +1291,13 @@ td:nth-child(7) {
   white-space: nowrap;
 }
 
+.model-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+
 .server-box,
 .issue-list {
   padding: 12px;
