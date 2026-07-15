@@ -33,16 +33,29 @@ def _get_text(url: str, timeout: float = 10.0) -> str:
         return resp.read().decode("utf-8", errors="replace")
 
 
+_MODEL_FILE_SUFFIXES = {".gguf", ".safetensors", ".bin", ".pt", ".pth"}
+_GENERIC_PATH_TOKENS = {"models", "model", "hf", "gguf", "checkpoints", "weights", "downloads"}
+
+
 def infer_query(name: str | None = None, path: str | None = None) -> str:
     parts = [name or ""]
     if path:
         path_obj = Path(path)
-        parts.extend([path_obj.stem, path_obj.parent.name])
+        # Only strip a suffix when it's a known model-file extension —
+        # Path.stem on a dotted directory name ("Qwen3.6-27B-NVFP4") would
+        # otherwise mangle it into "Qwen3".
+        base = path_obj.stem if path_obj.suffix.lower() in _MODEL_FILE_SUFFIXES else path_obj.name
+        for candidate in (base, path_obj.parent.name):
+            if not candidate or candidate.lower() in _GENERIC_PATH_TOKENS:
+                continue
+            if candidate.lower() in (name or "").lower():
+                continue  # already covered by the name
+            parts.append(candidate)
     query = " ".join(parts)
     query = re.sub(r"(?i)\b(gguf|unsloth|thebloke|q\d(?:_[a-z0-9]+)+|ud|it)\b", " ", query)
     query = re.sub(r"[-_]+", " ", query)
     query = re.sub(r"\s+", " ", query).strip()
-    return query or (name or Path(path or "").stem)
+    return query or (name or Path(path or "").name)
 
 
 def _strip_markdown(markdown: str) -> str:
