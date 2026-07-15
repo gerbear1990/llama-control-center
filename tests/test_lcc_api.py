@@ -528,6 +528,10 @@ class ServerMetricsFormatterTests(unittest.TestCase):
         self.assertNotIn("1/1ctx", line)
         self.assertNotIn("KVctx", line)
 
+        # Should not start or end with separator
+        self.assertFalse(line.startswith(" · "))
+        self.assertFalse(line.endswith(" · "))
+
     def test_profile_for_model_path_matcher(self):
         import subprocess
         import json
@@ -537,10 +541,6 @@ class ServerMetricsFormatterTests(unittest.TestCase):
         out = subprocess.check_output(["node", str(js_test)], encoding="utf-8", cwd=P(__file__).parent.parent)
         data = json.loads(out.strip())
         self.assertTrue(data["ok"], data)
-
-        # Should not start or end with separator
-        self.assertFalse(line.startswith(" · "))
-        self.assertFalse(line.endswith(" · "))
 
 # Lifted from scratch launch_and_probe.py for committed test (per strategy)
 # Provides representative state success for /metrics (AC3) inside the test suite.
