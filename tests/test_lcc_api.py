@@ -528,6 +528,16 @@ class ServerMetricsFormatterTests(unittest.TestCase):
         self.assertNotIn("1/1ctx", line)
         self.assertNotIn("KVctx", line)
 
+    def test_profile_for_model_path_matcher(self):
+        import subprocess
+        import json
+        from pathlib import Path as P
+
+        js_test = P(__file__).parent / "test_models_pane_matcher.js"
+        out = subprocess.check_output(["node", str(js_test)], encoding="utf-8", cwd=P(__file__).parent.parent)
+        data = json.loads(out.strip())
+        self.assertTrue(data["ok"], data)
+
         # Should not start or end with separator
         self.assertFalse(line.startswith(" · "))
         self.assertFalse(line.endswith(" · "))

@@ -1303,6 +1303,22 @@ function renderModels() {
   `).join('') || '<div class="loading">No models match the current search.</div>';
 }
 
+// Pure matcher: resolve a model file/dir path to its profile. Case- and
+// slash-agnostic (Windows paths); prefers launchable exact matches when
+// several profiles share one model file (e.g. an MTP variant).
+function profileForModelPath(profiles, path) {
+  if (!path) return null;
+  const norm = (p) => String(p || '').replace(/\//g, '\\').toLowerCase();
+  const target = norm(path);
+  const matches = (profiles || []).filter((p) => p.model && norm(p.model.path) === target);
+  if (!matches.length) return null;
+  const ranked = [...matches].sort((a, b) => (
+    (b.launchable === true) - (a.launchable === true)
+    || (b.confidence === 1.0) - (a.confidence === 1.0)
+  ));
+  return ranked[0];
+}
+
 function formatServerMetricsLine(m) {
   // Pure formatter for AC3: always join non-empty parts with ' · ' (single rule, no ad-hoc concat).
   // Drives the shipped UI display of KV/tps/slots/context/memory.
