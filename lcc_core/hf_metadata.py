@@ -130,12 +130,21 @@ def check_model_update(repo_id: str | None = None, name: str | None = None, path
 
     model_id = info["model_id"]
     filename = local_size = local_mtime = None
+    is_dir = False
     if path:
         local = Path(path)
-        filename = local.name
-        if local.exists():
-            stat = local.stat()
-            local_size, local_mtime = stat.st_size, stat.st_mtime
+        if local.is_dir():
+            # Sharded checkpoint: no single file to compare. Use the newest
+            # model-shard mtime as the local freshness signal.
+            is_dir = True
+            shards = sorted(local.glob("*.safetensors")) or sorted(local.iterdir())
+            mtimes = [f.stat().st_mtime for f in shards if f.is_file()]
+            local_mtime = max(mtimes) if mtimes else None
+        else:
+            filename = local.name
+            if local.exists():
+                stat = local.stat()
+                local_size, local_mtime = stat.st_size, stat.st_mtime
 
     try:
         meta = _get_json(f"{HF_API}/models/{urllib.parse.quote(model_id, safe='/')}")
@@ -154,7 +163,12 @@ def check_model_update(repo_id: str | None = None, name: str | None = None, path
         reason = "remote file size differs from local copy" if file_differs else "remote file matches your local copy"
     else:
         update_available = _modified_after(last_modified, local_mtime)
-        reason = "repo changed after your local file (may be a card/metadata edit)" if update_available else "no newer changes detected"
+        suffix = " (directory checkpoint: compared repo activity to your newest shard)" if is_dir else ""
+        reason = (
+            f"repo changed after your local file (may be a card/metadata edit){suffix}"
+            if update_available
+            else f"no newer changes detected{suffix}"
+        )
 
     return {
         "success": True,

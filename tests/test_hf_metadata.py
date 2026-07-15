@@ -25,5 +25,31 @@ class InferQueryTests(unittest.TestCase):
         self.assertTrue(infer_query("", r"C:\models\gguf"))
 
 
+class DirUpdateCheckTests(unittest.TestCase):
+    def test_directory_checkpoint_uses_newest_shard_mtime(self) -> None:
+        import tempfile
+        from pathlib import Path as P
+        from unittest import mock
+        from lcc_core import hf_metadata
+
+        with tempfile.TemporaryDirectory() as tmp:
+            ckpt = P(tmp) / "Fake-NVFP4"
+            ckpt.mkdir()
+            shard = ckpt / "model-00001-of-00001.safetensors"
+            shard.write_bytes(b"x" * 128)
+
+            fake_info = {"success": True, "model_id": "org/fake", "url": "u", "query": "q"}
+            # Repo modified long before the local shard -> no update.
+            fake_meta = {"lastModified": "2020-01-01T00:00:00.000Z"}
+            with mock.patch.object(hf_metadata, "fetch_model_info", return_value=fake_info), \
+                 mock.patch.object(hf_metadata, "_get_json", return_value=fake_meta):
+                result = hf_metadata.check_model_update(name="Fake", path=str(ckpt))
+
+        self.assertTrue(result["success"])
+        self.assertIsNone(result["file_differs"])  # no single-file compare for dirs
+        self.assertFalse(result["update_available"])
+        self.assertIn("directory", result["reason"].lower())
+
+
 if __name__ == "__main__":
     unittest.main()
