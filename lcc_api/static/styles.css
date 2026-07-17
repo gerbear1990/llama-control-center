@@ -4162,3 +4162,15 @@ th,
   border-bottom: 1px solid var(--rule);
   padding-bottom: 16px;
 }
+
+/* Category eyebrow above each panel title. */
+.panel-eyebrow {
+  display: block;
+  margin: 0 0 3px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
