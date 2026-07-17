@@ -43,6 +43,24 @@ class ApiSmokeTests(unittest.TestCase):
         self.assertEqual(self.client.post("/api/launch-scripts/scan").status_code, 404)
         self.assertEqual(self.client.post("/api/hf-cli/install").status_code, 404)
 
+    def test_servers_purge_route(self) -> None:
+        # Stub the core purge so the route test never mutates real server state.
+        from unittest import mock
+
+        with mock.patch("lcc_core.server_manager.purge_server_history") as purge:
+            purge.return_value = {"success": True, "removed": 2, "remaining": 1, "message": "Removed 2"}
+            res = self.client.post("/api/servers/purge?only_non_running=true")
+            self.assertEqual(res.status_code, 200)
+            self.assertTrue(res.json()["success"])
+            purge.assert_called_once_with(only_non_running=True, all=False)
+
+        with mock.patch("lcc_core.server_manager.purge_server_history") as purge:
+            purge.return_value = {"success": True, "removed": 3, "remaining": 0, "message": "Removed all"}
+            res = self.client.post("/api/servers/purge?all=true")
+            self.assertEqual(res.status_code, 200)
+            self.assertEqual(res.json()["removed"], 3)
+            purge.assert_called_once_with(only_non_running=True, all=True)
+
     def test_health_config_and_servers(self) -> None:
         index = self.client.get("/")
         self.assertEqual(index.status_code, 200)

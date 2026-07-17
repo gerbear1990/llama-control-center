@@ -289,6 +289,16 @@ def get_servers() -> dict[str, Any]:
     return {"servers": list_servers()}
 
 
+@app.post("/api/servers/purge")
+def purge_servers(only_non_running: bool = True, all: bool = False) -> dict[str, Any]:
+    """Remove tracked server history entries (all of them, or only non-running)."""
+    from lcc_core.server_manager import purge_server_history
+    result = purge_server_history(only_non_running=only_non_running, all=all)
+    if not result.get("success"):
+        raise HTTPException(status_code=400, detail=result)
+    return result
+
+
 @app.get("/api/servers/{server_id}/metrics")
 def get_server_metrics(server_id: str) -> dict[str, Any]:
     from lcc_core.server_metrics import fetch_server_metrics
