@@ -1600,7 +1600,9 @@ td:nth-child(7) {
   color: var(--muted);
 }
 
-.hf-status-row span:last-child {
+/* :not(.badge) so status badges keep their own state colours (the row rule
+   otherwise out-specifies .badge.ok/.badge.warn and forces --text on them). */
+.hf-status-row span:last-child:not(.badge) {
   color: var(--text);
   font-size: 13px;
   font-weight: 600;
@@ -3312,16 +3314,18 @@ tr.profile-group-header td {
   white-space: nowrap;
 }
 
+/* Theme tokens, not hardcoded light values: the previous hex values leaked a
+   near-white chip background into dark mode, making badge text unreadable. */
 .badge.ok {
-  color: #067647;
-  background: #e8f7ee;
-  border-color: #aee2c1;
+  color: var(--green);
+  background: var(--badge-ok-bg);
+  border-color: var(--badge-ok-border);
 }
 
 .badge.warn {
-  color: #b86d00;
-  background: #fff8e8;
-  border-color: #f1cf8a;
+  color: var(--amber);
+  background: var(--badge-warn-bg);
+  border-color: var(--badge-warn-border);
 }
 
 .mini-button {
