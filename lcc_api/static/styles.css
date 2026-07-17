@@ -4174,3 +4174,12 @@ th,
   text-transform: uppercase;
   color: var(--muted);
 }
+
+/* Active-pane edge: accent inset-left rail, same language as nav + selected rows. */
+.active-server-row.running {
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.panel:focus-within {
+  box-shadow: inset 3px 0 0 var(--accent), var(--inset-top);
+}

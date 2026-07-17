@@ -1409,7 +1409,7 @@ function renderActiveServers(servers) {
     const logsBtn = `<button class="mini-button" data-action="logs" data-server-id="${escapeHtml(server.id)}">Logs</button>`;
     const restartBtn = !isRunning ? `<button class="mini-button" data-action="restart" data-server-id="${escapeHtml(server.id)}">Restart</button>` : '';
     return `
-      <article class="active-server-row" data-server-id="${escapeHtml(server.id)}">
+      <article class="active-server-row${isRunning ? ' running' : ''}" data-server-id="${escapeHtml(server.id)}">
         <div class="active-server-head">
           <span class="badge ${badgeClass}">${badgeText}</span>${oom}
           <strong>${escapeHtml(server.mode)}</strong>
