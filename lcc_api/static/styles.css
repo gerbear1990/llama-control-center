@@ -31,6 +31,16 @@
   --toast-text: #ffffff;
   --shadow: 0 1px 2px rgba(23, 39, 45, 0.06), 0 14px 32px rgba(23, 39, 45, 0.04);
   --radius: 8px;
+  /* Type */
+  --font-mono: "Cascadia Code", "JetBrains Mono", Consolas, ui-monospace, monospace;
+  /* Motion */
+  --dur-fast: 60ms;
+  --dur-base: 120ms;
+  --dur-slow: 200ms;
+  /* Hairlines: structure drawn with 1px rules, not shadows */
+  --hairline: 1px solid var(--border);
+  --rule: var(--border);
+  --inset-top: 0 1px 0 var(--inset-highlight) inset;
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
@@ -263,8 +273,6 @@ select:focus {
 .nav-item.active {
   background: color-mix(in srgb, var(--accent) 12%, var(--surface));
   color: var(--text);
-}
-  color: var(--accent);
 }
 
 .nav-item.active {
@@ -1342,7 +1350,7 @@ td:nth-child(7) {
   margin: 4px 0 0;
   font-size: 11px;
   color: var(--muted);
-  font-family: ui-monospace, monospace;
+  font-family: var(--font-mono);
 }
 
 .server-stderr {
@@ -1398,7 +1406,7 @@ td:nth-child(7) {
   margin-bottom: 6px;
 }
 .portability-roots .mono {
-  font-family: ui-monospace, monospace;
+  font-family: var(--font-mono);
   font-size: 11px;
   color: var(--text-secondary);
   word-break: break-all;
@@ -1467,7 +1475,7 @@ td:nth-child(7) {
   color: var(--text);
   background: #f7fafb;
   border: 0;
-  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: 12px;
   line-height: 1.5;
   white-space: pre-wrap;
@@ -1632,7 +1640,7 @@ td:nth-child(7) {
 }
 
 #hf-cli-path {
-  font-family: ui-monospace, monospace;
+  font-family: var(--font-mono);
   font-size: 11px;
   color: var(--subtle);
   word-break: break-all;
@@ -2191,7 +2199,7 @@ td:nth-child(7) {
   display: block;
   padding: 0 10px 10px;
   color: var(--muted);
-  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: 11px;
   overflow-wrap: anywhere;
 }
@@ -2395,7 +2403,7 @@ td:nth-child(7) {
   background: color-mix(in srgb, var(--accent) 10%, var(--surface-2));
 }
 .palette-list kbd {
-  font-family: ui-monospace, monospace;
+  font-family: var(--font-mono);
   font-size: 10px;
   padding: 1px 4px;
   border: 1px solid var(--border);
@@ -2930,7 +2938,7 @@ body {
   color: #475569;
   background: #f8fafc;
   font-size: 12px;
-  font-family: inherit;
+  font-family: var(--font-mono);
   font-weight: 650;
 }
 
@@ -3886,8 +3894,6 @@ tr.profile-group-header td {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 3px;
-}
-  color: var(--text);
 }
 
 .live-empty {
