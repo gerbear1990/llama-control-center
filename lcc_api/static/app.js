@@ -3504,11 +3504,6 @@ function wireEvents() {
             e.preventDefault();
           }
           target.scrollIntoView({ behavior: 'smooth', block: 'start' });
-          target.classList.add('bounce-target');
-          // Remove after animation
-          setTimeout(() => {
-            target.classList.remove('bounce-target');
-          }, 700);
         }
       }
     });
