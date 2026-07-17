@@ -4075,3 +4075,55 @@ tr.profile-group-header td {
 .toast-action:hover {
   background: var(--surface-3);
 }
+
+/* ===== Terminal-instrument pass =====
+   Rule of thumb: values the machine produced (and labels classifying them)
+   are mono; anything you read or click stays Inter. Appended last so these
+   override the two earlier passes by cascade order. No colour changes. */
+
+.metric-value {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.badge,
+.param-hint,
+.live-source-badge {
+  font-family: var(--font-mono);
+}
+
+th,
+.runtime-table th,
+#profiles th {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.hardware-chip span,
+.hardware-chip strong,
+.live-gpu-card-head .gpu-stats,
+.live-bar-label {
+  font-family: var(--font-mono);
+}
+
+.model-path,
+.cell-subtitle,
+.runtime-version {
+  font-family: var(--font-mono);
+}
+
+.estimate-card span,
+.estimate-card strong,
+.tune-suggestion-specs span {
+  font-family: var(--font-mono);
+}
+
+.profile-group-title,
+.param-section-title,
+.hf-label,
+.sidebar-live-title,
+.sidebar-footer-version {
+  font-family: var(--font-mono);
+}
