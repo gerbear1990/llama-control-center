@@ -2739,7 +2739,6 @@ body {
   padding: 30px clamp(14px, 1.2vw, 18px) 22px;
   gap: 32px;
   background: rgba(255, 255, 255, 0.94);
-  box-shadow: 10px 0 40px rgba(15, 23, 42, 0.025);
 }
 
 .sidebar-toggle {
@@ -4126,4 +4125,40 @@ th,
 .sidebar-live-title,
 .sidebar-footer-version {
   font-family: var(--font-mono);
+}
+
+/* Structure: hairlines + a whisper of inset depth; no floating shadows in-flow.
+   Overlays (modals, popup menus, toasts, palette) keep their shadows. */
+.panel,
+.metric {
+  box-shadow: var(--inset-top);
+}
+
+/* Full-height rule in the gap between content column and inspector.
+   Offset mirrors the .workspace grid template: inspector clamp() + half the 20px gap. */
+.workspace {
+  position: relative;
+}
+
+.workspace::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: calc(clamp(340px, 22vw, 386px) + 10px);
+  width: 1px;
+  background: var(--rule);
+  pointer-events: none;
+}
+
+@media (max-width: 1180px) {
+  .workspace::after {
+    display: none;
+  }
+}
+
+/* Horizontal divider separating the page-header zone from metrics + workspace. */
+.topbar {
+  border-bottom: 1px solid var(--rule);
+  padding-bottom: 16px;
 }
