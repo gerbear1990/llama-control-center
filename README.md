@@ -196,6 +196,17 @@ profiles. Profiles are resolved against discovered model files by name, quant,
 size, and path hints. Unresolved or ambiguous profiles are shown as setup items
 instead of being silently launched.
 
+## Known limitations
+
+### Embedded-MTP models
+
+LCC currently treats `MTP` in a GGUF filename or profile as a separate draft
+companion model. This prevents models with an embedded MTP head, including
+Qwen3.5 and Qwen3.6 variants, from being auto-registered or launched. Until
+[issue #14](https://github.com/gerbear1990/llama-control-center/issues/14) is
+addressed, manually register the profile with `MTP` omitted from its mode, name,
+and description.
+
 ## Fit Tests
 
 The **Fit test** button runs `llama-fit-params` for the selected profile when
