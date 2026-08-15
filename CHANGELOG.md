@@ -7,7 +7,95 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Models pane action strip.** Per-model Parameters / Fit / Auto-tune / Hugging
+  Face / Register actions, plus a pure `profileForModelPath` matcher with its
+  own node unit test ([app.js](lcc_api/static/app.js),
+  [tests/test_models_pane_matcher.js](tests/test_models_pane_matcher.js)).
+- **Live server polling.** The dashboard now polls `/api/servers` every 5s while
+  a server is running (30s idle, paused when the tab is hidden) and raises a
+  toast when a running server transitions to crashed. Repaints are guarded by a
+  state signature and preserve focus, so open menus and typed input survive.
+- **Tools menu and a fuller command palette.** The six diagnostic actions moved
+  behind an accessible Tools disclosure, and the palette grew from 3 to 13
+  commands covering the operate verbs.
+- **Persistent parameter overrides.** Edited launch parameters survive a reload
+  and are marked with a dirty indicator until saved or reset.
+- **Three-state theme control.** The theme button cycles light → dark → system;
+  in system mode the UI follows the OS preference live.
+- **Deleted-profile tombstones.** `AppConfig.ignored_model_paths` records
+  profiles you delete so autoscan cannot resurrect them; saving a profile for
+  that path explicitly lifts the tombstone.
+
+### Changed
+- **One CSS token system.** `styles.css` had accumulated three overlapping
+  token layers; they are collapsed into a single `:root` plus a single
+  `[data-theme="dark"]` block (~200 lines lighter), with a new `--on-solid`
+  token for text on solid accent/danger fills. The gradient primary button and
+  glowing brand mark are flattened to match the rest of the surface.
+- **Terminal-native chat transcript.** Monospace transcript with `you ›` /
+  `model ›` gutters, rendered incrementally rather than re-rendered, which also
+  stops screen readers re-announcing the whole history on every reply.
+- **Merged duplicate server panels.** The two server lists became one — the
+  richer inspector, which carries crash badges, stderr excerpts and in-place
+  Restart — and it is now keyboard operable.
+- **Clearer labels.** "Edit sampling" is now "Apply preset"; confirmations and
+  toasts name profiles by their display name instead of a mode slug; purge
+  labels match across panels; "View all profiles" actually clears the filters.
+- **Accessibility pass.** Focus-visible rings on all controls, a shared Tab trap
+  for every modal, `aria-haspopup`/`aria-expanded` on menu triggers, danger
+  dialogs focusing Cancel, a single `prefers-reduced-motion` block, and light
+  theme tokens raised to WCAG AA (`--subtle`, `--amber`, `--accent`).
+- **Terminal-instrument design pass.** Monospace for machine data, hairline
+  structure instead of shadows, panel eyebrows, accent active-pane edges and
+  calmed motion on tokenized durations.
+- **`POST /api/config` merges instead of replacing.** The endpoint now applies
+  only the fields the client actually sent (`exclude_unset`), so saving one
+  setting no longer wipes profile names and WSL settings.
+- **CORS tightened.** The `"null"` origin is no longer allowed and credentials
+  are disabled.
+
+### Removed
+- **The Hugging Face "Install CLI" button and its endpoint** (breaking): LCC no
+  longer shells out to install tooling on your behalf.
+
 ### Fixed
+- **WSL vLLM stop could kill the entire distro.** With a missing pidfile the
+  stop script read a root PID of 0, which matched init's ppid and walked the
+  whole `/proc` tree. It now aborts before walking, reports `stop_failed`, and
+  suppresses the `taskkill` fallback so a stray client cannot be killed while
+  vLLM keeps the GPU.
+- **Fit Tests always failed.** `-fitp on` and `--reasoning` are rejected by
+  llama.cpp's common argument parser; both are removed from the fit invocation,
+  and the memory-breakdown regex now matches the real
+  `llama_memory_breakdown_print` output.
+- **Invalid speculative-decoding flags.** `spec_draft_n_max` now emits
+  `--draft-max`, and `--spec-type` is only emitted when there is no draft model
+  and the value is a known type.
+- **Save-as-copy soft-locked the modal.** Rebuilt as a proper prompt flow that
+  allocates a fresh unique mode, and new entries pin `model_path` so they
+  resolve by path instead of fuzzy name matching.
+- **Chat could target the wrong profile.** All 13 call sites now route through a
+  single `setSelectedProfileMode()` write path, so the transcript and Send can
+  never disagree; a failed send restores the message you typed.
+- **Version parsing.** `version: bNNNN (...)` and `ollama version is X.Y.Z` are
+  parsed correctly instead of yielding a bogus tuple.
+- **CPU% readings.** Per-PID psutil handles are cached across polls with a
+  create-time check, so the first sample is no longer meaningless and recycled
+  PIDs are detected.
+- **Slow GGUF header reads on cold paths.** `probe_model=False` now fully gates
+  header parsing through the estimate helpers.
+- **Hardware detection.** SMBIOS memory types 30 (LPDDR4) and 34 (DDR5) are
+  mapped, and the `nvidia-smi` field guard no longer accepts a short row.
+- **Missing `POST /api/servers/purge` route** — the Purge/Clear buttons had been
+  404ing.
+- **Dark-theme badge readability** and hardcoded light backgrounds leaking
+  through `.hf-status-row` specificity.
+- **Hugging Face update checks** now handle sharded directory checkpoints and no
+  longer mangle dotted checkpoint directory names.
+- **Split-model sizing** tolerates a part disappearing mid-scan (`_safe_size`).
+- **The daemon launcher** now detaches properly on Windows
+  (`CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW`).
 - **`start-lcc.py` netstat fallback could blame an innocent process for the
   port.** When `lcc_core` fails to import, the port-conflict check falls back
   to parsing `netstat -ano` — and matched *any* line mentioning `:8716`,
