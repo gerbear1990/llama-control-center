@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 import warnings
@@ -396,6 +397,142 @@ class ProfileDeleteApiTests(unittest.TestCase):
         manifest = json.loads(self.manifest_path.read_text(encoding="utf-8"))
         modes = [m.get("mode") for m in manifest.get("models", [])]
         self.assertIn("to-remove", modes)
+
+
+class _IsolatedConfigDir(unittest.TestCase):
+    """Point AppConfig at a temp config dir so API tests never touch the real one."""
+
+    def setUp(self) -> None:
+        self._config_tmp = tempfile.mkdtemp()
+        self._orig_config_dir = os.environ.get("LCC_CONFIG_DIR")
+        os.environ["LCC_CONFIG_DIR"] = self._config_tmp
+
+    def tearDown(self) -> None:
+        import shutil
+
+        if self._orig_config_dir is None:
+            os.environ.pop("LCC_CONFIG_DIR", None)
+        else:
+            os.environ["LCC_CONFIG_DIR"] = self._orig_config_dir
+        shutil.rmtree(self._config_tmp, ignore_errors=True)
+
+
+class ConfigSaveMergeTests(_IsolatedConfigDir):
+    """Regression: POST /api/config built a brand-new AppConfig from the request,
+    so every Settings save wiped profile_names (not in ConfigRequest at all) and
+    reset wsl_distro/vllm_wsl_venv, which the Settings form never submits."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        from lcc_api import app as app_module
+
+        self.client = TestClient(app_module.app)
+
+    def test_save_preserves_fields_the_form_does_not_submit(self) -> None:
+        from lcc_core.config import AppConfig
+
+        AppConfig(wsl_distro="Ubuntu-Custom", vllm_wsl_venv="/opt/custom").save()
+        named = self.client.post("/api/profiles/name", json={"mode": "tiny", "name": "My Tiny"})
+        self.assertEqual(named.status_code, 200, named.text)
+
+        saved = self.client.post(
+            "/api/config", json={"model_dirs": ["D:/models"], "default_port": 9099}
+        )
+        self.assertEqual(saved.status_code, 200, saved.text)
+        self.assertTrue(saved.json()["success"])
+
+        stored = self.client.get("/api/config").json()
+        self.assertEqual(stored["profile_names"], {"tiny": "My Tiny"})
+        self.assertEqual(stored["wsl_distro"], "Ubuntu-Custom")
+        self.assertEqual(stored["vllm_wsl_venv"], "/opt/custom")
+        # Submitted fields still take effect.
+        self.assertEqual(stored["model_dirs"], ["D:/models"])
+        self.assertEqual(stored["default_port"], 9099)
+
+
+class ProfileDeleteTombstoneTests(_IsolatedConfigDir):
+    """Regression: deleting a profile only dropped the models.json entry, so the
+    next scan re-registered the still-on-disk GGUF."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        from lcc_api import app as app_module
+        from lcc_core import paths as paths_module
+
+        self.client = TestClient(app_module.app)
+        self._tmp = tempfile.mkdtemp()
+        self.root = Path(self._tmp)
+        self.model_dir = self.root / "models"
+        self.model_dir.mkdir()
+        self.model_path = self.model_dir / "Tiny-1B-Q8_0.gguf"
+        self.model_path.write_bytes(b"model")
+        self.manifest_path = self.root / "models.json"
+        self.manifest_path.write_text(
+            json.dumps(
+                {
+                    "models": [
+                        {
+                            "mode": "tiny",
+                            "name": "Tiny",
+                            "model_path": str(self.model_path),
+                            "recommended_params": {"ctx_size": 4096},
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        self._orig_find_root = paths_module.find_project_root
+        paths_module.find_project_root = lambda *a, **kw: self.root
+
+    def tearDown(self) -> None:
+        from lcc_core import paths as paths_module
+        import shutil
+
+        paths_module.find_project_root = self._orig_find_root
+        shutil.rmtree(self._tmp, ignore_errors=True)
+        super().tearDown()
+
+    def _modes(self) -> list[str]:
+        doc = json.loads(self.manifest_path.read_text(encoding="utf-8"))
+        return [m.get("mode") for m in doc.get("models", [])]
+
+    def test_delete_then_scan_does_not_resurrect(self) -> None:
+        from lcc_core.config import AppConfig
+        from lcc_core.profile_registry import register_discovered_models
+
+        response = self.client.post("/api/profiles/delete", json={"mode": "tiny"})
+        self.assertTrue(response.json()["success"], response.text)
+        self.assertEqual(
+            [Path(path) for path in AppConfig.load().ignored_model_paths], [self.model_path]
+        )
+
+        result = register_discovered_models(project_root=self.root, model_dirs=[self.model_dir])
+        self.assertEqual(result.registered, [])
+        self.assertEqual(self._modes(), [])
+
+    def test_explicit_resave_clears_the_tombstone(self) -> None:
+        from lcc_core.config import AppConfig
+        from lcc_core.profile_registry import register_discovered_models
+
+        self.client.post("/api/profiles/delete", json={"mode": "tiny"})
+        saved = self.client.post(
+            "/api/profiles/save",
+            json={
+                "mode": "tiny",
+                "name": "Tiny",
+                "description": "",
+                "model_path": str(self.model_path),
+                "params": {"ctx_size": 4096},
+            },
+        )
+        self.assertTrue(saved.json()["success"], saved.text)
+        self.assertEqual(AppConfig.load().ignored_model_paths, [])
+
+        # With the tombstone lifted the model is scannable again.
+        self.manifest_path.write_text(json.dumps({"models": []}), encoding="utf-8")
+        result = register_discovered_models(project_root=self.root, model_dirs=[self.model_dir])
+        self.assertEqual([item.model_path for item in result.registered], [str(self.model_path)])
 
 
 class ProfileSaveSafetyTests(unittest.TestCase):

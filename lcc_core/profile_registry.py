@@ -62,6 +62,11 @@ def _norm_path(value: str) -> str:
         return str(value or "").lower()
 
 
+def normalize_model_path(value: str) -> str:
+    """Comparison key for model paths (resolved, lowercased for Windows)."""
+    return _norm_path(value)
+
+
 def _is_draft_model(model_path: str) -> bool:
     """Heuristically detect speculative/draft companion models.
 
@@ -211,6 +216,9 @@ def register_discovered_models(
     manifest_models = manifest_doc["models"]
     manifest_dirty = False
 
+    ignored_model_paths: set[str] = {
+        _norm_path(path) for path in (app_config.ignored_model_paths or []) if str(path).strip()
+    }
     handled_modes: set[str] = {profile.mode for profile in resolved_profiles}
     handled_model_paths: set[str] = set()
     draft_paths: set[str] = set()
@@ -224,6 +232,14 @@ def register_discovered_models(
     for model in discovered_models:
         resolved_path = _norm_path(model.path)
         if resolved_path in handled_model_paths:
+            continue
+        if resolved_path in ignored_model_paths:
+            result.skipped.append(
+                {
+                    "mode": _safe_slug(model.name or Path(model.path).stem),
+                    "reason": "Profile was deleted by the user; save a profile for this model to register it again.",
+                }
+            )
             continue
         if str(model.format).upper() != "GGUF":
             result.skipped.append(
@@ -282,6 +298,7 @@ def startup_autoscan_if_enabled(config: AppConfig | None = None) -> ScanResult |
 __all__ = [
     "RegisteredProfile",
     "ScanResult",
+    "normalize_model_path",
     "register_discovered_models",
     "startup_autoscan_if_enabled",
 ]

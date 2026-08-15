@@ -36,6 +36,18 @@ def _safe_mtime(path: Path) -> float | None:
         return None
 
 
+def _safe_size(path: Path) -> int | None:
+    """Byte size of ``path`` or None when the stat fails (race, permissions).
+
+    A split part can vanish or get locked between the walk and the stat; one
+    OSError must not abort the whole scan.
+    """
+    try:
+        return path.stat().st_size
+    except OSError:
+        return None
+
+
 def parse_quant(filename: str) -> str | None:
     match = QUANT_RE.search(filename)
     if not match:
@@ -201,7 +213,7 @@ def discover_models(
                     return sorted(discovered, key=lambda item: item.name.lower())
 
                 parent = path.parent
-                size = sum(part.stat().st_size for part in split_parts if part.exists())
+                size = sum(_safe_size(part) or 0 for part in split_parts)
                 file_stem = path.stem
                 if split_total:
                     split_match = SPLIT_RE.match(path.name)

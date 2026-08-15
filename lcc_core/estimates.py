@@ -572,8 +572,12 @@ def _model_size_mib(model: dict[str, Any] | None) -> float | None:
     return params_b * 1_000_000_000 * bits / 8 / 1024 / 1024
 
 
-def _get_total_layers(model: dict[str, Any] | None) -> int | None:
-    """Get the total number of layers from a model's GGUF file."""
+def _get_total_layers(model: dict[str, Any] | None, probe: bool = True) -> int | None:
+    """Get the total number of layers from a model's GGUF file.
+
+    With ``probe`` False, only cached metadata is consulted — the GGUF header is
+    never opened, so batch callers (the profiles-list fit badge) can't block.
+    """
     if not model:
         return None
     model_path = model.get("path") or model.get("model_path")
@@ -582,7 +586,7 @@ def _get_total_layers(model: dict[str, Any] | None) -> int | None:
     # Check if we already have layer info cached
     if "n_layer" in model:
         return model.get("n_layer")
-    return _read_gguf_n_layer(str(model_path))
+    return _gguf_meta(str(model_path), parse=probe)[0]
 
 
 def _quant_factor(model: dict[str, Any] | None, params: dict[str, Any]) -> float:
@@ -617,7 +621,7 @@ def _gpu_factor(gpu_name: str) -> float:
     return 0.32
 
 
-def _layer_fraction(params: dict[str, Any], model: dict[str, Any] | None = None) -> float:
+def _layer_fraction(params: dict[str, Any], model: dict[str, Any] | None = None, probe: bool = True) -> float:
     layers = params.get("gpu_layers", 999)
     if str(layers).lower() in {"all", "auto"}:
         return 1.0
@@ -628,7 +632,7 @@ def _layer_fraction(params: dict[str, Any], model: dict[str, Any] | None = None)
     if count >= 999:
         return 1.0
     # Get actual layer count from GGUF file if available
-    total_layers = _get_total_layers(model)
+    total_layers = _get_total_layers(model, probe=probe)
     if total_layers is not None and total_layers > 0:
         return max(0.0, min(1.0, count / total_layers))
     return max(0.0, min(1.0, count / 80))
@@ -708,10 +712,10 @@ def estimate_memory_fit(
 ) -> dict[str, Any]:
     """Estimate accelerator and RAM pressure for fit badges and live settings.
 
-    ``probe_model`` controls whether exact KV dimensions may be read from the
-    GGUF header on a cache miss. The default (False) keeps batch callers like the
-    profiles-list refresh fast by using cached dims or a heuristic; explicit
-    single-model paths (Smart Fit, live settings) pass True for exact sizing.
+    ``probe_model`` controls whether exact KV dimensions and layer counts may be
+    read from the GGUF header on a cache miss. The default (False) keeps batch
+    callers like the profiles-list refresh fast by using cached values or a
+    heuristic; explicit single-model paths (Smart Fit, live settings) pass True.
     """
 
     hardware = hardware or {}
@@ -720,7 +724,7 @@ def estimate_memory_fit(
     ctx = _float_or_none(params.get("ctx_size")) or 4096.0
     batch = _float_or_none(params.get("batch_size")) or 512.0
     ubatch = _float_or_none(params.get("ubatch_size")) or min(batch, 512.0)
-    layer_fraction = _layer_fraction(params, model)
+    layer_fraction = _layer_fraction(params, model, probe=probe_model)
     kv_offload = bool(params.get("kv_offload", True))
     op_offload = bool(params.get("op_offload", True))
     mmap = bool(params.get("mmap", True))

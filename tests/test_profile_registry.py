@@ -107,12 +107,53 @@ class RegisterDiscoveredModelsTests(_IsolatedDirs):
         self.assertEqual((self.project_root / "models.json").read_text(encoding="utf-8"), "{not json")
 
 
+class IgnoredModelPathTests(_IsolatedDirs):
+    """Deleting a profile must stick: the GGUF stays on disk, so the tombstone
+    list is the only thing stopping the next scan from re-registering it."""
+
+    def test_ignored_model_is_not_registered(self) -> None:
+        model = self._seed_model("Deleted-7B-Q4_K_M.gguf")
+        config = AppConfig(model_dirs=[str(self.model_dir)], ignored_model_paths=[str(model)])
+        result = register_discovered_models(
+            project_root=self.project_root, model_dirs=[self.model_dir], config=config
+        )
+        self.assertEqual(result.registered, [])
+        self.assertEqual(self._manifest()["models"], [])
+        reasons = " ".join(item["reason"] for item in result.skipped)
+        self.assertIn("deleted by the user", reasons.lower())
+
+    def test_ignored_match_is_case_insensitive(self) -> None:
+        model = self._seed_model("Deleted-7B-Q4_K_M.gguf")
+        config = AppConfig(model_dirs=[str(self.model_dir)], ignored_model_paths=[str(model).upper()])
+        result = register_discovered_models(
+            project_root=self.project_root, model_dirs=[self.model_dir], config=config
+        )
+        self.assertEqual(result.registered, [])
+
+    def test_non_ignored_models_still_register(self) -> None:
+        self._seed_model("Deleted-7B-Q4_K_M.gguf")
+        keeper = self._seed_model("Keeper-7B-Q4_K_M.gguf")
+        config = AppConfig(
+            model_dirs=[str(self.model_dir)],
+            ignored_model_paths=[str(self.model_dir / "Deleted-7B-Q4_K_M.gguf")],
+        )
+        result = register_discovered_models(
+            project_root=self.project_root, model_dirs=[self.model_dir], config=config
+        )
+        self.assertEqual({item.model_path for item in result.registered}, {str(keeper)})
+
+
 class ConfigFieldTests(_IsolatedDirs):
     def test_auto_scan_on_startup_round_trips(self) -> None:
         config = AppConfig(auto_scan_on_startup=False)
         path = config.save(self.config_dir / "config.json")
         loaded = AppConfig.load(path)
         self.assertFalse(loaded.auto_scan_on_startup)
+
+    def test_ignored_model_paths_round_trip(self) -> None:
+        config = AppConfig(ignored_model_paths=[r"C:\models\gone.gguf"])
+        loaded = AppConfig.load(config.save(self.config_dir / "config.json"))
+        self.assertEqual(loaded.ignored_model_paths, [r"C:\models\gone.gguf"])
 
 
 class StartupAutoscanTests(_IsolatedDirs):

@@ -70,6 +70,20 @@ class LinuxCpuInfoTests(unittest.TestCase):
         self.assertEqual(_parse_cpuinfo(""), {"name": None, "physical_cores": None})
 
 
+class MemoryTypeTests(unittest.TestCase):
+    def test_smbios_codes_map_to_ddr5_and_lpddr4(self) -> None:
+        # SMBIOS 0x1E is LPDDR4 and DDR5 is 0x22; mapping 30 to DDR5 sent real
+        # DDR5 boxes down the generic bandwidth formula (~2x understated).
+        from lcc_core.hardware import _calculate_ram_bandwidth, _windows_memory_type
+
+        self.assertEqual(_windows_memory_type(30), "LPDDR4")
+        self.assertEqual(_windows_memory_type(34), "DDR5")
+        self.assertEqual(_windows_memory_type(35), "LPDDR5")
+        self.assertEqual(_windows_memory_type(26), "DDR4")
+        self.assertEqual(_calculate_ram_bandwidth(6000, "DDR5"), 96.0)
+        self.assertEqual(_calculate_ram_bandwidth(6400, "LPDDR5"), 102.4)
+
+
 class ModelDiscoveryTests(unittest.TestCase):
     def test_parse_quant_and_params(self) -> None:
         self.assertEqual(parse_quant("Qwen3-14B-Q4_K_M.gguf"), "Q4_K_M")
@@ -480,8 +494,11 @@ class LaunchArgsTests(unittest.TestCase):
         self.assertIn("--gpu-layers", cmd.argv)
         self.assertIn("all", cmd.argv)
         self.assertIn("--model-draft", cmd.argv)
-        self.assertIn("--spec-type", cmd.argv)
-        self.assertIn("--spec-draft-n-max", cmd.argv)
+        # Upstream only knows --draft-max, and --spec-type is for speculation
+        # *without* a draft model, so it must not ride along with --model-draft.
+        self.assertNotIn("--spec-draft-n-max", cmd.argv)
+        self.assertNotIn("--spec-type", cmd.argv)
+        self.assertEqual(cmd.argv[cmd.argv.index("--draft-max") + 1], "4")
         self.assertIn("--temp", cmd.argv)
         self.assertIn("0.7", cmd.argv)
         self.assertIn("--top-p", cmd.argv)
@@ -489,6 +506,20 @@ class LaunchArgsTests(unittest.TestCase):
         self.assertIn("--predict", cmd.argv)
         self.assertIn("--no-kv-offload", cmd.argv)
         self.assertIn("--no-op-offload", cmd.argv)
+
+    def test_spec_type_only_emitted_without_draft_model_and_when_supported(self) -> None:
+        cmd = build_llama_server_args("llama-server", "m.gguf", {"spec_type": "ngram-cache"})
+        self.assertEqual(cmd.argv[cmd.argv.index("--spec-type") + 1], "ngram-cache")
+        bogus = build_llama_server_args("llama-server", "m.gguf", {"spec_type": "draft-mtp"})
+        self.assertNotIn("--spec-type", bogus.argv)
+        self.assertTrue(bogus.warnings)
+
+    def test_draft_max_alias_maps_to_upstream_flag(self) -> None:
+        cmd = build_llama_server_args(
+            "llama-server", "m.gguf", {"draft_model": "d.gguf", "draft_max": 8, "draft_min": 2}
+        )
+        self.assertEqual(cmd.argv[cmd.argv.index("--draft-max") + 1], "8")
+        self.assertEqual(cmd.argv[cmd.argv.index("--draft-min") + 1], "2")
 
     def test_string_gpu_layers_do_not_crash(self) -> None:
         # 'all'/'auto' and float-ish strings are valid manifest values elsewhere
@@ -554,7 +585,14 @@ class LaunchArgsTests(unittest.TestCase):
         self.assertIn("-tb", args)
         self.assertIn("-nkvo", args)
         self.assertIn("--op-offload", args)
-        parsed = parse_fit_output("-c 262144 -ngl -2\n", "CUDA0 22201 2879 814")
+        # llama-fit-params parses with LLAMA_EXAMPLE_COMMON and rejects the whole
+        # command line on an unknown flag, so only real upstream flags may appear.
+        self.assertNotIn("-fitp", args)
+        self.assertNotIn("--reasoning", args)
+        parsed = parse_fit_output(
+            "-c 262144 -ngl -2\n",
+            "llama_memory_breakdown_print: |   - CUDA0 (RTX 4090)   | 26000 =   106 + (25894 = 22201 +    2879 +     814) +           0 |",
+        )
         self.assertEqual(parsed["suggestions"]["ctx_size"], 262144)
         self.assertEqual(parsed["suggestions"]["gpu_layers"], 999)
         self.assertEqual(parsed["suggestions"]["cuda_memory_mib"]["context"], 2879)
@@ -571,7 +609,8 @@ class LaunchArgsTests(unittest.TestCase):
         """
         parsed = parse_fit_output(
             output,
-            "CUDA0 26090 1803 826\nprojected to use 28719 MiB on CUDA0 vs. 32606 MiB free",
+            "llama_memory_breakdown_print: |   - CUDA0 (RTX 5090)   | 32606 =  3887 + (28719 = 26090 +    1803 +     826) +           0 |"
+            "\nprojected to use 28719 MiB on CUDA0 vs. 32606 MiB free",
         )
         suggestions = parsed["suggestions"]
         self.assertEqual(suggestions["ctx_size"], 131072)
@@ -769,6 +808,21 @@ class KvMetaProbeTests(unittest.TestCase):
         fit = self.est.estimate_memory_fit({"ctx_size": 4096}, self.model, None, probe_model=False)
         self.assertEqual(self.parse_calls, [])  # never opened the GGUF
         self.assertIsNotNone(fit["estimated"]["kv_cache_mib"])  # heuristic still produced a number
+
+    def test_partial_gpu_layers_badge_does_not_parse_gguf(self) -> None:
+        # A partial -ngl needs the model's layer count; on the badge path that
+        # must come from cache or the heuristic, never from a live header read.
+        fit = self.est.estimate_memory_fit(
+            {"ctx_size": 4096, "gpu_layers": 20}, self.model, None, probe_model=False
+        )
+        self.assertEqual(self.parse_calls, [])
+        self.assertEqual(fit["inputs"]["gpu_layer_fraction"], round(20 / 80, 2))
+        # With probing allowed the real layer count (32) is used instead.
+        fit = self.est.estimate_memory_fit(
+            {"ctx_size": 4096, "gpu_layers": 20}, self.model, None, probe_model=True
+        )
+        self.assertEqual(len(self.parse_calls), 1)
+        self.assertEqual(fit["inputs"]["gpu_layer_fraction"], round(20 / 32, 2))
 
     def test_probe_parses_once_then_persists(self) -> None:
         self.est.estimate_memory_fit({"ctx_size": 4096}, self.model, None, probe_model=True)
@@ -1064,6 +1118,19 @@ class RuntimeUpdatesTests(unittest.TestCase):
         self.assertIsNone(parse_version("unknown"))
         self.assertIsNone(parse_version(None))
 
+    def test_parse_version_reads_raw_binary_version_output(self) -> None:
+        """Regression: `--version` lines never parsed, so update_available was
+        permanently False. `_strip_leading_v` ate the 'v' of "version:" and the
+        anchored regexes then matched nothing."""
+        from lcc_core.runtime_updates import compare_versions, parse_version
+
+        self.assertEqual(parse_version("version: b4488 (build c8a8a9d5)"), (4488,))
+        self.assertEqual(parse_version("ollama version is 0.5.7"), (0, 5, 7))
+        # A bare build hash carries no version and must not be mistaken for one.
+        self.assertIsNone(parse_version("c8a8a9d5"))
+        self.assertLess(compare_versions("version: b4488 (build c8a8a9d5)", "b4500"), 0)
+        self.assertLess(compare_versions("ollama version is 0.5.7", "v0.6.0"), 0)
+
     def test_compare_versions(self) -> None:
         from lcc_core.runtime_updates import compare_versions
 
@@ -1230,14 +1297,36 @@ class ServerStopTests(unittest.TestCase):
             proc.stdout.close()
 
 
+    def test_fit_parser_reads_upstream_memory_breakdown_line(self) -> None:
+        # Verbatim from tools/fit-params/README.md (template_gpu in
+        # llama_memory_breakdown_print): total = free + (self = model + context + compute) + unaccounted.
+        breakdown = (
+            "llama_memory_breakdown_print: | memory breakdown [MiB] | total   free     self   model   context   compute    unaccounted |\n"
+            "llama_memory_breakdown_print: |   - CUDA0 (RTX 4090)   | 24077 =  945 + (19187 = 17904 +     384 +     898) +        3945 |\n"
+            "llama_memory_breakdown_print: |   - Host               |                 58271 = 58259 +       0 +      12                |"
+        )
+        parsed = parse_fit_output("-c 4096 -ngl 48\n", breakdown)
+        memory = parsed["suggestions"]["cuda_memory_mib"]
+        self.assertEqual(memory["model"], 17904)
+        self.assertEqual(memory["context"], 384)
+        self.assertEqual(memory["compute"], 898)
+        self.assertEqual(memory["projected"], 19187)
+
     def test_fit_parser_reads_metal_memory_line(self) -> None:
-        parsed = parse_fit_output("-c 8192 -ngl -2\n", "MTL0 2883 47 548\nHost 2208 0 82")
+        parsed = parse_fit_output(
+            "-c 8192 -ngl -2\n",
+            "llama_memory_breakdown_print: |   - Metal0 (Apple M2 Max) |  6144 =  2666 + ( 3478 =  2883 +      47 +     548) +           0 |"
+            "\nllama_memory_breakdown_print: |   - Host                 |                  2290 =  2208 +       0 +      82                |",
+        )
         self.assertEqual(parsed["suggestions"]["cuda_memory_mib"]["model"], 2883)
         self.assertEqual(parsed["suggestions"]["cuda_memory_mib"]["context"], 47)
         self.assertEqual(parsed["suggestions"]["cuda_memory_mib"]["compute"], 548)
 
     def test_fit_parser_reads_rocm_memory_line(self) -> None:
-        parsed = parse_fit_output("-c 4096 -ngl 32\n", "ROCM0 1500 30 200")
+        parsed = parse_fit_output(
+            "-c 4096 -ngl 32\n",
+            "llama_memory_breakdown_print: |   - ROCm0 (RX 7900 XTX) | 24560 = 22830 + ( 1730 =  1500 +      30 +     200) +           0 |",
+        )
         self.assertEqual(parsed["suggestions"]["cuda_memory_mib"]["model"], 1500)
 
     def test_mmproj_in_middle_of_filename_is_skipped(self) -> None:
@@ -1271,7 +1360,102 @@ class ServerStopTests(unittest.TestCase):
         self.assertTrue((root / "pyproject.toml").exists())
 
 
+class WslVllmStopGuardTests(unittest.TestCase):
+    """The in-distro stop script walks /proc descendants from the pidfile PID.
+    With a missing pidfile the root was 0, and since PID 1 has ppid 0 on Linux
+    the walk collected every process in the distro and SIGKILLed it — stopping
+    one vLLM server tore down the whole WSL install."""
+
+    def test_stop_script_aborts_without_a_valid_root_pid(self) -> None:
+        from lcc_core.server_manager import WSL_STOP_NO_ROOT_MARKER, _wsl_stop_script
+
+        script = _wsl_stop_script("/tmp/vllm.pid")
+        self.assertIn("if root <= 0:", script)
+        self.assertIn(WSL_STOP_NO_ROOT_MARKER, script)
+        self.assertIn("sys.exit(3)", script)
+        # The guard has to precede the /proc walk to be worth anything.
+        self.assertLess(script.index("if root <= 0:"), script.index("os.listdir('/proc')"))
+        compile(script, "<wsl-stop-script>", "exec")
+
+    def test_stop_script_with_missing_pidfile_kills_nothing(self) -> None:
+        import os
+        import subprocess
+        import sys
+
+        from lcc_core.server_manager import WSL_STOP_NO_ROOT_MARKER, _wsl_stop_script
+
+        if os.name != "posix":
+            self.skipTest("the stop script targets Linux /proc semantics")
+        missing = str(Path(tempfile.mkdtemp()) / "absent.pid")
+        proc = subprocess.run(
+            [sys.executable, "-c", _wsl_stop_script(missing)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(proc.returncode, 3)
+        self.assertIn(WSL_STOP_NO_ROOT_MARKER, proc.stdout)
+
+    def test_stop_reports_failure_when_script_aborts(self) -> None:
+        import subprocess
+        from unittest import mock
+
+        from lcc_core import server_manager
+
+        aborted = subprocess.CompletedProcess(
+            [], 3, server_manager.WSL_STOP_NO_ROOT_MARKER + "\n", ""
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(server_manager, "cache_dir", return_value=Path(tmp)):
+                server_manager.write_state({"servers": [{
+                    "id": "vllm-1", "mode": "vllm-wsl", "pid": 424242,
+                    "wsl_pidfile": "/tmp/vllm.pid", "wsl_distro": "Ubuntu-24.04",
+                }]})
+                with mock.patch.object(subprocess, "run", return_value=aborted) as ran:
+                    result = server_manager._stop_wsl_vllm(
+                        server_manager._find_server("vllm-1"), timeout=5
+                    )
+                stored = server_manager._find_server("vllm-1")
+
+        self.assertFalse(result["success"])
+        self.assertIn("pidfile", result["message"])
+        self.assertEqual(stored["status"], "stop_failed")
+        # The aborted script must be the only stop action: no taskkill fallback
+        # may run, or the client would die while vLLM kept the GPU. Match on
+        # call contents, not count — pid_is_running may issue tasklist probes
+        # via subprocess when psutil is unavailable.
+        commands = [" ".join(map(str, call.args[0])) for call in ran.call_args_list]
+        self.assertEqual(sum("wsl" in cmd and "python3" in cmd for cmd in commands), 1)
+        self.assertFalse(any("taskkill" in cmd for cmd in commands))
+
+
 class RuntimeDispatchTests(unittest.TestCase):
+    def test_binary_version_extracts_the_version_token(self) -> None:
+        """Regression: the whole `--version` line was stored, which parse_version
+        could not read, so llama.cpp never reported an available update."""
+        import subprocess
+        from unittest import mock
+
+        from lcc_core import backends
+
+        def fake_run(cmd, **kwargs):
+            return subprocess.CompletedProcess(cmd, 0, "version: b4488 (build c8a8a9d5)\n", "")
+
+        with mock.patch.object(backends.subprocess, "run", side_effect=fake_run):
+            self.assertEqual(backends._binary_version("llama-server"), "b4488")
+
+        def fake_ollama(cmd, **kwargs):
+            return subprocess.CompletedProcess(cmd, 0, "ollama version is 0.5.7\n", "")
+
+        # Ollama prints no colon, so the raw line is kept and parse_version copes.
+        with mock.patch.object(backends.subprocess, "run", side_effect=fake_ollama):
+            version = backends._binary_version("ollama")
+        self.assertEqual(version, "ollama version is 0.5.7")
+
+        from lcc_core.runtime_updates import parse_version
+
+        self.assertEqual(parse_version(version), (0, 5, 7))
+
     def test_detect_runtime_maps_ids_and_rejects_unknown(self) -> None:
         from lcc_core.backends import LAUNCHABLE_RUNTIMES, detect_runtime
 
@@ -1567,6 +1751,9 @@ class PerProcessMemoryTests(unittest.TestCase):
         self._orig_apps_unavail = sm._compute_apps_unavailable
         self._orig_get_json = sm._get_json
         self._orig_get_text = sm._get_text
+        self._orig_psutil = sm.psutil
+        sm._process_handles.clear()
+        self.addCleanup(sm._process_handles.clear)
         # Reset cache so each test starts cold.
         sm._compute_apps_cache = None
         sm._compute_apps_cache_ts = 0.0
@@ -1582,6 +1769,7 @@ class PerProcessMemoryTests(unittest.TestCase):
         self.sm._compute_apps_unavailable = self._orig_apps_unavail
         self.sm._get_json = self._orig_get_json
         self.sm._get_text = self._orig_get_text
+        self.sm.psutil = self._orig_psutil
 
     def _wire_running_server(self, pid=12345):
         self.sm._find_server = lambda sid, mode=None: {
@@ -1642,6 +1830,36 @@ class PerProcessMemoryTests(unittest.TestCase):
             except ValueError:
                 continue
         self.assertEqual(parsed, {111: 2048 * 1024 * 1024, 222: 4096 * 1024 * 1024, 333: 8192 * 1024 * 1024})
+
+    def test_process_memory_reuses_one_handle_so_cpu_has_a_baseline(self):
+        """Regression: a fresh psutil.Process every poll meant cpu_percent always
+        returned the meaningless first-call 0.0, which was then coerced to None —
+        CPU% was permanently blank."""
+        import os
+
+        if self.sm.psutil is None:
+            self.skipTest("psutil is not installed")
+        pid = os.getpid()
+
+        first = self.sm._process_memory(pid)
+        self.assertIsNotNone(first["rss_bytes"])
+        # No baseline on the first poll for a PID: None, never a fabricated 0.0.
+        self.assertIsNone(first["cpu_percent"])
+
+        handle = self.sm._process_handles[pid]
+        second = self.sm._process_memory(pid)
+        self.assertIs(self.sm._process_handles[pid], handle, "handle must be reused")
+        self.assertIsInstance(second["cpu_percent"], float)
+        self.assertGreaterEqual(second["cpu_percent"], 0.0)
+
+    def test_process_memory_forgets_dead_pids(self):
+        if self.sm.psutil is None:
+            self.skipTest("psutil is not installed")
+        dead = 2147483647
+        result = self.sm._process_memory(dead)
+        self.assertIsNone(result["rss_bytes"])
+        self.assertIsNone(result["cpu_percent"])
+        self.assertNotIn(dead, self.sm._process_handles)
 
     def test_process_memory_handles_missing_psutil(self):
         # psutil is a soft dep; absence must produce all-None, not crash.

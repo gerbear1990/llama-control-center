@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import urllib.error
@@ -83,6 +84,12 @@ def _configured_roots(config: AppConfig) -> list[Path]:
     return [path for path in roots if path.is_dir()]
 
 
+# `llama-server --version` prints `version: b4488 (build c8a8a9d5)`. Keeping the
+# whole line makes the stored version unparseable (and the build hash can be
+# mistaken for a version), so pull out just the token after `version:`.
+_VERSION_TOKEN_RE = re.compile(r"version:\s*(\S+)", re.IGNORECASE)
+
+
 def _binary_version(binary_path: str | None, timeout: float = 2.0) -> str | None:
     if not binary_path:
         return None
@@ -101,7 +108,8 @@ def _binary_version(binary_path: str | None, timeout: float = 2.0) -> str | None
         return None
     for line in output.splitlines():
         if "version:" in line.lower():
-            return line[:240]
+            match = _VERSION_TOKEN_RE.search(line)
+            return (match.group(1) if match else line)[:240]
     return output.splitlines()[0][:240]
 
 

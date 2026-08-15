@@ -734,25 +734,34 @@ def stop_server(server_id: str | None = None, mode: str | None = None, timeout: 
     }
 
 
-def _stop_wsl_vllm(server: dict[str, Any], timeout: int) -> dict[str, Any]:
-    """Stop the Linux vLLM process tree, then ensure its WSL client exits."""
+WSL_STOP_NO_ROOT_MARKER = "LCC_WSL_STOP_NO_ROOT"
 
-    pid = int(server["pid"])
-    distro = str(server.get("wsl_distro") or "Ubuntu-24.04")
-    pidfile = str(server.get("wsl_pidfile") or "")
-    wsl = str(server.get("wsl_binary") or shutil.which("wsl.exe") or "wsl.exe")
-    if not pidfile:
-        return {"success": False, "message": "Tracked vLLM server has no WSL pidfile.", "server": server}
-    # Pass Python directly through wsl.exe. A `bash -lc` script containing
-    # `$p`/`$(...)` is expanded once by WSL's command bridge before the target
-    # bash sees it, which breaks on Windows and can leave EngineCore children.
-    stop_script = f"""
+
+def _wsl_stop_script(pidfile: str) -> str:
+    """Build the in-distro Python that kills the vLLM tree rooted at the pidfile.
+
+    Pass Python directly through wsl.exe. A `bash -lc` script containing
+    `$p`/`$(...)` is expanded once by WSL's command bridge before the target
+    bash sees it, which breaks on Windows and can leave EngineCore children.
+    """
+
+    return f"""
 import os
 import signal
+import sys
 import time
 
 pidfile = {pidfile!r}
-root = int(open(pidfile).read().strip()) if os.path.exists(pidfile) else 0
+try:
+    root = int(open(pidfile).read().strip())
+except (OSError, ValueError):
+    root = 0
+# A missing/garbage pidfile (WSL restarted, /tmp cleared) must abort here. The
+# descendant walk below would start from PID 0, and on Linux PID 1 has ppid 0,
+# so it would collect and then SIGKILL every process in the distro.
+if root <= 0:
+    print({WSL_STOP_NO_ROOT_MARKER!r})
+    sys.exit(3)
 parents = {{}}
 for entry in os.listdir('/proc'):
     if not entry.isdigit():
@@ -768,7 +777,7 @@ for parent in front:
         if ppid == parent and child not in descendants:
             descendants.append(child)
             front.append(child)
-targets = list(reversed(descendants)) + ([root] if root else [])
+targets = list(reversed(descendants)) + [root]
 for sig in (signal.SIGTERM, signal.SIGKILL):
     for target in targets:
         try:
@@ -779,6 +788,18 @@ for sig in (signal.SIGTERM, signal.SIGKILL):
 if os.path.exists(pidfile):
     os.remove(pidfile)
 """
+
+
+def _stop_wsl_vllm(server: dict[str, Any], timeout: int) -> dict[str, Any]:
+    """Stop the Linux vLLM process tree, then ensure its WSL client exits."""
+
+    pid = int(server["pid"])
+    distro = str(server.get("wsl_distro") or "Ubuntu-24.04")
+    pidfile = str(server.get("wsl_pidfile") or "")
+    wsl = str(server.get("wsl_binary") or shutil.which("wsl.exe") or "wsl.exe")
+    if not pidfile:
+        return {"success": False, "message": "Tracked vLLM server has no WSL pidfile.", "server": server}
+    stop_script = _wsl_stop_script(pidfile)
     try:
         result = subprocess.run(
             [wsl, "-d", distro, "--", "python3", "-c", stop_script],
@@ -789,6 +810,29 @@ if os.path.exists(pidfile):
         )
     except (OSError, subprocess.SubprocessError) as exc:
         result = subprocess.CompletedProcess([], 1, "", str(exc))
+
+    if WSL_STOP_NO_ROOT_MARKER in (result.stdout or ""):
+        # The tree was never identified, so nothing was killed. Reporting success
+        # here (after only reaping the wsl.exe client) would strand vLLM holding
+        # VRAM with no tracked PID left to stop it.
+        _update_server(
+            server["id"],
+            {
+                "status": "stop_failed",
+                "running": True,
+                "stopped_at": _now(),
+                "stop_stdout": (result.stdout or "").strip(),
+                "stop_stderr": (result.stderr or "").strip(),
+            },
+        )
+        return {
+            "success": False,
+            "message": (
+                f"WSL vLLM stop aborted: pidfile {pidfile} is missing or unreadable in distro {distro}, "
+                "so the Linux process tree could not be identified. Stop vLLM inside WSL manually."
+            ),
+            "server": _find_server(server["id"]),
+        }
 
     if not _wait_gone(pid, 5) and is_windows():
         subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, text=True, timeout=timeout, check=False)

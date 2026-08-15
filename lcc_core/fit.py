@@ -12,9 +12,16 @@ from .llama_args import normalize_gpu_layers
 from .server_manager import prepare_launch_command
 
 
+# Matches a device row of llama_memory_breakdown_print (src/llama-context.cpp
+# template_gpu: "total = free + (self = model + context + compute) + unaccounted"), e.g.
+# llama_memory_breakdown_print: |   - CUDA0 (RTX 4090)   | 24077 =  945 + (19187 = 17904 +     384 +     898) +        3945 |
+# The Host/buffer-type rows use a different template with no parentheses, so they
+# can't match here.
 MEMORY_RE = re.compile(
-    r"(?im)^(?P<device>(?:CUDA|MTL|METAL|ROCM|HIP|VULKAN|VK|SYCL|GPU)\d*)\s+"
-    r"(?P<model>\d+)\s+(?P<context>\d+)\s+(?P<compute>\d+)"
+    r"(?im)^.*?\|\s*-\s*(?P<device>\S+)\s*\([^)]*\)\s*\|\s*"
+    r"(?P<total>\d+)\s*=\s*(?P<free>\d+)\s*\+\s*\(\s*(?P<self>\d+)\s*=\s*"
+    r"(?P<model>\d+)\s*\+\s*(?P<context>\d+)\s*\+\s*(?P<compute>\d+)\s*\)"
+    r"\s*\+\s*(?P<unaccounted>\d+)"
 )
 FREE_RE = re.compile(r"projected to use (?P<used>\d+) MiB.* vs\. (?P<free>\d+) MiB", re.IGNORECASE)
 LEAVE_RE = re.compile(r"will leave (?P<remaining>\d+).*?MiB", re.IGNORECASE)
@@ -114,8 +121,6 @@ def build_fit_args(fit_binary: str, model_path: str, params: dict[str, Any], tar
         str(int(params.get("ubatch_size", 512))),
         "-fit",
         "on",
-        "-fitp",
-        "on",
         "-fitt",
         str(int(target_mib)),
     ]
@@ -143,8 +148,9 @@ def build_fit_args(fit_binary: str, model_path: str, params: dict[str, Any], tar
         args.extend(["-s", str(params["seed"])])
     if "n_predict" in params:
         args.extend(["--predict", str(params["n_predict"])])
-    if "reasoning" in params and params["reasoning"]:
-        args.append("--reasoning")
+    # No --reasoning here: llama-fit-params parses with LLAMA_EXAMPLE_COMMON and
+    # -rea/--reasoning is registered only for server/completion/cli, so passing it
+    # makes common_params_parse reject the whole command line.
     return args
 
 
@@ -254,7 +260,9 @@ def parse_fit_output(stdout: str, stderr: str = "") -> dict[str, Any]:
             "model": model_mib,
             "context": context_mib,
             "compute": compute_mib,
-            "projected": model_mib + context_mib + compute_mib,
+            # Each column is rounded to MiB independently upstream, so the printed
+            # 'self' total can differ from the sum of the parts by a MiB.
+            "projected": int(memory.group("self")),
         }
         notes.append(f"Parsed {memory.group('device')} memory estimate from llama-fit-params output.")
 

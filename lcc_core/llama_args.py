@@ -22,6 +22,11 @@ class LaunchCommand:
         return data
 
 
+# Accepted values of llama.cpp's --spec-type (common/arg.cpp): speculative decoding
+# without a draft model. Anything else makes llama-server exit before it listens.
+SPEC_TYPES = {"none", "ngram-cache", "ngram-simple", "ngram-map-k", "ngram-map-k4v", "ngram-mod"}
+
+
 def _bool_on(value: Any) -> str:
     return "on" if bool(value) else "off"
 
@@ -129,18 +134,24 @@ def build_llama_server_args(
     spec_type = str(params.get("spec_type", "")).strip()
     if draft_model:
         args.extend(["--model-draft", draft_model])
-        if spec_type:
-            args.extend(["--spec-type", spec_type])
-        if "spec_draft_n_max" in params:
-            args.extend(["--spec-draft-n-max", str(params["spec_draft_n_max"])])
-        elif "draft_max" in params:
-            args.extend(["--draft-max", str(params["draft_max"])])
+        # spec_draft_n_max is a legacy manifest key; upstream only knows
+        # --draft-max (aliases --draft/--draft-n).
+        draft_max = params.get("spec_draft_n_max", params.get("draft_max"))
+        if draft_max is not None:
+            args.extend(["--draft-max", str(draft_max)])
         if "draft_min" in params:
             args.extend(["--draft-min", str(params["draft_min"])])
         if "draft_p_min" in params:
             args.extend(["--draft-p-min", str(params["draft_p_min"])])
+        if spec_type:
+            # --spec-type selects draft-model-free speculation upstream, so it is
+            # meaningless (and misleading) alongside --model-draft.
+            warnings.append("spec_type applies only without a draft model; --spec-type was not emitted.")
     elif spec_type:
-        warnings.append("spec_type was set but draft_model was missing; speculative flags were not emitted.")
+        if spec_type in SPEC_TYPES:
+            args.extend(["--spec-type", spec_type])
+        else:
+            warnings.append(f"spec_type '{spec_type}' is not a supported value; --spec-type was not emitted.")
 
     tensor_overrides = params.get("tensor_overrides") or params.get("override_tensors") or params.get("ot")
     if tensor_overrides:
