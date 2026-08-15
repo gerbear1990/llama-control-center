@@ -24,7 +24,10 @@ const state = {
   query: '',
   chatHistory: {},  // { [mode]: Array<{role: 'user'|'assistant', content: string}> }
   jinjaRecommended: false,
-  theme: localStorage.getItem('lcc-theme') || 'light',
+  // Three-state: 'light', 'dark', or 'system'. 'system' is the default until
+  // someone picks a side, so the app opens in dark on a dark desktop instead
+  // of flashing the light palette — and it stays a state you can return to.
+  theme: localStorage.getItem('lcc-theme') || 'system',
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -202,37 +205,43 @@ function toast(message, action) {
 let portCheckTimer = null;
 let portCheckSeq = 0;
 
+// The dot is a real control (role="button", Enter/Space re-probes), so the
+// state it carries has to reach assistive tech too: title and aria-label are
+// written together and never drift apart.
+function setPortStatus(stateClass, text) {
+  const statusEl = $('#param-port-status');
+  if (!statusEl) return;
+  statusEl.className = `port-status ${stateClass}`;
+  statusEl.title = `${text} — click to check again`;
+  statusEl.setAttribute('aria-label', `${text}. Check port again.`);
+}
+
 async function checkPortNow(port, host) {
   const seq = ++portCheckSeq;
   const statusEl = $('#param-port-status');
   if (!statusEl) return;
-  statusEl.className = 'port-status checking';
-  statusEl.title = 'Checking…';
+  setPortStatus('checking', `Checking port ${port}`);
   try {
     const qs = `port=${encodeURIComponent(port)}&host=${encodeURIComponent(host || '127.0.0.1')}`;
     const data = await api(`/api/system/check-port?${qs}`);
     if (seq !== portCheckSeq) return; // a newer probe has superseded us
     if (data.free) {
-      statusEl.className = 'port-status free';
-      statusEl.title = `Port ${data.port} is free`;
+      setPortStatus('free', `Port ${data.port} is free`);
     } else if (data.port_in_use_reason === 'reserved') {
       // The OS denies bind on this port even though nothing is listening.
       // That's the failure mode Windows machines hit when the default
       // dynamic port range (1024-15200) covers a profile's default port.
-      statusEl.className = 'port-status busy';
       const rng = data.reserved_range || {};
-      statusEl.title = `Port ${data.port} is inside the Windows reserved range ${rng.start ?? '?'}-${rng.end ?? '?'}. Pick a port above ${rng.end ?? '?'}. Suggested free port: ${data.suggested_port ?? 'none'}`;
+      setPortStatus('busy', `Port ${data.port} is inside the Windows reserved range ${rng.start ?? '?'}-${rng.end ?? '?'}. Pick a port above ${rng.end ?? '?'}. Suggested free port: ${data.suggested_port ?? 'none'}`);
     } else {
       const holder = data.port_holder;
       const who = holder?.process_name && holder?.pid
         ? `${holder.process_name} (PID ${holder.pid})`
         : holder?.process_name || holder?.pid || 'another process';
-      statusEl.className = 'port-status busy';
-      statusEl.title = `Port ${data.port} is bound by ${who}. Suggested free port: ${data.suggested_port ?? 'none'}`;
+      setPortStatus('busy', `Port ${data.port} is in use by ${who}. Suggested free port: ${data.suggested_port ?? 'none'}`);
     }
   } catch {
-    statusEl.className = 'port-status unknown';
-    statusEl.title = 'Could not check port';
+    setPortStatus('unknown', 'Could not check the port');
   }
 }
 
@@ -247,16 +256,21 @@ function schedulePortCheck() {
   }, 350);
 }
 
+// The busy state hides the label behind a spinner, so the visual change has to
+// be mirrored with aria-busy — otherwise a screen reader still reads the button
+// as idle while the request is in flight.
 async function withBusy(button, fn) {
   if (!button) return fn();
   const wasDisabled = button.disabled;
   button.disabled = true;
   button.classList.add('busy');
+  button.setAttribute('aria-busy', 'true');
   try {
     return await fn();
   } finally {
     button.disabled = wasDisabled;
     button.classList.remove('busy');
+    button.removeAttribute('aria-busy');
   }
 }
 
@@ -265,9 +279,11 @@ function setActionsBusy(mode, busy) {
     if (busy) {
       button.disabled = true;
       button.classList.add('busy');
+      button.setAttribute('aria-busy', 'true');
     } else {
       button.disabled = false;
       button.classList.remove('busy');
+      button.removeAttribute('aria-busy');
     }
   });
 }
@@ -290,7 +306,10 @@ function confirmAction({ title = 'Confirm', message = '', confirmLabel = 'Confir
   cancelButton.disabled = false;
   document.body.classList.add('modal-open');
   const priorFocus = document.activeElement;
-  okButton.focus();
+  // A destructive action has to be aimed at: land on Cancel so a stray Enter
+  // dismisses instead of deleting. Safe confirms still open on OK.
+  const isDanger = confirmKind === 'danger';
+  (isDanger ? cancelButton : okButton).focus();
   return new Promise((resolve) => {
     function cleanup() {
       modal.hidden = true;
@@ -307,22 +326,79 @@ function confirmAction({ title = 'Confirm', message = '', confirmLabel = 'Confir
     function onCancel() { cleanup(); resolve(false); }
     function onBackdrop(event) { if (event.target === modal) onCancel(); }
     function onKey(event) {
-      if (event.key === 'Escape') onCancel();
-      else if (event.key === 'Enter' && document.activeElement !== cancelButton) onOk();
-      else if (event.key === 'Tab') {
-        const items = focusableInside($('.confirm-dialog'));
-        if (!items.length) return;
-        const first = items[0];
-        const last = items[items.length - 1];
+      if (event.key === 'Escape') {
+        onCancel();
+      } else if (event.key === 'Enter') {
+        // Enter fires the button that actually has focus. No blanket-OK:
+        // confirming a delete must be a deliberate landing on Delete.
         const active = document.activeElement;
-        if (event.shiftKey && active === first) {
+        if (active === cancelButton) {
           event.preventDefault();
-          last.focus();
-        } else if (!event.shiftKey && active === last) {
+          onCancel();
+        } else if (active === okButton) {
           event.preventDefault();
-          first.focus();
+          onOk();
         }
+      } else {
+        trapTab(event, $('.confirm-dialog'));
       }
+    }
+    okButton.addEventListener('click', onOk);
+    cancelButton.addEventListener('click', onCancel);
+    modal.addEventListener('click', onBackdrop);
+    document.addEventListener('keydown', onKey);
+  });
+}
+
+// Drives the name/description modal shared by "Save profile" and the row
+// menu's "Save as copy". Resolves with {name, description} on OK and null on
+// Cancel / Escape / backdrop click. Every listener is transient and removed in
+// cleanup(), and focus returns to whatever opened the modal.
+function promptProfileDetails({ title = 'Save Profile', okLabel = 'Save', name = '', description = '' } = {}) {
+  const modal = $('#save-profile-modal');
+  const titleEl = $('#save-profile-title');
+  const nameInput = $('#save-profile-name');
+  const descInput = $('#save-profile-desc');
+  const okButton = $('#save-profile-ok');
+  const cancelButton = $('#save-profile-cancel');
+  if (!modal || !nameInput || !descInput || !okButton || !cancelButton) return Promise.resolve(null);
+  if (titleEl) titleEl.textContent = title;
+  okButton.textContent = okLabel;
+  nameInput.value = name;
+  descInput.value = description;
+  modal.hidden = false;
+  document.body.classList.add('modal-open');
+  const priorFocus = document.activeElement;
+  nameInput.focus();
+  nameInput.select();
+  return new Promise((resolve) => {
+    function cleanup() {
+      modal.hidden = true;
+      document.body.classList.remove('modal-open');
+      okButton.removeEventListener('click', onOk);
+      cancelButton.removeEventListener('click', onCancel);
+      modal.removeEventListener('click', onBackdrop);
+      document.removeEventListener('keydown', onKey);
+      if (priorFocus && typeof priorFocus.focus === 'function') {
+        priorFocus.focus();
+      }
+    }
+    function onOk() {
+      const value = nameInput.value.trim();
+      // An empty name would save an unlabelled profile; keep the modal open.
+      if (!value) {
+        nameInput.focus();
+        return;
+      }
+      cleanup();
+      resolve({ name: value, description: descInput.value.trim() });
+    }
+    function onCancel() { cleanup(); resolve(null); }
+    function onBackdrop(event) { if (event.target === modal) onCancel(); }
+    function onKey(event) {
+      if (event.key === 'Escape') onCancel();
+      else if (event.key === 'Enter') { event.preventDefault(); onOk(); }
+      else trapTab(event, modal.querySelector('.rename-dialog'));
     }
     okButton.addEventListener('click', onOk);
     cancelButton.addEventListener('click', onCancel);
@@ -407,14 +483,40 @@ function bindHelpDot(help) {
   help.addEventListener('blur', hideFloatingTooltip);
 }
 
+// Theme is a three-state cycle: light -> dark -> system. Only the resolved
+// value is ever stamped on the root, so the stylesheet stays two-state.
+const THEME_CYCLE = ['light', 'dark', 'system'];
+const THEME_LABELS = { light: 'Light', dark: 'Dark', system: 'System' };
+const darkMediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+
+function resolvedTheme() {
+  if (state.theme === 'system') return darkMediaQuery.matches ? 'dark' : 'light';
+  return state.theme === 'dark' ? 'dark' : 'light';
+}
+
 function applyTheme() {
-  const isDark = state.theme === 'dark';
-  document.documentElement.dataset.theme = isDark ? 'dark' : 'light';
+  const mode = THEME_LABELS[state.theme] ? state.theme : 'system';
+  const resolved = resolvedTheme();
+  document.documentElement.dataset.theme = resolved;
   const button = $('#theme-button');
-  button.innerHTML = `<span class="theme-glyph" aria-hidden="true"></span>${isDark ? 'Light' : 'Dark'}`;
-  button.setAttribute('title', isDark ? 'Switch to light theme' : 'Switch to dark theme');
-  button.setAttribute('aria-label', isDark ? 'Switch to light theme' : 'Switch to dark theme');
-  button.setAttribute('aria-pressed', isDark ? 'true' : 'false');
+  if (!button) return;
+  const next = THEME_CYCLE[(THEME_CYCLE.indexOf(mode) + 1) % THEME_CYCLE.length];
+  const description = mode === 'system'
+    ? `Theme: system (following this device, currently ${resolved})`
+    : `Theme: ${mode}`;
+  button.dataset.themeMode = mode;
+  button.innerHTML = `<span class="theme-glyph" aria-hidden="true"></span>${escapeHtml(THEME_LABELS[mode])}`;
+  button.setAttribute('title', `${description}. Switch to ${next}.`);
+  button.setAttribute('aria-label', `${description}. Switch to ${next}.`);
+}
+
+function cycleTheme() {
+  const mode = THEME_LABELS[state.theme] ? state.theme : 'system';
+  state.theme = THEME_CYCLE[(THEME_CYCLE.indexOf(mode) + 1) % THEME_CYCLE.length];
+  try {
+    localStorage.setItem('lcc-theme', state.theme);
+  } catch { /* private mode: the choice just lasts for this session */ }
+  applyTheme();
 }
 
 function enhanceTooltips() {
@@ -559,23 +661,34 @@ function renderSummary() {
   $('#metric-models').textContent = summary.model_count ?? 0;
   const needsSetup = state.profiles.filter((profile) => !profile.launchable).length + (summary.legacy_portability_issue_count ?? 0);
   $('#metric-setup').textContent = needsSetup;
+  const setupMetric = $('#metric-setup-wrapper');
+  if (setupMetric) {
+    setupMetric.setAttribute('aria-label', `${needsSetup} item${needsSetup === 1 ? '' : 's'} need setup. Show them in the profiles table.`);
+  }
   $('#summary-line').textContent = `${state.profiles.length} profiles, ${summary.model_count ?? 0} models, ${summary.legacy_portability_issue_count ?? 0} portability issues.`;
 }
 
-// Clicking the Needs setup metric filters the Profiles table to show only items needing attention.
+// The Needs setup metric filters the Profiles table down to the items that
+// need attention. It is a control, so it answers to the keyboard as well as
+// the pointer (role/tabindex live on the element in index.html).
+function showProfilesNeedingSetup() {
+  state.profileFilter = 'setup';
+  // Also unhide unavailable so the user actually sees the problems.
+  state.hideUnavailableProfiles = false;
+  const toggle = $('#hide-unavailable-profiles');
+  if (toggle) toggle.checked = false;
+  renderProfiles();
+  const profilesPanel = $('#profiles');
+  if (profilesPanel) profilesPanel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
 const setupWrapper = $('#metric-setup-wrapper');
 if (setupWrapper) {
-  setupWrapper.style.cursor = 'pointer';
-  setupWrapper.addEventListener('click', () => {
-    state.profileFilter = 'setup';
-    // Also unhide unavailable so user sees the problems
-    state.hideUnavailableProfiles = false;
-    const toggle = $('#hide-unavailable-profiles');
-    if (toggle) toggle.checked = false;
-    renderProfiles();
-    // Scroll to profiles
-    const profilesPanel = $('#profiles');
-    if (profilesPanel) profilesPanel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  setupWrapper.addEventListener('click', showProfilesNeedingSetup);
+  setupWrapper.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    event.preventDefault();
+    showProfilesNeedingSetup();
   });
 }
 
@@ -688,9 +801,94 @@ function getSelectedProfile() {
   return state.profiles.find((profile) => profile.mode === state.selectedProfileMode) || state.profiles[0] || null;
 }
 
+// Human-readable name for a mode slug, for confirms and toasts. Falls back to
+// the slug when the profile is gone (deleted, or not loaded yet).
+function profileLabel(mode) {
+  const profile = (state.profiles || []).find((item) => item.mode === mode);
+  return profile?.name || mode || '';
+}
+
+// The single write path for the selected profile. Chat transcripts are stored
+// per mode, so every selection change has to repaint #chat-log — otherwise the
+// visible transcript belongs to one profile while Send posts to another.
+// Returns true when the selection actually moved.
+function setSelectedProfileMode(mode) {
+  const next = mode || null;
+  if (state.selectedProfileMode === next) return false;
+  state.selectedProfileMode = next;
+  renderChatLog(next);
+  return true;
+}
+
 function getProfileParams(profile) {
   if (!profile) return {};
   return { ...paramDefaults(), ...(profile.params || {}), ...(state.paramOverrides[profile.mode] || {}) };
+}
+
+// Parameter overrides are unsaved work: they used to live only in memory and
+// vanish on reload. They now round-trip through localStorage (one entry, keyed
+// by profile mode inside it) and are cleared when the profile is saved or reset.
+const PARAM_OVERRIDES_KEY = 'lcc-param-overrides';
+
+function persistParamOverrides() {
+  try {
+    localStorage.setItem(PARAM_OVERRIDES_KEY, JSON.stringify(state.paramOverrides));
+  } catch { /* private mode or quota: overrides simply stay in memory */ }
+}
+
+function restoreParamOverrides() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(PARAM_OVERRIDES_KEY));
+    if (raw && typeof raw === 'object' && !Array.isArray(raw)) state.paramOverrides = raw;
+  } catch { /* malformed entry: start clean */ }
+}
+
+function setParamOverrides(mode, overrides) {
+  if (!mode) return overrides;
+  state.paramOverrides[mode] = overrides;
+  persistParamOverrides();
+  renderDirtyChip();
+  return overrides;
+}
+
+function clearParamOverrides(mode) {
+  if (!mode) return;
+  delete state.paramOverrides[mode];
+  persistParamOverrides();
+  renderDirtyChip();
+}
+
+// Drop drafts for profiles that no longer exist, so a deleted profile cannot
+// leave its overrides behind forever.
+function pruneParamOverrides() {
+  if (!state.profiles.length) return;
+  const known = new Set(state.profiles.map((profile) => profile.mode));
+  const stale = Object.keys(state.paramOverrides).filter((mode) => !known.has(mode));
+  if (!stale.length) return;
+  stale.forEach((mode) => delete state.paramOverrides[mode]);
+  persistParamOverrides();
+}
+
+// Form values arrive as numbers or strings depending on the input type, while
+// saved params come back from JSON — compare them as text so 4096 and "4096"
+// are not reported as an edit.
+function sameParamValue(a, b) {
+  if (a === b) return true;
+  if (typeof a === 'boolean' || typeof b === 'boolean') return Boolean(a) === Boolean(b);
+  return String(a ?? '') === String(b ?? '');
+}
+
+function paramOverridesDirty(profile) {
+  const overrides = profile && state.paramOverrides[profile.mode];
+  if (!overrides) return false;
+  const saved = { ...paramDefaults(), ...(profile.params || {}) };
+  return Object.keys(overrides).some((key) => !sameParamValue(saved[key], overrides[key]));
+}
+
+function renderDirtyChip() {
+  const chip = $('#param-dirty-chip');
+  if (!chip) return;
+  chip.hidden = !paramOverridesDirty(getSelectedProfile());
 }
 
 function setFieldValue(id, value) {
@@ -788,6 +986,7 @@ function renderParameters() {
   setFieldValue('#param-mmap', params.mmap);
   state.paramPreviewHost = $('#param-host')?.value.trim() || '127.0.0.1';
   state.paramPreviewPort = $('#param-port') ? (Number($('#param-port').value) || 8080) : 8080;
+  renderDirtyChip();
   scheduleTpsEstimate(80);
 }
 
@@ -841,9 +1040,7 @@ function selectedMode() {
 function saveCurrentOverrides() {
   const mode = selectedMode();
   if (!mode) return {};
-  const overrides = collectOverrides();
-  state.paramOverrides[mode] = overrides;
-  return overrides;
+  return setParamOverrides(mode, collectOverrides());
 }
 
 function markAppliedFields(params) {
@@ -869,7 +1066,7 @@ function applyFitResultParams(result) {
   if (hasOwn(suggestions, 'cuda_memory_mib')) {
     applied.fit_cuda_memory_mib = suggestions.cuda_memory_mib;
   }
-  state.paramOverrides[mode] = applied;
+  setParamOverrides(mode, applied);
   renderParameters();
   markAppliedFields(applied);
   return applied;
@@ -921,7 +1118,7 @@ function renderRuntimes() {
       : '';
     const actions = `
       <div class="runtime-actions">
-        <button class="mini-button icon-button" type="button" data-action="runtime-menu" title="Runtime actions" aria-label="Runtime actions">...</button>
+        <button class="mini-button icon-button" type="button" data-action="runtime-menu" title="Runtime actions" aria-label="Runtime actions" aria-haspopup="menu" aria-expanded="false">...</button>
         ${updateBadge}${recheckButton}
       </div>
     `;
@@ -974,22 +1171,6 @@ function serverRunningForMode(mode) {
 function statusBadge(profile) {
   if (profile.launchable) return '<span class="badge ok">Launchable</span>';
   return '<span class="badge warn">Needs setup</span>';
-}
-
-function fitBadge(profile) {
-  const fit = profile.fit_status;
-  if (!fit) return '<span class="badge">Unknown</span>';
-  const status = fit.status || 'unknown';
-  const estimated = fit.estimated || {};
-  const parts = [];
-  if (estimated.accelerator_headroom_mib !== undefined && estimated.accelerator_headroom_mib !== null) {
-    parts.push(`VRAM ${formatMib(estimated.accelerator_headroom_mib)} free`);
-  }
-  if (fit.uses_ram_offload && estimated.ram_headroom_mib !== undefined && estimated.ram_headroom_mib !== null) {
-    parts.push(`RAM ${formatMib(estimated.ram_headroom_mib)} free`);
-  }
-  const title = parts.join(' | ') || fit.warnings?.[0] || 'Fit estimate unavailable';
-  return `<span class="badge ${fitStatusClass(status)}" title="${escapeHtml(title)}">${escapeHtml(fit.label || fitStatusLabel(status))}</span>`;
 }
 
 function profileIsUnavailable(profile) {
@@ -1072,6 +1253,8 @@ function profileRuntimeLabel(profile) {
   return runtime;
 }
 
+let renderedModelOptions = '';
+
 function updateProfileToolbar(filteredCount) {
   const filterInput = $('#profile-filter-input');
   if (filterInput && filterInput.value !== state.query) filterInput.value = state.query;
@@ -1081,15 +1264,52 @@ function updateProfileToolbar(filteredCount) {
     if (state.profileModelFilter !== 'all' && !models.includes(state.profileModelFilter)) {
       state.profileModelFilter = 'all';
     }
-    modelSelect.innerHTML = '<option value="all">All models</option>' + models.map((model) => (
+    // Background repaints run through here, so only rebuild the options when
+    // the model set really changed — replacing them would close an open
+    // dropdown and drop focus mid-selection.
+    const optionsHtml = '<option value="all">All models</option>' + models.map((model) => (
       `<option value="${escapeHtml(model)}">${escapeHtml(model)}</option>`
     )).join('');
+    if (renderedModelOptions !== optionsHtml) {
+      modelSelect.innerHTML = optionsHtml;
+      renderedModelOptions = optionsHtml;
+    }
     modelSelect.value = state.profileModelFilter || 'all';
   }
   const availabilityToggle = $('#hide-unavailable-profiles');
   if (availabilityToggle) availabilityToggle.checked = state.hideUnavailableProfiles;
+  const filtering = profileFiltersActive();
   const count = $('#profiles-count');
-  if (count) count.textContent = `Showing ${filteredCount} of ${state.profiles.length} profiles`;
+  if (count) {
+    count.textContent = filtering
+      ? `Showing ${filteredCount} of ${state.profiles.length} profiles`
+      : `${state.profiles.length} profile${state.profiles.length === 1 ? '' : 's'}`;
+  }
+  // "Show all profiles" only means something while something is hidden.
+  const viewAll = $('#view-all-profiles');
+  if (viewAll) viewAll.hidden = !filtering;
+}
+
+function profileFiltersActive() {
+  return Boolean(
+    state.query.trim()
+    || state.hideUnavailableProfiles
+    || (state.profileFilter && state.profileFilter !== 'all')
+    || (state.profileModelFilter && state.profileModelFilter !== 'all'),
+  );
+}
+
+// The honest version of the old "View all profiles" no-op anchor: drop every
+// filter and search term, which is what actually reveals all of them.
+function clearProfileFilters() {
+  state.query = '';
+  syncSearchInputs('');
+  state.profileFilter = 'all';
+  state.profileModelFilter = 'all';
+  state.hideUnavailableProfiles = false;
+  localStorage.setItem('lcc-hide-unavailable-profiles', '0');
+  renderProfiles();
+  renderModels();
 }
 
 function openRenameDialog(mode, currentName) {
@@ -1100,6 +1320,7 @@ function openRenameDialog(mode, currentName) {
   input.value = currentName || mode;
   modal.hidden = false;
   document.body.classList.add('modal-open');
+  const priorFocus = document.activeElement;
   input.focus();
   input.select();
   return new Promise((resolve) => {
@@ -1110,6 +1331,9 @@ function openRenameDialog(mode, currentName) {
       cancelBtn.removeEventListener('click', onCancel);
       modal.removeEventListener('click', onBackdrop);
       document.removeEventListener('keydown', onKey);
+      if (priorFocus && typeof priorFocus.focus === 'function') {
+        priorFocus.focus();
+      }
     }
     function onOk() { cleanup(); resolve(input.value.trim()); }
     function onCancel() { cleanup(); resolve(null); }
@@ -1117,6 +1341,7 @@ function openRenameDialog(mode, currentName) {
     function onKey(event) {
       if (event.key === 'Escape') onCancel();
       else if (event.key === 'Enter') { event.preventDefault(); onOk(); }
+      else trapTab(event, modal.querySelector('.rename-dialog'));
     }
     okBtn.addEventListener('click', onOk);
     cancelBtn.addEventListener('click', onCancel);
@@ -1133,7 +1358,7 @@ async function saveProfileName(mode, currentName) {
       method: 'POST',
       body: JSON.stringify({ mode, name: newName }),
     });
-    toast(`Profile name saved for ${mode}`);
+    toast(`Renamed to "${newName}"`);
     await refresh();
   } catch (error) {
     toast(`Failed to save profile name: ${error.message}`);
@@ -1161,7 +1386,7 @@ function openProfileMenu(button, mode) {
       title: profile.launchable
         ? 'Save the current parameters under a new profile name.'
         : 'Profile is not launchable; nothing to copy.',
-      onSelect: () => openSaveAsCopyModal(profile),
+      onSelect: () => saveProfileAsCopy(profile),
     },
     { separator: true },
     {
@@ -1176,21 +1401,60 @@ function openProfileMenu(button, mode) {
   ]);
 }
 
-// Open the save-profile modal pre-filled with `<current-name> copy`. The save
-// endpoint matches on mode, so this updates the same entry with the new name
-// (effectively: "rename + snapshot current params"). Useful for keeping a
-// "tuned" variant alongside the original.
-function openSaveAsCopyModal(profile) {
-  const modal = $('#save-profile-modal');
-  const nameInput = $('#save-profile-name');
-  const descInput = $('#save-profile-desc');
-  if (!modal || !nameInput) return;
-  nameInput.value = `${profile.name || profile.mode} copy`.trim();
-  descInput.value = profile.description || '';
-  modal.hidden = false;
-  document.body.classList.add('modal-open');
-  nameInput.focus();
-  nameInput.select();
+// Build a manifest ``mode`` from a profile name using the same rule the
+// backend applies when it registers a discovered model: every run of
+// characters outside [a-zA-Z0-9._-] collapses to a single '-', then trim and
+// lowercase. A numeric suffix is appended until the mode is unused.
+function uniqueProfileMode(name, fallback = 'profile') {
+  let slug = String(name || '')
+    .replace(/[^a-zA-Z0-9._-]+/g, '-')
+    .replace(/-{2,}/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .toLowerCase();
+  if (!slug) slug = fallback;
+  const taken = new Set((state.profiles || []).map((profile) => profile.mode));
+  if (!taken.has(slug)) return slug;
+  let suffix = 2;
+  while (taken.has(`${slug}-${suffix}`)) suffix += 1;
+  return `${slug}-${suffix}`;
+}
+
+// Save the profile's current parameters under a new name. /api/profiles/save
+// matches on ``mode``, so a copy has to carry a fresh mode of its own —
+// re-posting the source mode would rename the original instead of duplicating
+// it. An unknown mode makes the endpoint append a new manifest entry.
+async function saveProfileAsCopy(profile) {
+  const result = await promptProfileDetails({
+    title: 'Save as copy',
+    okLabel: 'Save copy',
+    name: `${profile.name || profile.mode} copy`.trim(),
+    description: profile.description || '',
+  });
+  if (!result) return;
+  const mode = uniqueProfileMode(result.name, `${profile.mode}-copy`);
+  // The parameter form only mirrors the selected profile; for any other row
+  // take the params off the profile itself.
+  const params = selectedMode() === profile.mode ? collectOverrides() : getProfileParams(profile);
+  try {
+    const saveResult = await api('/api/profiles/save', {
+      method: 'POST',
+      body: JSON.stringify({
+        mode,
+        name: result.name,
+        description: result.description,
+        model_path: profile.model?.path || '',
+        params,
+      }),
+    });
+    if (saveResult.success) {
+      toast(saveResult.message || `Saved copy '${result.name}'`);
+      await refresh();
+    } else {
+      toast(saveResult.message || 'Save failed');
+    }
+  } catch (error) {
+    toast(`Save failed: ${error.message}`);
+  }
 }
 
 async function deleteProfileConfirm(mode) {
@@ -1209,9 +1473,9 @@ async function deleteProfileConfirm(mode) {
       body: JSON.stringify({ mode }),
     });
     if (result.success) {
-      toast(result.message || 'Profile deleted');
+      toast(result.message || `Deleted "${displayName}"`);
       if (state.selectedProfileMode === mode) {
-        state.selectedProfileMode = null;
+        setSelectedProfileMode(null);
       }
       await refresh();
     } else {
@@ -1277,7 +1541,7 @@ function renderProfiles() {
                 ${serverRunningForMode(profile.mode)
                   ? `<button class="mini-button icon-button danger" type="button" data-action="stop" data-mode="${escapeHtml(profile.mode)}" title="Stop server" aria-label="Stop server">■</button>`
                   : `<button class="mini-button icon-button" type="button" data-action="start" data-mode="${escapeHtml(profile.mode)}" ${profile.launchable ? '' : 'disabled'} title="Start server" aria-label="Start server">▷</button>`}
-                <button class="mini-button icon-button" type="button" data-action="profile-menu" data-mode="${escapeHtml(profile.mode)}" title="More profile actions" aria-label="More profile actions">...</button>
+                <button class="mini-button icon-button" type="button" data-action="profile-menu" data-mode="${escapeHtml(profile.mode)}" title="More profile actions" aria-label="More profile actions" aria-haspopup="menu" aria-expanded="false">...</button>
               </div>
             </td>
           </tr>
@@ -1348,17 +1612,17 @@ function formatServerMetricsLine(m) {
   return parts.filter(Boolean).join(' · ');
 }
 
+// One tracked-server surface, in the inspector next to Logs — selecting a card
+// here is what the Logs panel reads. The former duplicate in the content column
+// showed the same state with thinner chrome and no crash excerpt.
 function renderServers() {
   const servers = state.servers || [];
   if (!servers.length) {
     $('#server-box').innerHTML = '<div class="empty-state">No tracked servers. Start a launchable profile to track one here.</div>';
     $('#log-preview').textContent = 'No tracked server selected.';
-    renderActiveServers([]); // keep main panel in sync
     return;
   }
-  const html = servers.map((server) => buildServerItemHtml(server)).join('');
-  $('#server-box').innerHTML = html;
-  renderActiveServers(servers);
+  $('#server-box').innerHTML = servers.map((server) => buildServerItemHtml(server)).join('');
 }
 
 function buildServerItemHtml(server) {
@@ -1366,16 +1630,16 @@ function buildServerItemHtml(server) {
   const status = server.status || (isRunning ? 'running' : 'stopped');
   const isCrashed = status === 'crashed' || (!isRunning && server.last_stderr);
   const oom = server.oom_likely ? ' <span class="badge error" title="Likely OOM">OOM</span>' : '';
-  const metricsLine = formatServerMetricsLine(server.metrics) ? `<div class="server-metrics">${formatServerMetricsLine(server.metrics)}</div>` : '';
+  const metrics = formatServerMetricsLine(server.metrics);
+  const metricsLine = metrics ? `<div class="server-metrics">${escapeHtml(metrics)}</div>` : '';
   const stderrSnippet = (isCrashed && server.last_stderr) ? `<pre class="server-stderr" title="Last stderr (truncated)">${escapeHtml(String(server.last_stderr).slice(0, 300))}</pre>` : '';
   const restartBtn = !isRunning ? `<button class="mini-button" type="button" data-action="restart" data-server-id="${escapeHtml(server.id)}">Restart</button>` : '';
   const stopBtn = `<button class="mini-button" type="button" data-action="stop" data-server-id="${escapeHtml(server.id)}" ${isRunning ? '' : 'disabled'}>Stop</button>`;
   const badgeClass = isCrashed ? 'error' : (isRunning ? 'ok' : 'warn');
   const badgeText = isCrashed ? 'crashed' : (isRunning ? 'running' : status);
-  const selectAttr = `data-server-id="${escapeHtml(server.id)}"`;
   return `
-    <article class="server-item" ${selectAttr}>
-      <span class="badge ${badgeClass}">${badgeText}</span>${oom}
+    <article class="server-item${isRunning ? ' running' : ''}" data-server-id="${escapeHtml(server.id)}" tabindex="0" role="button" aria-label="Select tracked server ${escapeHtml(server.mode)} for the Logs panel">
+      <span class="badge ${badgeClass}">${escapeHtml(badgeText)}</span>${oom}
       <strong>${escapeHtml(server.mode)}</strong>
       <p>PID ${escapeHtml(server.pid || '-')} on ${escapeHtml(server.host || '127.0.0.1')}:${escapeHtml(server.port || '-')}</p>
       ${metricsLine}
@@ -1386,43 +1650,6 @@ function buildServerItemHtml(server) {
         ${stopBtn}
       </div>
     </article>`;
-}
-
-function renderActiveServers(servers) {
-  const container = $('#active-servers-list');
-  if (!container) return;
-  const active = (servers || state.servers || []).filter((s) => s.running || (s.status && s.status !== 'stopped'));
-  if (!active.length) {
-    container.innerHTML = '<div class="empty-state">No active or recent tracked servers. Launch a profile to see one here (and in the side pane under Servers).</div>';
-    return;
-  }
-  container.innerHTML = active.map((server) => {
-    const isRunning = !!server.running;
-    const status = server.status || (isRunning ? 'running' : 'stopped');
-    const isCrashed = status === 'crashed' || (!isRunning && server.last_stderr);
-    const oom = server.oom_likely ? ' <span class="badge error">OOM</span>' : '';
-    const metrics = formatServerMetricsLine(server.metrics);
-    const metricsHtml = metrics ? `<div class="server-metrics">${metrics}</div>` : '';
-    const badgeClass = isCrashed ? 'error' : (isRunning ? 'ok' : 'warn');
-    const badgeText = isCrashed ? 'crashed' : (isRunning ? 'running' : status);
-    const stopBtn = isRunning ? `<button class="mini-button danger" data-action="stop" data-server-id="${escapeHtml(server.id)}">Stop</button>` : '';
-    const logsBtn = `<button class="mini-button" data-action="logs" data-server-id="${escapeHtml(server.id)}">Logs</button>`;
-    const restartBtn = !isRunning ? `<button class="mini-button" data-action="restart" data-server-id="${escapeHtml(server.id)}">Restart</button>` : '';
-    return `
-      <article class="active-server-row${isRunning ? ' running' : ''}" data-server-id="${escapeHtml(server.id)}">
-        <div class="active-server-head">
-          <span class="badge ${badgeClass}">${badgeText}</span>${oom}
-          <strong>${escapeHtml(server.mode)}</strong>
-          <span class="muted">· PID ${escapeHtml(server.pid || '-')} · ${escapeHtml(server.host || '127.0.0.1')}:${escapeHtml(server.port || '-')}</span>
-        </div>
-        ${metricsHtml}
-        <div class="row-actions">
-          ${logsBtn}
-          ${restartBtn}
-          ${stopBtn}
-        </div>
-      </article>`;
-  }).join('');
 }
 
 function renderIssues() {
@@ -1784,6 +2011,27 @@ function focusableInside(container) {
     .filter((el) => el.offsetParent !== null || el === document.activeElement);
 }
 
+// Shared Tab trap for every modal dialog in the app: while the backdrop is up,
+// Tab and Shift+Tab cycle inside ``dialog`` instead of walking into the page
+// behind it. Call from a dialog's own keydown handler; non-Tab keys pass through.
+function trapTab(event, dialog) {
+  if (event.key !== 'Tab' || !dialog) return;
+  const items = focusableInside(dialog);
+  if (!items.length) return;
+  const first = items[0];
+  const last = items[items.length - 1];
+  const active = document.activeElement;
+  if (event.shiftKey) {
+    if (active === first || !dialog.contains(active)) {
+      event.preventDefault();
+      last.focus();
+    }
+  } else if (active === last || !dialog.contains(active)) {
+    event.preventDefault();
+    first.focus();
+  }
+}
+
 function detectedRuntimeRoots() {
   const roots = [];
   (state.inventory?.environments || []).forEach((env) => {
@@ -1858,6 +2106,20 @@ function buildPortableExportSnapshot(config, inventory) {
 
 // Plain command registry (pure mapping of id -> real shipped handler fn).
 // Directly testable; no DOM creation here. Used by palette and shortcuts (AC3).
+// Commands that operate on "the selected profile" need one to exist. Returning
+// null after a toast keeps every such command a no-op rather than a silent one.
+function requireSelectedProfile() {
+  const mode = selectedMode();
+  const profile = mode ? state.profiles.find((p) => p.mode === mode) : null;
+  if (!profile) {
+    toast('Select a profile first');
+    return null;
+  }
+  return profile;
+}
+
+// Every entry reuses the same code path as the button that already does the
+// job, confirm modals included — the palette is a second door, not a bypass.
 const COMMAND_REGISTRY = {
   'focus-search': () => {
     const s = $('#search-input');
@@ -1865,14 +2127,72 @@ const COMMAND_REGISTRY = {
   },
   'open-settings': () => openSettings(),
   'refresh': () => { refresh(); },
-  // Future: add 'start-server' etc but keep to the required three + palette infra
+  'start-profile': () => {
+    const profile = requireSelectedProfile();
+    if (profile) startProfile(profile.mode, $('#start-selected-button'));
+  },
+  'stop-profile': () => {
+    const profile = requireSelectedProfile();
+    if (profile) stopProfileByMode(profile.mode, $('#stop-selected-button'));
+  },
+  'restart-profile': () => {
+    const profile = requireSelectedProfile();
+    if (!profile) return;
+    const tracked = (state.servers || []).find((server) => server.mode === profile.mode);
+    if (!tracked) {
+      toast(`No tracked server for "${profileLabel(profile.mode)}" to restart`);
+      return;
+    }
+    restartTracked(tracked.id, null);
+  },
+  'smart-fit': () => {
+    if (requireSelectedProfile()) runAutoTune();
+  },
+  'fit-test': () => {
+    if (requireSelectedProfile()) runFitTest();
+  },
+  'benchmark': () => {
+    if (requireSelectedProfile()) runBenchmark();
+  },
+  'open-logs': () => {
+    const serverId = state.selectedServerId || state.servers[0]?.id;
+    if (!serverId) {
+      toast('No tracked server to open logs for');
+      return;
+    }
+    loadLogs(serverId);
+    $('#logs')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  },
+  'purge-stopped': () => { purgeServers(true, $('#servers-purge-stopped')); },
+  'toggle-theme': () => cycleTheme(),
+  'save-profile-copy': () => {
+    const profile = requireSelectedProfile();
+    if (!profile) return;
+    if (!profile.launchable) {
+      toast('Selected profile is not launchable; nothing to copy');
+      return;
+    }
+    saveProfileAsCopy(profile);
+  },
 };
 
+// Static by design: the palette list is a pure value, so it stays testable
+// outside the DOM. Availability is decided when a command runs, not here.
 function getCommands() {
   return [
     { id: 'focus-search', label: 'Focus search', shortcut: 'Ctrl+K' },
-    { id: 'open-settings', label: 'Open Settings', shortcut: 'via button / palette' },
-    { id: 'refresh', label: 'Refresh inventory', shortcut: 'via button / palette' },
+    { id: 'start-profile', label: 'Start selected profile' },
+    { id: 'stop-profile', label: 'Stop selected profile' },
+    { id: 'restart-profile', label: 'Restart selected profile' },
+    { id: 'smart-fit', label: 'Smart fit selected profile' },
+    { id: 'fit-test', label: 'Run fit test' },
+    { id: 'benchmark', label: 'Run benchmark' },
+    { id: 'open-logs', label: 'Open logs' },
+    { id: 'purge-stopped', label: 'Purge stopped servers' },
+    { id: 'save-profile-copy', label: 'Save profile as copy…' },
+    { id: 'toggle-theme', label: 'Cycle theme (light / dark / system)' },
+    { id: 'open-settings', label: 'Open Settings' },
+    { id: 'refresh', label: 'Refresh inventory' },
   ];
 }
 
@@ -1904,9 +2224,11 @@ async function exportPortableConfig(trigger) {
 }
 
 let paletteVisible = false;
+let paletteReturnFocus = null;
 function showCommandPalette() {
   const back = $('#command-palette');
   if (!back) return;
+  paletteReturnFocus = document.activeElement;
   back.hidden = false;
   document.body.classList.add('modal-open');
   paletteVisible = true;
@@ -1924,16 +2246,12 @@ function showCommandPalette() {
       if (sel < 0) sel = 0;
       if (ev.key === 'ArrowDown') {
         ev.preventDefault();
-        if (sel >= 0 && items[sel]) items[sel].classList.remove('selected');
         sel = (sel + 1) % items.length;
-        items[sel].classList.add('selected');
-        items[sel].scrollIntoView({block:'nearest'});
+        setPaletteSelection(items, sel);
       } else if (ev.key === 'ArrowUp') {
         ev.preventDefault();
-        if (sel >= 0 && items[sel]) items[sel].classList.remove('selected');
         sel = (sel - 1 + items.length) % items.length;
-        items[sel].classList.add('selected');
-        items[sel].scrollIntoView({block:'nearest'});
+        setPaletteSelection(items, sel);
       } else if (ev.key === 'Enter') {
         ev.preventDefault();
         const chosen = items[sel >=0 ? sel : 0];
@@ -1951,26 +2269,49 @@ function hideCommandPalette() {
   if (back) back.hidden = true;
   document.body.classList.remove('modal-open');
   paletteVisible = false;
+  // Hand the keyboard back to whatever had it before the palette opened.
+  // A command that moves focus itself (Focus search) runs after this and wins.
+  if (paletteReturnFocus && typeof paletteReturnFocus.focus === 'function') {
+    paletteReturnFocus.focus({ preventScroll: true });
+  }
+  paletteReturnFocus = null;
 }
+// Focus stays in the filter box, so the highlighted row is announced through
+// aria-activedescendant rather than by moving focus into the list.
+function setPaletteSelection(items, index) {
+  items.forEach((item, idx) => {
+    const active = idx === index;
+    item.classList.toggle('selected', active);
+    item.setAttribute('aria-selected', active ? 'true' : 'false');
+  });
+  const current = items[index];
+  if (!current) return;
+  current.scrollIntoView({ block: 'nearest' });
+  $('#palette-filter')?.setAttribute('aria-activedescendant', current.id);
+}
+
 function renderPaletteList(filterText) {
   const list = $('#palette-list');
   if (!list) return;
   const q = (filterText || '').toLowerCase().trim();
   const cmds = getCommands().filter(c => !q || c.label.toLowerCase().includes(q) || c.id.includes(q));
-  list.innerHTML = cmds.map((c, idx) => `
-    <li data-cmd="${escapeHtml(c.id)}" class="${idx===0 ? 'selected' : ''}">
+  list.innerHTML = cmds.map((c) => `
+    <li id="palette-option-${escapeHtml(c.id)}" role="option" aria-selected="false" data-cmd="${escapeHtml(c.id)}">
       <span>${escapeHtml(c.label)}</span>
-      <kbd>${escapeHtml(c.shortcut || '')}</kbd>
+      ${c.shortcut ? `<kbd>${escapeHtml(c.shortcut)}</kbd>` : ''}
     </li>
-  `).join('') || '<li class="empty">No matching commands</li>';
+  `).join('') || '<li class="empty" role="presentation">No matching commands</li>';
   // click to execute
-  list.querySelectorAll('li[data-cmd]').forEach(li => {
+  const items = Array.from(list.querySelectorAll('li[data-cmd]'));
+  items.forEach(li => {
     li.addEventListener('click', () => {
       const id = li.dataset.cmd;
       hideCommandPalette();
       executeCommand(id);
     });
   });
+  if (items.length) setPaletteSelection(items, 0);
+  else $('#palette-filter')?.removeAttribute('aria-activedescendant');
 }
 
 function updateHfCliUi(hfData) {
@@ -1996,10 +2337,10 @@ async function suggestDraftModels() {
   if (!profile) return;
   await withBusy(trigger, async () => {
     try {
-      const result = await api('/api/draft-models/suggest', {
-        method: 'GET',
-        params: { model_name: profile.model?.name },
-      });
+      // api() is a thin fetch wrapper with no query-string support, so the
+      // model name has to be encoded into the path (same as checkPortNow).
+      const qs = `model_name=${encodeURIComponent(profile.model?.name || '')}`;
+      const result = await api(`/api/draft-models/suggest?${qs}`);
       const suggestions = result.suggestions || [];
       if (suggestions.length === 0) {
         container.innerHTML = '<div class="empty-state">No draft model suggestions available for this model.</div>';
@@ -2059,14 +2400,14 @@ async function pullDraftModel(repoId, trigger) {
 // input they read — idempotent, so running them more than once is harmless.
 function reconcileSelectedMode() {
   if (!state.selectedProfileMode && state.profiles.length) {
-    state.selectedProfileMode = state.profiles[0].mode;
+    setSelectedProfileMode(state.profiles[0].mode);
   } else if (state.selectedProfileMode && !state.profiles.some((profile) => profile.mode === state.selectedProfileMode)) {
-    state.selectedProfileMode = state.profiles[0]?.mode || null;
+    setSelectedProfileMode(state.profiles[0]?.mode || null);
   }
 }
 
 const DASHBOARD_RESOURCES = [
-  { label: 'profiles', path: '/api/profiles', apply: (d) => { state.profiles = d.profiles || []; }, render: () => { reconcileSelectedMode(); renderProfiles(); renderParameters(); renderSummary(); } },
+  { label: 'profiles', path: '/api/profiles', apply: (d) => { state.profiles = d.profiles || []; }, render: () => { pruneParamOverrides(); reconcileSelectedMode(); renderProfiles(); renderParameters(); renderSummary(); } },
   { label: 'servers', path: '/api/servers', apply: (d) => { state.servers = d.servers || []; }, render: renderServers },
   { label: 'inventory', path: '/api/inventory', apply: (d) => { state.inventory = d; }, render: () => { renderSummary(); renderModels(); renderIssues(); renderRuntimes(); renderRuntimeOptions($('#param-runtime')?.value); renderPortability(); } },
   { label: 'settings', path: '/api/config', apply: (d) => { state.config = d; }, render: () => { renderSettings(); renderParameters(); renderPortability(); } },
@@ -2077,10 +2418,16 @@ const DASHBOARD_RESOURCES = [
   { label: 'benchmarks', path: '/api/benchmarks', apply: (d) => { state.benchmarks = d.benchmarks || []; }, render: renderBenchmarkHistory },
 ];
 
+// The background server poll uses these two to tell whether its in-flight
+// response is still the freshest view of the world.
+let refreshInFlight = false;
+let refreshGeneration = 0;
+
 async function refresh() {
   $('#refresh-button').disabled = true;
   setApiStatus(false, 'Refreshing');
   state.lastEstimateKey = '';
+  refreshInFlight = true;
   try {
     const failures = (await Promise.all(DASHBOARD_RESOURCES.map(async (resource) => {
       const error = await loadDashboardResource(resource.label, resource.path, resource.apply);
@@ -2121,7 +2468,10 @@ async function refresh() {
     setApiStatus(false, 'API error', `API error: ${error.message}`);
     toast(`Refresh failed: ${error.message}`);
   } finally {
+    refreshInFlight = false;
+    refreshGeneration += 1;
     $('#refresh-button').disabled = false;
+    scheduleServerPoll();
   }
 }
 
@@ -2175,7 +2525,7 @@ async function prepareProfile(mode, trigger) {
     toast('No profile selected');
     return;
   }
-  state.selectedProfileMode = targetMode;
+  setSelectedProfileMode(targetMode);
   const overrides = collectOverrides();
   await withBusy(trigger, async () => {
     try {
@@ -2187,11 +2537,10 @@ async function prepareProfile(mode, trigger) {
         toast(result.message || 'Prepare failed');
         return;
       }
-      state.selectedProfileMode = targetMode;
       $('#log-preview').textContent = result.command?.command_line || 'Prepared command unavailable.';
       renderProfiles();
       renderParameters();
-      toast(`Prepared ${targetMode}`);
+      toast(`Prepared "${profileLabel(targetMode)}"`);
     } catch (error) {
       toast(`Prepare failed: ${error.message}`);
     }
@@ -2204,10 +2553,10 @@ async function startProfile(mode, trigger) {
     toast('No profile selected');
     return;
   }
-  state.selectedProfileMode = targetMode;
+  setSelectedProfileMode(targetMode);
   const confirmed = await confirmAction({
     title: 'Start profile',
-    message: `Start profile "${targetMode}" with the resolved local model and current parameters?`,
+    message: `Start "${profileLabel(targetMode)}" with the resolved local model and current parameters?`,
     confirmLabel: 'Start',
     confirmKind: 'primary',
   });
@@ -2219,7 +2568,7 @@ async function startProfile(mode, trigger) {
       method: 'POST',
       body: JSON.stringify({ mode: targetMode, overrides, wait_ready: true, ready_timeout_seconds: 45 }),
     }));
-    toast(`Started ${targetMode}`);
+    toast(`Started "${profileLabel(targetMode)}"`);
     await refresh();
     renderProfiles();
   } catch (error) {
@@ -2365,7 +2714,7 @@ function applyTunedParams(tuned) {
   const mode = selectedMode();
   if (!mode) return {};
   const applied = { ...collectOverrides(), ...(tuned || {}) };
-  state.paramOverrides[mode] = applied;
+  setParamOverrides(mode, applied);
   renderParameters();
   markAppliedFields(tuned || {});
   return applied;
@@ -2374,7 +2723,7 @@ function applyTunedParams(tuned) {
 async function runAutoTune() {
   const mode = selectedMode();
   if (!mode) return;
-  state.selectedProfileMode = mode;
+  setSelectedProfileMode(mode);
   const overrides = saveCurrentOverrides();
   const trigger = $('#smart-fit-button');
   setModelNote('tune', 'Searching for the best memory fit...');
@@ -2411,7 +2760,7 @@ function selectProfileForModelPath(path) {
     toast('No profile for this model yet — click Register first');
     return null;
   }
-  state.selectedProfileMode = profile.mode;
+  setSelectedProfileMode(profile.mode);
   const select = $('#param-profile');
   if (select) select.value = profile.mode;
   renderParameters();
@@ -2469,9 +2818,8 @@ function applySamplingPreset() {
     toast('Choose a sampling preset first');
     return;
   }
-  state.selectedProfileMode = mode;
-  const applied = { ...saveCurrentOverrides(), ...preset.params };
-  state.paramOverrides[mode] = applied;
+  setSelectedProfileMode(mode);
+  setParamOverrides(mode, { ...saveCurrentOverrides(), ...preset.params });
   renderParameters();
   markAppliedFields(preset.params);
   const rationale = Object.entries(preset.rationale || {})
@@ -2498,7 +2846,7 @@ async function runFitTest() {
   const mode = selectedMode();
   if (!mode) return;
   const trigger = $('#fit-button');
-  state.selectedProfileMode = mode;
+  setSelectedProfileMode(mode);
   const overrides = saveCurrentOverrides();
   const target = Number($('#param-fit-target').value || 1024);
   setModelNote('fit', 'Running fit test. This may take a moment...');
@@ -2591,7 +2939,7 @@ function renderBenchmarkHistory() {
       const idx = parseInt(btn.dataset.benchIdx);
       const entry = all[idx];
       if (entry && entry.mode) {
-        state.selectedProfileMode = entry.mode;
+        setSelectedProfileMode(entry.mode);
         renderParameters();
         renderProfiles();
         toast('Loaded params from benchmark history (approximate)');
@@ -2607,7 +2955,7 @@ async function sendTestPrompt() {
     return;
   }
   if (!serverRunningForMode(mode)) {
-    toast(`Start the server for "${mode}" first`);
+    toast(`Start the server for "${profileLabel(mode)}" first`);
     return;
   }
   const input = $('#test-prompt-input');
@@ -2621,9 +2969,10 @@ async function sendTestPrompt() {
   if (!state.chatHistory[mode]) state.chatHistory[mode] = [];
   const history = state.chatHistory[mode];
 
-  // Append user message
+  // Append user message. One entry appended, not a whole transcript rebuilt:
+  // the log is a live region, so only the new line should be announced.
   history.push({ role: 'user', content: prompt });
-  renderChatLog(mode);
+  appendChatEntry(mode, { role: 'user', content: prompt });
 
   input.value = '';
 
@@ -2641,7 +2990,7 @@ async function sendTestPrompt() {
 
       if (result.success && result.reply) {
         history.push({ role: 'assistant', content: result.reply });
-        renderChatLog(mode);
+        appendChatEntry(mode, { role: 'assistant', content: result.reply });
 
         // Show last-turn stats
         const meta = $('#test-prompt-meta');
@@ -2650,37 +2999,66 @@ async function sendTestPrompt() {
           meta.textContent = `${result.tokens_per_second || '?'} tok/s · ${result.completion_tokens || '?'} tokens · ${result.elapsed_seconds || '?'}s`;
         }
       } else {
-        // rollback the user message on failure
-        history.pop();
-        renderChatLog(mode);
+        rollbackChatSend(mode, history, input, prompt);
         toast(result.error || 'Chat failed');
       }
     } catch (error) {
-      history.pop();
-      renderChatLog(mode);
+      rollbackChatSend(mode, history, input, prompt);
       toast(`Chat error: ${error.message}`);
     }
   });
 }
 
+// A failed send must not eat what the user typed: drop the optimistic history
+// entry and put the message back in the box, ready to retry. If they already
+// started typing something else while waiting, that draft wins.
+function rollbackChatSend(mode, history, input, prompt) {
+  history.pop();
+  const container = $('#chat-log');
+  // Drop just the optimistic line rather than repainting (and re-announcing)
+  // the transcript around it.
+  container?.querySelector('.chat-entry:last-child')?.remove();
+  if (!(state.chatHistory[mode] || []).length) renderChatLog(mode);
+  if (input && !input.value.trim()) {
+    input.value = prompt;
+    input.focus();
+  }
+}
+
+// Transcript entries are terminal lines, not bubbles: a role gutter, the text
+// in mono, a hairline between turns. Markup is built once here so the
+// incremental and full-rebuild paths cannot drift apart.
+function chatEntryHtml(msg) {
+  const isUser = msg.role === 'user';
+  return `
+    <div class="chat-entry ${isUser ? 'user' : 'assistant'}">
+      <span class="chat-role">${isUser ? 'you' : 'model'}<span aria-hidden="true"> ›</span></span>
+      <span class="chat-text">${escapeHtml(msg.content)}</span>
+    </div>`;
+}
+
+function appendChatEntry(mode, msg) {
+  const container = $('#chat-log');
+  if (!container) return;
+  if (!container.querySelector('.chat-entry')) container.innerHTML = '';
+  container.insertAdjacentHTML('beforeend', chatEntryHtml(msg));
+  container.scrollTop = container.scrollHeight;
+}
+
+// Full rebuild — only when the transcript being shown changes wholesale
+// (profile switch, Clear). The live region is muted across the swap so a
+// switch does not read the entire history back out.
 function renderChatLog(mode) {
   const container = $('#chat-log');
   if (!container) return;
 
   const history = state.chatHistory[mode] || [];
-  if (history.length === 0) {
-    container.innerHTML = '<div class="empty-state" style="padding:8px;font-size:12px;">No messages yet. Start chatting with the running server.</div>';
-    return;
-  }
-
-  container.innerHTML = history.map(msg => {
-    const cls = msg.role === 'user' ? 'user' : 'assistant';
-    const label = msg.role === 'user' ? 'You' : 'Model';
-    return `<div class="chat-message ${cls}"><strong>${label}:</strong> ${escapeHtml(msg.content)}</div>`;
-  }).join('');
-
-  // scroll to bottom
+  container.setAttribute('aria-live', 'off');
+  container.innerHTML = history.length
+    ? history.map(chatEntryHtml).join('')
+    : '<div class="empty-state chat-empty">No messages yet. Start chatting with the running server.</div>';
   container.scrollTop = container.scrollHeight;
+  window.requestAnimationFrame(() => container.setAttribute('aria-live', 'polite'));
 }
 
 function clearChat() {
@@ -2695,7 +3073,7 @@ function clearChat() {
 async function runBenchmark() {
   const mode = selectedMode();
   if (!mode) return;
-  state.selectedProfileMode = mode;
+  setSelectedProfileMode(mode);
   const profile = getSelectedProfile();
   if (!profile?.launchable) {
     toast('Choose a launchable profile before benchmarking');
@@ -2703,7 +3081,7 @@ async function runBenchmark() {
   }
   const confirmed = await confirmAction({
     title: 'Run benchmark',
-    message: `Benchmark "${mode}" with the current parameters? This may restart the tracked server for this profile.`,
+    message: `Benchmark "${profileLabel(mode)}" with the current parameters? This may restart the tracked server for this profile.`,
     confirmLabel: 'Benchmark',
     confirmKind: 'primary',
   });
@@ -2888,9 +3266,11 @@ async function downloadModelUpdate(repo, file, dest, trigger) {
 }
 
 async function stopTracked(serverId, trigger) {
+  const tracked = (state.servers || []).find((server) => server.id === serverId);
+  const label = tracked?.mode ? `"${profileLabel(tracked.mode)}"` : 'this tracked server';
   const confirmed = await confirmAction({
     title: 'Stop server',
-    message: `Stop the tracked server?`,
+    message: `Stop the server running ${label}?`,
     confirmLabel: 'Stop',
     confirmKind: 'danger',
   });
@@ -2920,7 +3300,7 @@ async function restartTracked(serverId, trigger) {
   }
   const confirmed = await confirmAction({
     title: 'Restart server',
-    message: `Restart "${mode}"? This will launch a fresh instance.`,
+    message: `Restart "${profileLabel(mode)}"? This will launch a fresh instance.`,
     confirmLabel: 'Restart',
     confirmKind: 'primary',
   });
@@ -2931,7 +3311,7 @@ async function restartTracked(serverId, trigger) {
         method: 'POST',
         body: JSON.stringify({ mode, wait_ready: true, ready_timeout_seconds: 45 }),
       });
-      toast(`Restarted ${mode}`);
+      toast(`Restarted "${profileLabel(mode)}"`);
       await refresh();
       renderProfiles();
     } catch (error) {
@@ -2947,7 +3327,7 @@ async function stopProfileByMode(mode, trigger) {
   }
   const confirmed = await confirmAction({
     title: 'Stop profile',
-    message: `Stop the running server for profile "${mode}"?`,
+    message: `Stop the running server for "${profileLabel(mode)}"?`,
     confirmLabel: 'Stop',
     confirmKind: 'danger',
   });
@@ -2958,7 +3338,7 @@ async function stopProfileByMode(mode, trigger) {
         method: 'POST',
         body: JSON.stringify({ mode }),
       });
-      toast(result.message || `Stopped ${mode}`);
+      toast(result.message || `Stopped "${profileLabel(mode)}"`);
       await refresh();
       renderProfiles();
     } catch (error) {
@@ -3074,6 +3454,9 @@ function enhanceSidebar() {
     const next = !shell.classList.contains('sidebar-collapsed');
     shell.classList.toggle('sidebar-collapsed', next);
     localStorage.setItem('lcc-sidebar-collapsed', next ? '1' : '0');
+    // Expanding reveals a widget that was sampling but not painting: draw the
+    // recorded history immediately instead of waiting out the poll interval.
+    if (!next) pollLiveHardware();
   });
 }
 
@@ -3089,6 +3472,7 @@ function wireEvents() {
   enhanceTooltips();
   enhancePanels();
   enhanceSidebar();
+  wireToolsMenu();
   // Enable layout transitions only after the initial collapsed state is painted,
   // so panels and the sidebar don't animate from open→closed on first load.
   requestAnimationFrame(() => $('.app-shell').classList.add('anim-ready'));
@@ -3132,10 +3516,10 @@ function wireEvents() {
   // Palette backdrop close
   const palBack = $('#command-palette');
   if (palBack) palBack.addEventListener('click', (e) => { if (e.target.id === 'command-palette') hideCommandPalette(); });
-  $('#theme-button').addEventListener('click', () => {
-    state.theme = state.theme === 'dark' ? 'light' : 'dark';
-    localStorage.setItem('lcc-theme', state.theme);
-    applyTheme();
+  $('#theme-button').addEventListener('click', cycleTheme);
+  // While following the system, an OS-level switch has to land immediately.
+  darkMediaQuery.addEventListener('change', () => {
+    if (state.theme === 'system') applyTheme();
   });
   $('#search-input').addEventListener('input', (event) => {
     state.query = event.target.value;
@@ -3183,23 +3567,14 @@ function wireEvents() {
       toast('Selected profile is not launchable; nothing to save');
       return;
     }
-    openSaveAsCopyModal(profile);
-  });
-  $$('.segment').forEach((button) => {
-    button.addEventListener('click', () => {
-      $$('.segment').forEach((item) => item.classList.remove('active'));
-      button.classList.add('active');
-      state.profileFilter = button.dataset.profileFilter;
-      renderProfiles();
-    });
+    saveProfileAsCopy(profile);
   });
   $('#profiles-table').addEventListener('click', (event) => {
     const row = event.target.closest('tr.profile-row');
     if (!row) return;
     if (event.target.closest('button')) return;
     const mode = row.dataset.profileMode;
-    if (!mode || mode === state.selectedProfileMode) return;
-    state.selectedProfileMode = mode;
+    if (!mode || !setSelectedProfileMode(mode)) return;
     renderParameters();
     renderProfiles();
   });
@@ -3209,8 +3584,7 @@ function wireEvents() {
     if (event.key !== 'Enter' && event.key !== ' ') return;
     event.preventDefault();
     const mode = row.dataset.profileMode;
-    if (!mode || mode === state.selectedProfileMode) return;
-    state.selectedProfileMode = mode;
+    if (!mode || !setSelectedProfileMode(mode)) return;
     renderParameters();
     renderProfiles();
   });
@@ -3224,14 +3598,19 @@ function wireEvents() {
   });
   document.body.addEventListener('click', (event) => {
     // Server selection (clicking the card itself, not action buttons inside)
-    const serverCard = event.target.closest('.server-item, .active-server-row');
+    const serverCard = event.target.closest('.server-item');
     if (serverCard && !event.target.closest('button')) {
       const sid = serverCard.dataset.serverId;
       if (sid) {
         state.selectedServerId = sid;
         const server = (state.servers || []).find(s => s.id === sid);
-        if (server && server.mode) {
-          renderChatLog(server.mode);
+        // Selecting a server selects its profile too, so the chat transcript,
+        // the parameter form and the highlighted row all describe one thing.
+        if (server?.mode && state.profiles.some((profile) => profile.mode === server.mode)) {
+          if (setSelectedProfileMode(server.mode)) {
+            renderParameters();
+            renderProfiles();
+          }
         }
         // If logs pane is visible, optionally auto-load; for now just remember selection.
         // User can hit "Open logs" or the per-item Logs button.
@@ -3246,8 +3625,7 @@ function wireEvents() {
     if (!target) return;
     const { action, mode, serverId, runtime, repo, file, dest } = target.dataset;
     if (mode && state.profiles.some((profile) => profile.mode === mode)) {
-      state.selectedProfileMode = mode;
-      renderParameters();
+      if (setSelectedProfileMode(mode)) renderParameters();
     }
     if (action === 'download-model') downloadModelUpdate(repo, file, dest, target);
     else if (action === 'toggle-runtimes') {
@@ -3272,28 +3650,31 @@ function wireEvents() {
       if (profile) saveProfileName(mode, profile.name || profile.mode);
     }
   });
+  // The card is exposed as a button, so Enter/Space has to select it too.
+  $('#server-box')?.addEventListener('keydown', (event) => {
+    const card = event.target.closest('.server-item');
+    if (!card || event.target.closest('button')) return;
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    event.preventDefault();
+    card.click();
+  });
   $('#open-logs-button').addEventListener('click', () => {
     const serverId = state.selectedServerId || state.servers[0]?.id;
     if (serverId) loadLogs(serverId);
     else toast('No tracked server to open logs for');
   });
-  // Active Servers main panel + side pane purge controls
-  $('#active-servers-purge-stopped')?.addEventListener('click', (e) => purgeServers(true, e.currentTarget));
-  $('#active-servers-purge-all')?.addEventListener('click', (e) => purgeServers(false, e.currentTarget, true));
   $('#servers-purge-stopped')?.addEventListener('click', (e) => purgeServers(true, e.currentTarget));
   $('#servers-clear-history')?.addEventListener('click', (e) => purgeServers(false, e.currentTarget, true));
   $('#param-profile').addEventListener('change', (event) => {
-    state.selectedProfileMode = event.target.value;
+    setSelectedProfileMode(event.target.value);
     renderParameters();
     renderProfiles();
-    const mode = selectedMode();
-    if (mode) renderChatLog(mode);
   });
   $('#reset-params-button').addEventListener('click', () => {
     const mode = selectedMode();
-    delete state.paramOverrides[mode];
+    clearParamOverrides(mode);
     renderParameters();
-    toast('Parameters reset');
+    toast('Parameters reset to the saved profile');
   });
   $('#prepare-selected-button').addEventListener('click', (event) => prepareProfile(selectedMode(), event.currentTarget));
   $('#start-selected-button')?.addEventListener('click', (event) => startProfile(selectedMode(), event.currentTarget));
@@ -3362,38 +3743,11 @@ function wireEvents() {
       return;
     }
     const profile = state.profiles.find((p) => p.mode === mode);
-    const modal = $('#save-profile-modal');
-    const nameInput = $('#save-profile-name');
-    const descInput = $('#save-profile-desc');
-    const okBtn = $('#save-profile-ok');
-    const cancelBtn = $('#save-profile-cancel');
-    nameInput.value = profile?.name || mode;
-    descInput.value = profile?.description || '';
-    modal.hidden = false;
-    document.body.classList.add('modal-open');
-    nameInput.focus();
-    nameInput.select();
     try {
-      const result = await new Promise((resolve) => {
-        function cleanup() {
-          modal.hidden = true;
-          document.body.classList.remove('modal-open');
-          okBtn.removeEventListener('click', onOk);
-          cancelBtn.removeEventListener('click', onCancel);
-          modal.removeEventListener('click', onBackdrop);
-          document.removeEventListener('keydown', onKey);
-        }
-        function onOk() { cleanup(); resolve({ name: nameInput.value.trim(), description: descInput.value.trim() }); }
-        function onCancel() { cleanup(); resolve(null); }
-        function onBackdrop(event) { if (event.target === modal) onCancel(); }
-        function onKey(event) {
-          if (event.key === 'Escape') onCancel();
-          else if (event.key === 'Enter') { event.preventDefault(); onOk(); }
-        }
-        okBtn.addEventListener('click', onOk);
-        cancelBtn.addEventListener('click', onCancel);
-        modal.addEventListener('click', onBackdrop);
-        document.addEventListener('keydown', onKey);
+      const result = await promptProfileDetails({
+        title: 'Save Profile',
+        name: profile?.name || mode,
+        description: profile?.description || '',
       });
       if (!result) return;
       const overrides = collectOverrides();
@@ -3405,7 +3759,9 @@ function wireEvents() {
             body: JSON.stringify({ mode, name: result.name, description: result.description, model_path: modelPath, params: overrides }),
           });
           if (saveResult.success) {
-            toast(saveResult.message || 'Profile saved');
+            // The edits are on disk now, so the local draft is no longer "unsaved".
+            clearParamOverrides(mode);
+            toast(saveResult.message || `Saved "${result.name}"`);
             await refresh();
           } else {
             toast(saveResult.message || 'Save failed');
@@ -3432,8 +3788,19 @@ function wireEvents() {
     scheduleTpsEstimate();
     schedulePortCheck();
   });
-  // Click the dot to force an immediate re-probe (bypass the debounce).
+  // Click (or Enter/Space) on the dot forces an immediate re-probe, bypassing
+  // the debounce. It is exposed as a button, so both paths have to work.
   $('#param-port-status')?.addEventListener('click', () => schedulePortCheck());
+  $('#param-port-status')?.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    event.preventDefault();
+    schedulePortCheck();
+  });
+  $('#view-all-profiles')?.addEventListener('click', (event) => {
+    event.preventDefault();
+    clearProfileFilters();
+    $('#profiles')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
   // Preset picker writes into #param-ctx (the source of truth), then resets so it
   // always reads "Presets" and never filters its options by the current value.
   $('#param-ctx-preset').addEventListener('change', (event) => {
@@ -3469,22 +3836,8 @@ function wireEvents() {
         return;
       }
     }
-    if (event.key === 'Tab' && !$('#settings-modal').hidden) {
-      const dialog = $('.settings-dialog');
-      const items = focusableInside(dialog);
-      if (!items.length) return;
-      const first = items[0];
-      const last = items[items.length - 1];
-      const active = document.activeElement;
-      if (event.shiftKey) {
-        if (active === first || !dialog.contains(active)) {
-          event.preventDefault();
-          last.focus();
-        }
-      } else if (active === last || !dialog.contains(active)) {
-        event.preventDefault();
-        first.focus();
-      }
+    if (!$('#settings-modal').hidden) {
+      trapTab(event, $('.settings-dialog'));
     }
   });
   window.addEventListener('resize', hideFloatingTooltip);
@@ -3510,6 +3863,85 @@ function wireEvents() {
   });
 }
 
+// ----- Tools disclosure (Parameters panel) ----------------------------------
+// Start / Stop / Prepare / Save Profile stay on the surface; the six occasional
+// tools fold into this menu. The buttons themselves move inside it rather than
+// being re-created, so every existing handler and id keeps working.
+let toolsMenuKeyHandler = null;
+let toolsMenuOutsideHandler = null;
+
+function toolsMenuItems() {
+  return $$('#tools-menu .mini-button').filter((button) => !button.disabled);
+}
+
+function closeToolsMenu({ restoreFocus = false } = {}) {
+  const menu = $('#tools-menu');
+  const trigger = $('#tools-menu-button');
+  if (!menu || menu.hidden) return;
+  menu.hidden = true;
+  trigger?.setAttribute('aria-expanded', 'false');
+  document.removeEventListener('mousedown', toolsMenuOutsideHandler, true);
+  document.removeEventListener('keydown', toolsMenuKeyHandler, true);
+  toolsMenuOutsideHandler = null;
+  toolsMenuKeyHandler = null;
+  if (restoreFocus) trigger?.focus();
+}
+
+function openToolsMenu() {
+  const menu = $('#tools-menu');
+  const trigger = $('#tools-menu-button');
+  if (!menu || !trigger) return;
+  menu.hidden = false;
+  trigger.setAttribute('aria-expanded', 'true');
+  toolsMenuItems()[0]?.focus();
+
+  toolsMenuOutsideHandler = (event) => {
+    if (menu.contains(event.target) || trigger.contains(event.target)) return;
+    closeToolsMenu();
+  };
+  toolsMenuKeyHandler = (event) => {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      closeToolsMenu({ restoreFocus: true });
+      return;
+    }
+    if (event.key === 'Tab') {
+      closeToolsMenu();
+      return;
+    }
+    if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+    event.preventDefault();
+    const items = toolsMenuItems();
+    if (!items.length) return;
+    const step = event.key === 'ArrowDown' ? 1 : -1;
+    const current = items.indexOf(document.activeElement);
+    const next = (current + step + items.length) % items.length;
+    items[next].focus();
+  };
+  // Capture, so the menu closes before any handler bound to the trigger row.
+  setTimeout(() => {
+    document.addEventListener('mousedown', toolsMenuOutsideHandler, true);
+    document.addEventListener('keydown', toolsMenuKeyHandler, true);
+  }, 0);
+}
+
+function wireToolsMenu() {
+  const menu = $('#tools-menu');
+  const trigger = $('#tools-menu-button');
+  if (!menu || !trigger) return;
+  menu.querySelectorAll('.mini-button').forEach((button) => button.setAttribute('role', 'menuitem'));
+  trigger.addEventListener('click', () => {
+    if (menu.hidden) openToolsMenu();
+    else closeToolsMenu({ restoreFocus: true });
+  });
+  // Capture phase: focus is back on the trigger before the tool's own handler
+  // runs, so a modal it opens returns focus somewhere still visible.
+  menu.addEventListener('click', (event) => {
+    if (!event.target.closest('.mini-button')) return;
+    closeToolsMenu({ restoreFocus: true });
+  }, true);
+}
+
 // ----- Popup menu component -------------------------------------------------
 // One shared <ul> element reused across the dashboard. Anchors to a trigger
 // element, positions itself below it, closes on outside click / Escape, and
@@ -3519,12 +3951,17 @@ let popupMenuItems = [];
 let popupMenuActiveIndex = 0;
 let popupMenuOutsideHandler = null;
 let popupMenuKeyHandler = null;
+let popupMenuTrigger = null;
 
 function closePopupMenu() {
   if (popupMenuEl) {
     popupMenuEl.remove();
     popupMenuEl = null;
   }
+  // The trigger advertises the menu with aria-haspopup; its aria-expanded has
+  // to come back down or assistive tech keeps reporting an open menu.
+  popupMenuTrigger?.setAttribute('aria-expanded', 'false');
+  popupMenuTrigger = null;
   popupMenuItems = [];
   document.removeEventListener('mousedown', popupMenuOutsideHandler, true);
   document.removeEventListener('keydown', popupMenuKeyHandler, true);
@@ -3536,6 +3973,9 @@ function showPopupMenu(trigger, items) {
   closePopupMenu();
   if (!Array.isArray(items) || items.length === 0) return;
   popupMenuItems = items.filter((item) => !item.hidden);
+  popupMenuTrigger = trigger;
+  trigger?.setAttribute('aria-haspopup', 'menu');
+  trigger?.setAttribute('aria-expanded', 'true');
 
   const menu = document.createElement('ul');
   menu.className = 'popup-menu';
@@ -3636,6 +4076,123 @@ function showPopupMenu(trigger, items) {
   }, 0);
 }
 
+// ----- Tracked-server polling ----------------------------------------------
+// The dashboard used to learn that a server had died only when someone pressed
+// Refresh. This loop re-reads /api/servers on its own: quickly while something
+// is running or starting, slowly otherwise, paused while the tab is hidden. It
+// repaints only when the tracked state actually changed, so idle ticks never
+// disturb focus, scroll position, or in-progress parameter edits (the form is
+// never re-rendered from here).
+const SERVER_POLL_ACTIVE_MS = 5000;
+const SERVER_POLL_IDLE_MS = 30000;
+let serverPollTimer = null;
+
+function serversBusy(servers) {
+  return (servers || []).some((server) => (
+    server.running || server.status === 'starting' || server.status === 'startup_timeout'
+  ));
+}
+
+// Everything the server cards, badges and profile rows draw. Fields outside
+// this list (metrics, log tails) are enrichment and must not force a repaint.
+function serverStateSignature(servers) {
+  return (servers || []).map((server) => [
+    server.id,
+    server.mode,
+    server.running ? 'up' : 'down',
+    server.status || '',
+    server.pid ?? '',
+    server.port ?? '',
+    server.oom_likely ? 'oom' : '',
+  ].join(':')).join('|');
+}
+
+// Replacing innerHTML drops focus to <body>. Remember which control was
+// focused by its data-* identity and hand focus back to its counterpart in the
+// new markup, so a background poll never moves the keyboard out from under the
+// user mid-task.
+function withFocusPreserved(render) {
+  const active = document.activeElement;
+  const data = active && active.dataset ? { ...active.dataset } : null;
+  const identified = data && (data.serverId || data.profileMode || data.mode);
+  const tag = active?.tagName;
+  render();
+  if (!identified) return;
+  if (document.activeElement && document.activeElement !== document.body) return;
+  const match = $$('[data-server-id], [data-profile-mode], [data-mode]').find((el) => (
+    el.tagName === tag
+    && el.dataset.serverId === data.serverId
+    && el.dataset.profileMode === data.profileMode
+    && el.dataset.mode === data.mode
+    && el.dataset.action === data.action
+  ));
+  if (match && typeof match.focus === 'function') match.focus({ preventScroll: true });
+}
+
+// A server that was running and is not any more is news: say so once, naming
+// the profile the way the rest of the UI names it.
+function announceServerTransitions(previousById, servers) {
+  servers.forEach((server) => {
+    const before = previousById.get(server.id);
+    if (!before || !before.running || server.running) return;
+    const name = profileLabel(server.mode);
+    const crashed = server.status === 'crashed' || !!server.last_stderr;
+    toast(crashed ? `"${name}" crashed — open its logs for the reason` : `"${name}" stopped`);
+  });
+}
+
+async function pollServers() {
+  if (refreshInFlight) return;
+  const generation = refreshGeneration;
+  let servers;
+  try {
+    const data = await api('/api/servers');
+    servers = data.servers || [];
+  } catch {
+    return; // Transient: the next tick retries.
+  }
+  // A full refresh may have started or landed while this request was in
+  // flight; its data is newer, so drop ours rather than writing stale state
+  // back over a stop or start the user just performed.
+  if (refreshInFlight || refreshGeneration !== generation) return;
+  const previous = state.servers || [];
+  if (serverStateSignature(previous) === serverStateSignature(servers)) return;
+  const previousById = new Map(previous.map((server) => [server.id, server]));
+  servers.forEach((server) => {
+    // /api/servers carries no metrics; keep the last enrichment so the metrics
+    // line does not blink out between full refreshes.
+    if (server.metrics === undefined) {
+      const before = previousById.get(server.id);
+      if (before?.metrics) server.metrics = before.metrics;
+    }
+  });
+  state.servers = servers;
+  withFocusPreserved(() => {
+    renderServers();
+    renderProfiles();
+  });
+  announceServerTransitions(previousById, servers);
+}
+
+function scheduleServerPoll(delay) {
+  window.clearTimeout(serverPollTimer);
+  const wait = delay ?? (serversBusy(state.servers) ? SERVER_POLL_ACTIVE_MS : SERVER_POLL_IDLE_MS);
+  serverPollTimer = window.setTimeout(runServerPollTick, wait);
+}
+
+async function runServerPollTick() {
+  if (!document.hidden) await pollServers();
+  scheduleServerPoll();
+}
+
+function startServerPolling() {
+  scheduleServerPoll();
+  document.addEventListener('visibilitychange', () => {
+    // Catch up soon after the tab comes back, without a thundering herd.
+    if (!document.hidden) scheduleServerPoll(400);
+  });
+}
+
 // ----- Live Hardware polling (sidebar widget) -------------------------------
 // Polls /api/system/live every few seconds, pauses when the tab is hidden or
 // the sidebar is collapsed, and renders GPU util/temp/VRAM bars plus a RAM
@@ -3653,7 +4210,32 @@ function liveBarClass(percent) {
   return '';
 }
 
-function drawSparkline(canvas, values, color = '#20aeb5') {
+// Canvas cannot read CSS variables, so the tokens are resolved at draw time.
+// One getComputedStyle per draw is cheap at this cadence and means a theme
+// switch (or an OS-level one, while following the system) needs no extra
+// bookkeeping: the next 3 s tick already paints in the new palette.
+function themeColor(token, fallback) {
+  const value = getComputedStyle(document.documentElement).getPropertyValue(token).trim();
+  return value || fallback;
+}
+
+// The series colour reports the reading, it does not decorate it: accent while
+// healthy, amber when the bar is warning, red only at the danger threshold —
+// the same cutoffs liveBarClass() uses for the bars above each sparkline.
+function seriesColor(values) {
+  const latest = Number(values?.[values.length - 1] ?? 0);
+  if (latest >= 90) return themeColor('--red', '#c4453e');
+  if (latest >= 70) return themeColor('--amber', '#96650a');
+  return themeColor('--accent', '#077076');
+}
+
+// Canvas has no alpha channel on a bare hex, and the fill wants one. Six-digit
+// hex gets an alpha pair appended; anything else is passed through unchanged.
+function withAlpha(color, hexAlpha) {
+  return /^#[0-9a-f]{6}$/i.test(color) ? `${color}${hexAlpha}` : color;
+}
+
+function drawSparkline(canvas, values, color = themeColor('--accent', '#077076')) {
   if (!canvas || !values || values.length < 2) {
     if (canvas) {
       const ctx = canvas.getContext('2d');
@@ -3682,7 +4264,7 @@ function drawSparkline(canvas, values, color = '#20aeb5') {
   ctx.lineTo(w, h);
   ctx.lineTo(0, h);
   ctx.closePath();
-  ctx.fillStyle = color + '22'; // very transparent
+  ctx.fillStyle = withAlpha(color, '22'); // very transparent
   ctx.fill();
 
   // line
@@ -3728,7 +4310,7 @@ function renderLiveGpu(gpu) {
         <span class="gpu-stats">${utilText} · ${temp}</span>
       </div>
       <div class="live-bar-label"><span>VRAM</span><span>${formatBytes(gpu.used_memory_bytes)} / ${formatBytes(gpu.total_memory_bytes)}</span></div>
-      <div class="live-bar"><div class="live-bar-fill ${liveBarClass(usedPct)}" style="width:${usedPct.toFixed(1)}%"></div></div>
+      <div class="live-bar"><div class="live-bar-fill ${liveBarClass(usedPct)}" style="--fill:${(usedPct / 100).toFixed(4)}"></div></div>
       <canvas class="sparkline" width="120" height="18" data-type="vram" title="VRAM % history"></canvas>
       <div class="live-bar-label" style="margin-top:2px"><span>Util %</span></div>
       <canvas class="sparkline" width="120" height="18" data-type="util" title="GPU util history"></canvas>
@@ -3746,7 +4328,7 @@ function renderLiveRam(ram) {
       <span class="label-title">System RAM</span>
       <span>${formatBytes(used)} / ${formatBytes(ram.total_bytes)}</span>
     </div>
-    <div class="live-bar"><div class="live-bar-fill ${liveBarClass(pct)}" style="width:${pct.toFixed(1)}%"></div></div>
+    <div class="live-bar"><div class="live-bar-fill ${liveBarClass(pct)}" style="--fill:${(pct / 100).toFixed(4)}"></div></div>
     <canvas class="sparkline" width="120" height="16" data-type="ram" title="RAM usage % history"></canvas>`;
 }
 
@@ -3771,8 +4353,8 @@ function renderLiveHardware(data) {
       const vramH = liveGpuVramHistory[idx] || [];
       const utilCan = card.querySelector('canvas[data-type="util"]');
       const vramCan = card.querySelector('canvas[data-type="vram"]');
-      if (utilCan) drawSparkline(utilCan, utilH, '#20aeb5');
-      if (vramCan) drawSparkline(vramCan, vramH, '#e26962');
+      if (utilCan) drawSparkline(utilCan, utilH, seriesColor(utilH));
+      if (vramCan) drawSparkline(vramCan, vramH, seriesColor(vramH));
     });
   } else {
     gpuGrid.innerHTML = '';
@@ -3785,7 +4367,7 @@ function renderLiveHardware(data) {
   }
   ramRow.innerHTML = hasRam ? renderLiveRam(data.system_ram) : '';
   const ramCan = ramRow.querySelector('canvas[data-type="ram"]');
-  if (ramCan) drawSparkline(ramCan, liveRamHistory, '#087f86');
+  if (ramCan) drawSparkline(ramCan, liveRamHistory, seriesColor(liveRamHistory));
 
   if (badge) {
     const age = data?.cached_age_ms;
@@ -3799,15 +4381,17 @@ function renderLiveHardware(data) {
 
 async function pollLiveHardware() {
   const widget = $('#sidebar-live-hardware');
-  // Pause when the tab is hidden or when the sidebar is collapsed to the icon
-  // rail. ``enhanceSidebar`` toggles ``.sidebar-collapsed`` on ``.app-shell``,
-  // so check there (the ``.sidebar`` element itself never gets that class).
+  // Pause only when the tab is hidden. A collapsed sidebar still samples: the
+  // request is cheap and the sparklines would otherwise come back empty after
+  // every expand. Painting is what gets skipped. ``enhanceSidebar`` toggles
+  // ``.sidebar-collapsed`` on ``.app-shell``, so check there (the ``.sidebar``
+  // element itself never gets that class).
   if (!widget || document.hidden) return;
-  if (document.querySelector('.app-shell')?.classList.contains('sidebar-collapsed')) return;
+  const collapsed = !!document.querySelector('.app-shell')?.classList.contains('sidebar-collapsed');
   try {
     const data = await api('/api/system/live');
     recordLiveHistory(data);
-    renderLiveHardware(data);
+    if (!collapsed) renderLiveHardware(data);
   } catch {
     // Transient — next tick will retry.
   }
@@ -3856,13 +4440,15 @@ function startLiveHardwarePolling() {
   });
   // Note: a previous draft added a ``transitionend`` re-poll on the sidebar.
   // That listener amplified polling ~7x because ``.live-bar-fill`` itself
-  // has ``transition: width 0.4s`` and every render restarts the bar from
-  // ``width: 0%`` — each transition bubbled ``transitionend`` back to the
+  // has a 420ms transform transition and every render restarts the bar from
+  // ``scaleX(0)`` — each transition bubbled ``transitionend`` back to the
   // sidebar and fired another poll. Removed; the 3 s cadence is short enough
   // that the worst-case post-expand wait is acceptable.
 }
 
+restoreParamOverrides();
 wireEvents();
 loadSamplingPresets();
 refresh();
+startServerPolling();
 startLiveHardwarePolling();

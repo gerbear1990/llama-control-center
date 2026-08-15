@@ -35,12 +35,12 @@
             <span class="nav-icon icon-models" aria-hidden="true"></span>
             <span>Models</span>
           </a>
-          <a class="nav-item" href="#active-servers" data-section="servers">
+          <a class="nav-item" href="#servers" data-section="servers">
             <span class="nav-icon icon-servers" aria-hidden="true"></span>
             <span>Servers</span>
           </a>
           <a class="nav-item" href="#chat" data-section="chat">
-            <span class="nav-icon icon-logs" aria-hidden="true"></span>
+            <span class="nav-icon icon-chat" aria-hidden="true"></span>
             <span>Chat</span>
           </a>
           <a class="nav-item" href="#logs" data-section="logs">
@@ -146,7 +146,7 @@
               <span class="metric-label">Models</span>
             </span>
           </div>
-          <div class="metric warning" id="metric-setup-wrapper" title="Profiles that are not launchable (model file missing, runtime not found, invalid params, etc.) plus any legacy portability issues found in scripts/JSONs. Click the label or use Profiles filter 'Needs setup' to investigate. Fix by ensuring models are in your scan roots, runtimes are installed/visible, or edit profiles.">
+          <div class="metric warning" id="metric-setup-wrapper" role="button" tabindex="0" title="Profiles that are not launchable (model file missing, runtime not found, invalid params, etc.) plus any legacy portability issues found in scripts/JSONs. Select this to filter the Profiles table down to them. Fix by ensuring models are in your scan roots, runtimes are installed/visible, or edit profiles.">
             <span class="metric-icon metric-icon-setup" aria-hidden="true"></span>
             <span class="metric-copy">
               <span class="metric-value" id="metric-setup">-</span>
@@ -200,7 +200,7 @@
                     <span aria-hidden="true">+</span>
                     New profile
                   </button>
-                  <button class="button primary icon-only" type="button" id="profile-menu-button" title="More profile actions" aria-label="More profile actions">⌄</button>
+                  <button class="button primary icon-only" type="button" id="profile-menu-button" title="Save profile as copy…" aria-label="Save profile as copy…" aria-haspopup="dialog">⌄</button>
                 </div>
               </div>
               <div class="table-wrap">
@@ -223,7 +223,7 @@
               </div>
               <div class="table-footer">
                 <span id="profiles-count">Showing profiles</span>
-                <a href="#profiles" id="view-all-profiles">View all profiles <span aria-hidden="true">→</span></a>
+                <a href="#profiles" id="view-all-profiles" title="Clear the search box, model filter, and availability toggle" hidden>Show all profiles</a>
               </div>
             </section>
 
@@ -238,21 +238,6 @@
               <div class="model-list" id="model-list"></div>
             </section>
 
-            <section class="panel" id="active-servers">
-              <div class="panel-heading">
-                <div>
-                  <span class="panel-eyebrow">Running</span>
-                  <h3>Active Servers</h3>
-                  <p>Tracked running and recent servers (live updates from the side pane too).</p>
-                </div>
-                <div class="panel-heading-actions">
-                  <button class="mini-button" type="button" id="active-servers-purge-stopped" title="Remove stopped and crashed entries from history">Purge stopped</button>
-                  <button class="mini-button danger" type="button" id="active-servers-purge-all" title="Clear all tracked server history">Clear history</button>
-                </div>
-              </div>
-              <div class="active-servers-list" id="active-servers-list"></div>
-            </section>
-
             <section class="panel" id="chat">
               <div class="panel-heading">
                 <div>
@@ -260,15 +245,15 @@
                   <h3>Chat</h3>
                   <p>Multi-turn chat with the selected running server.</p>
                 </div>
-                <div>
+                <div class="panel-heading-actions">
                   <button class="mini-button" type="button" id="chat-clear">Clear</button>
                   <button class="mini-button primary" type="button" id="test-prompt-send">Send</button>
                 </div>
               </div>
-              <div class="chat-log" id="chat-log"></div>
+              <div class="chat-log" id="chat-log" role="log" aria-live="polite" aria-label="Chat transcript"></div>
               <div class="chat-input-row">
-                <textarea id="test-prompt-input" rows="2" placeholder="Type a message… (Shift+Enter for newline)" autocomplete="off"></textarea>
-                <button class="mini-button" type="button" id="test-prompt-send-bottom" title="Send message">▷</button>
+                <textarea id="test-prompt-input" rows="2" placeholder="Type a message… (Shift+Enter for newline)" autocomplete="off" aria-label="Message to the running server"></textarea>
+                <button class="mini-button" type="button" id="test-prompt-send-bottom" title="Send message" aria-label="Send message"><span aria-hidden="true">▷</span></button>
               </div>
               <div class="test-prompt-meta" id="test-prompt-meta" hidden></div>
             </section>
@@ -303,7 +288,7 @@
                   <label class="field" title="The local web port used by llama.cpp. Change it if another app already uses the port.">
                     <span>Port</span>
                     <input id="param-port" name="port" type="number" min="1" max="65535" />
-                    <span class="port-status" id="param-port-status" aria-live="polite" title="Click to check now"></span>
+                    <span class="port-status" id="param-port-status" role="button" tabindex="0" aria-label="Port not checked yet. Check port again." title="Port not checked yet — click to check now"></span>
                   </label>
                   <label class="field" title="Choose how the model should be accelerated. Auto follows the detected runtime; CPU disables GPU layers.">
                     <span>Acceleration</span>
@@ -398,7 +383,7 @@
                 <div class="param-section-title">Sampling</div>
                 <div class="sampling-suggest" title="Fill the sampling fields below from a task-tuned preset. These are starting points you can adjust.">
                   <select id="sampling-intent" aria-label="Sampling preset"></select>
-                  <button class="mini-button" type="button" id="sampling-suggest-button">Edit sampling</button>
+                  <button class="mini-button" type="button" id="sampling-suggest-button" title="Overwrite the sampling fields below with the selected preset's values.">Apply preset</button>
                 </div>
                 <div class="field-grid">
                   <label class="field" title="Controls how adventurous responses feel. Lower is steadier; higher is more varied.">
@@ -482,14 +467,21 @@
                     <button class="mini-button" type="button" id="prepare-selected-button">Prepare</button>
                     <button class="mini-button danger launch-stop-button" type="button" id="stop-selected-button">Stop</button>
                   </div>
-                  <div class="advanced-actions">
+                  <div class="save-actions">
+                    <span class="param-hint param-dirty-chip" id="param-dirty-chip" role="status" title="These parameter edits are kept in this browser only. Save Profile writes them to the profile." hidden>Unsaved edits</span>
                     <button class="mini-button" type="button" id="save-profile-button">Save Profile</button>
-                    <button class="mini-button" type="button" id="reset-params-button">Reset</button>
-                    <button class="mini-button" type="button" id="hf-info-button">HF info</button>
-                    <button class="mini-button" type="button" id="hf-update-button">HF update</button>
+                    <button class="mini-button tools-menu-button" type="button" id="tools-menu-button" aria-haspopup="menu" aria-expanded="false" aria-controls="tools-menu" title="Occasional tools for this profile">
+                      Tools
+                      <span class="tools-menu-caret" aria-hidden="true"></span>
+                    </button>
+                  </div>
+                  <div class="tools-menu" id="tools-menu" role="menu" aria-label="Profile tools" hidden>
                     <button class="mini-button" type="button" id="smart-fit-button" title="Auto-tune GPU layers, context, and KV cache to the best fit for your hardware.">Smart fit</button>
-                    <button class="mini-button" type="button" id="fit-button">Fit test</button>
-                    <button class="mini-button" type="button" id="benchmark-button">Benchmark</button>
+                    <button class="mini-button" type="button" id="fit-button" title="Measure how this profile fits the detected VRAM">Fit test</button>
+                    <button class="mini-button" type="button" id="benchmark-button" title="Run a short throughput benchmark for this profile">Benchmark</button>
+                    <button class="mini-button" type="button" id="hf-info-button" title="Fetch the Hugging Face summary for this model">HF info</button>
+                    <button class="mini-button" type="button" id="hf-update-button" title="Check Hugging Face for a newer file of this model">HF update</button>
+                    <button class="mini-button" type="button" id="reset-params-button" title="Discard unsaved edits and reload the saved profile">Reset</button>
                   </div>
                 </div>
               </form>
@@ -522,11 +514,11 @@
                 <div>
                   <span class="panel-eyebrow">Running</span>
                   <h3>Servers</h3>
-                  <p>Tracked launches only.</p>
+                  <p>Tracked launches. Selection drives Logs.</p>
                 </div>
                 <div class="panel-heading-actions">
-                  <button class="mini-button" type="button" id="servers-purge-stopped" title="Remove stopped/crashed from history">Purge stopped</button>
-                  <button class="mini-button" type="button" id="servers-clear-history" title="Clear entire server history">Clear all</button>
+                  <button class="mini-button" type="button" id="servers-purge-stopped" title="Remove stopped and crashed entries from history">Purge stopped</button>
+                  <button class="mini-button danger" type="button" id="servers-clear-history" title="Clear all tracked server history">Clear history</button>
                 </div>
               </div>
               <div class="server-box" id="server-box"></div>
@@ -698,9 +690,9 @@
                 </select>
               </label>
             </div>
-            <label class="check-row">
+            <div class="check-row">
               <label><input id="settings-auto-scan" type="checkbox" /> Auto-register new models on startup</label>
-            </label>
+            </div>
             <div class="row-actions">
               <button class="mini-button" type="button" id="settings-export-button" title="Export current model/runtime roots + key portable settings as JSON for use on another machine. No secrets included.">Export portable config</button>
             </div>
@@ -776,10 +768,10 @@
     <div class="modal-backdrop command-palette-backdrop" id="command-palette" hidden>
       <div class="command-palette" role="dialog" aria-modal="true" aria-label="Command palette">
         <div class="palette-head">
-          <span>Commands</span>
-          <input id="palette-filter" type="text" placeholder="Type to filter..." autocomplete="off" />
+          <span id="palette-label">Commands</span>
+          <input id="palette-filter" type="text" placeholder="Type to filter..." autocomplete="off" role="combobox" aria-expanded="true" aria-controls="palette-list" aria-autocomplete="list" aria-label="Filter commands" />
         </div>
-        <ul class="palette-list" id="palette-list"></ul>
+        <ul class="palette-list" id="palette-list" role="listbox" aria-labelledby="palette-label"></ul>
         <div class="palette-hint">Esc to close · Enter to run · Ctrl+Shift+K to open</div>
       </div>
     </div>
