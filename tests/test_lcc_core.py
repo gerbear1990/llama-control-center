@@ -458,6 +458,36 @@ class ProfileResolverTests(unittest.TestCase):
 
 
 class LaunchArgsTests(unittest.TestCase):
+    def test_polling_off_by_default_when_layers_are_offloaded(self) -> None:
+        """An offloaded server must not busy-wait.
+
+        llama.cpp defaults --poll to 50, so its threadpool spins every
+        --threads core at 100% even with no request in flight. Measured on an
+        idle server: 7.99 cpu-sec/sec at --threads 8, versus 0.01 with --poll 0.
+        With the model on the GPU those threads have nothing to do between
+        batches, so polling is pure waste.
+        """
+        gpu = build_llama_server_args(
+            "llama-server", "Tiny-1B-Q8_0.gguf",
+            {"gpu_layers": 999, "threads": 8},
+        )
+        self.assertEqual(gpu.argv[gpu.argv.index("--poll") + 1], "0")
+
+        # CPU-only inference genuinely needs the worker threads hot, so the
+        # llama.cpp default is preserved there.
+        cpu = build_llama_server_args(
+            "llama-server", "Tiny-1B-Q8_0.gguf",
+            {"gpu_layers": 0, "threads": 8},
+        )
+        self.assertEqual(cpu.argv[cpu.argv.index("--poll") + 1], "50")
+
+        # An explicit value always wins.
+        explicit = build_llama_server_args(
+            "llama-server", "Tiny-1B-Q8_0.gguf",
+            {"gpu_layers": 999, "threads": 8, "poll": 25},
+        )
+        self.assertEqual(explicit.argv[explicit.argv.index("--poll") + 1], "25")
+
     def test_builds_llama_server_args_without_shell_string_rebuild(self) -> None:
         cmd = build_llama_server_args(
             "llama-server",
@@ -1525,19 +1555,59 @@ class LayerIndexAndCacheBytesTests(unittest.TestCase):
         self.assertEqual(_cache_bytes(""), 2.0)
         self.assertEqual(_cache_bytes("unknown"), 2.0)
 
-    def test_smart_fit_fp4_ladder_gated_by_nvidia_hardware(self) -> None:
+    def test_cache_ladder_only_offers_flash_attn_supported_types(self) -> None:
+        """Every rung must have a CUDA flash-attention kernel.
+
+        llama.cpp does not error on a KV type it has no FA kernel for -- it
+        silently runs attention on the CPU, which cost ~20x on prompt processing
+        (measured: q5_1 151 tok/s vs q8_0 3054). nvfp4/mxfp4 are worse still:
+        llama.cpp rejects them as cache types and the server won't start.
+        """
         from lcc_core.smart_tune import _cache_ladder
 
         cuda_hw = {"primary_gpu": {"name": "NVIDIA GeForce RTX 4090", "acceleration_backend": "cuda"}}
         amd_hw = {"primary_gpu": {"name": "AMD Radeon RX 7900 XTX", "acceleration_backend": "rocm"}}
         none_hw = {"primary_gpu": {}}
+
+        supported = {"f16", "bf16", "q8_0", "q4_0"}
+        for hw in (cuda_hw, amd_hw, none_hw):
+            self.assertTrue(set(_cache_ladder(hw)) <= supported, _cache_ladder(hw))
+
         cuda_ladder = _cache_ladder(cuda_hw)
-        self.assertIn("nvfp4", cuda_ladder)
-        self.assertIn("mxfp4", cuda_ladder)
-        self.assertIn("bf16", cuda_ladder)  # CUDA also unlocks BF16
-        # Non-NVIDIA hardware must not get FP4 rungs (no acceleration benefit).
-        self.assertNotIn("nvfp4", _cache_ladder(amd_hw))
-        self.assertNotIn("nvfp4", _cache_ladder(none_hw))
+        self.assertIn("bf16", cuda_ladder)  # CUDA unlocks BF16
+        # Types that fall back to the CPU attention path must never be offered.
+        for bad in ("q5_1", "q5_0", "q4_1", "iq4_nl", "nvfp4", "mxfp4"):
+            self.assertNotIn(bad, cuda_ladder)
+        # BF16 stays gated on hardware that runs it natively.
+        self.assertNotIn("bf16", _cache_ladder(amd_hw))
+        self.assertNotIn("bf16", _cache_ladder(none_hw))
+
+    def test_smart_fit_never_suggests_mismatched_k_and_v(self) -> None:
+        """K and V must always match -- a mismatched pair has no CUDA FA kernel.
+
+        Measured: f16 K / q8_0 V ran prompt processing at 177 tok/s with 8 CPU
+        threads pegged, against 3123 tok/s for f16/f16 on the same prompt.
+        """
+        from lcc_core.smart_tune import auto_tune_fit
+
+        hw = {
+            "primary_gpu": {
+                "name": "NVIDIA GeForce RTX 5090",
+                "acceleration_backend": "CUDA",
+                "vram_bandwidth_gbps": 1000,
+                "vram_total_bytes": 24 * 1024**3,
+                "vram_free_bytes": 24 * 1024**3,
+            },
+            "memory": {"total_bytes": 64 * 1024**3, "available_bytes": 48 * 1024**3},
+            "cpu": {"logical_cores": 16},
+        }
+        model = {"name": "test-7B", "params_b": 7, "quant": "Q4_K_M"}
+        out = auto_tune_fit({"gpu_layers": 0, "ctx_size": 2048}, model, hw)
+        self.assertTrue(out["success"])
+        self.assertTrue(out["suggestions"])
+        for s in out["suggestions"]:
+            p = s["params"]
+            self.assertEqual(p["cache_type_k"], p["cache_type_v"], p)
 
 
 class ServerCrashWatchdogTests(unittest.TestCase):

@@ -110,6 +110,15 @@ def build_llama_server_args(
     if gpu_layers is not None:
         args.extend(["--gpu-layers", "all" if gpu_layers >= 999 else str(gpu_layers)])
 
+    # llama.cpp's threadpool busy-waits for work (--poll defaults to 50), so the
+    # worker threads keep spinning at 100% between batches and an *idle* server
+    # pegs `--threads` cores forever. With the model offloaded there's nothing for
+    # them to do, so default polling off; callers can still set `poll` explicitly.
+    poll = params.get("poll")
+    if poll is None:
+        poll = 50 if gpu_layers in (None, 0) else 0
+    args.extend(["--poll", str(int(poll))])
+
     args.extend(["--flash-attn", _bool_on(params.get("flash_attn", True))])
     args.extend(["--reasoning", _bool_on(params.get("reasoning", False))])
     # --jinja is a presence flag (no on/off value). It makes llama.cpp use the
