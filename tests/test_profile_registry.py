@@ -72,6 +72,55 @@ class RegisterDiscoveredModelsTests(_IsolatedDirs):
         self.assertIn("recommended_params", entry)
         self.assertIn("ctx_size", entry["recommended_params"])
 
+    def test_stale_pin_does_not_swallow_a_new_model(self) -> None:
+        """A missing pinned path must not fuzzy-match a similarly named new file.
+
+        That was stealing new GGUFs so they never got their own profile.
+        """
+        new_model = self._seed_model("Qwen3.8-27B-Heretic-Q4_K_M.gguf")
+        (self.project_root / "models.json").write_text(
+            json.dumps({"models": [{
+                "mode": "huihui-qwable-3.6-27b",
+                "name": "Huihui Qwable (gone)",
+                "description": "",
+                "model_path": str(self.model_dir / "Huihui-Qwable-3.6-27b-abliterated-Q4_K_M.gguf"),
+                "recommended_params": {"ctx_size": 4096, "threads": 4, "gpu_layers": 999,
+                                       "cache_type_k": "q4_0", "cache_type_v": "q4_0"},
+            }]}),
+            encoding="utf-8",
+        )
+        result = register_discovered_models(project_root=self.project_root, model_dirs=[self.model_dir])
+        self.assertEqual(result.errors, [])
+        self.assertEqual({item.model_path for item in result.registered}, {str(new_model)})
+        modes = [entry["mode"] for entry in self._manifest()["models"]]
+        self.assertIn("huihui-qwable-3.6-27b", modes)
+        self.assertEqual(len(modes), 2)
+
+    def test_nvfp4_mtp_product_name_is_registered(self) -> None:
+        model = self._seed_model("Qwen3.8-27B-NVFP4-MTP-Q8attn.gguf")
+        result = register_discovered_models(project_root=self.project_root, model_dirs=[self.model_dir])
+        self.assertEqual({item.model_path for item in result.registered}, {str(model)})
+
+    def test_mtp_folder_companion_is_still_skipped(self) -> None:
+        mtp_dir = self.model_dir / "MTP"
+        mtp_dir.mkdir()
+        (mtp_dir / "gemma-4-26B-it-Q8_0-MTP.gguf").write_bytes(b"draft")
+        result = register_discovered_models(project_root=self.project_root, model_dirs=[self.model_dir])
+        self.assertEqual(result.registered, [])
+        reasons = " ".join(item["reason"] for item in result.skipped)
+        self.assertIn("Draft", reasons)
+
+    def test_only_paths_registers_just_that_file(self) -> None:
+        keep = self._seed_model("Keep-7B-Q4_K_M.gguf")
+        self._seed_model("Skip-7B-Q4_K_M.gguf")
+        result = register_discovered_models(
+            project_root=self.project_root,
+            model_dirs=[self.model_dir],
+            only_paths=[str(keep)],
+        )
+        self.assertEqual({item.model_path for item in result.registered}, {str(keep)})
+        self.assertEqual(len(self._manifest()["models"]), 1)
+
     def test_existing_profile_model_is_not_reregistered(self) -> None:
         model = self._seed_model("Known-7B-Q4_K_M.gguf")
         (self.project_root / "models.json").write_text(
@@ -167,6 +216,31 @@ class StartupAutoscanTests(_IsolatedDirs):
         result = startup_autoscan_if_enabled(config)
         self.assertIsNotNone(result)
         self.assertEqual({item.mode for item in result.registered}, {"newmodel-7b-q4_k_m"})
+
+
+class PinMatchTests(unittest.TestCase):
+    def test_missing_pin_does_not_fuzzy_match(self) -> None:
+        from lcc_core.profile_resolver import _best_model
+        from lcc_core.schema import ModelFile, ModelProfile
+
+        profile = ModelProfile(
+            mode="huihui-qwable",
+            name="Huihui Qwable",
+            description="",
+            model_path=r"C:\models\Huihui-Qwable-3.6-27b-Q4_K_M.gguf",
+        )
+        candidate = ModelFile(
+            id="x",
+            name="Qwen3.8-27B-Heretic-Abliterated",
+            path=r"C:\models\Qwen3.8-27B-Heretic\RVN-Q4_K_M.gguf",
+            source="scan",
+            format="GGUF",
+            size_bytes=10,
+        )
+        model, score, warnings = _best_model(profile, [candidate])
+        self.assertIsNone(model)
+        self.assertEqual(score, 0.0)
+        self.assertTrue(any("missing" in warning.lower() for warning in warnings))
 
 
 if __name__ == "__main__":

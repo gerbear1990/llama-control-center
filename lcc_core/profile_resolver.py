@@ -111,9 +111,17 @@ def _path_model(profile: ModelProfile, models: list[ModelFile]) -> ModelFile | N
 
 
 def _best_model(profile: ModelProfile, models: list[ModelFile]) -> tuple[ModelFile | None, float, list[str]]:
-    by_path = _path_model(profile, models)
-    if by_path:
-        return by_path, 1.0, []
+    if profile.model_path:
+        by_path = _path_model(profile, models)
+        if by_path:
+            return by_path, 1.0, []
+        try:
+            pinned_exists = Path(profile.model_path).expanduser().exists()
+        except OSError:
+            pinned_exists = False
+        if pinned_exists:
+            return None, 0.0, [f"Pinned model is outside the current scan roots: {profile.model_path}"]
+        return None, 0.0, [f"Pinned model file is missing: {profile.model_path}"]
     scored = sorted(((_score(profile, model), model) for model in models), key=lambda item: item[0], reverse=True)
     if not scored or scored[0][0] < 0.25:
         return None, 0.0, []

@@ -30,16 +30,25 @@ class ApiSmokeTests(unittest.TestCase):
         from lcc_core.profile_registry import ScanResult
 
         orig = app_module.register_discovered_models
-        app_module.register_discovered_models = lambda: ScanResult(scanned_at="test")
+        seen = {}
+
+        def stub(**kwargs):
+            seen.update(kwargs)
+            return ScanResult(scanned_at="test")
+
+        app_module.register_discovered_models = stub
         try:
             scan = self.client.post("/api/profiles/scan")
+            targeted = self.client.post("/api/profiles/scan", json={"model_path": r"C:\models\one.gguf"})
         finally:
             app_module.register_discovered_models = orig
         self.assertEqual(scan.status_code, 200)
+        self.assertEqual(targeted.status_code, 200)
         payload = scan.json()
         self.assertTrue(payload["success"])
         for key in ("registered", "skipped", "errors", "scanned_model_count", "registered_count"):
             self.assertIn(key, payload)
+        self.assertEqual(seen.get("only_paths"), [r"C:\models\one.gguf"])
         self.assertEqual(self.client.get("/api/launch-scripts").status_code, 404)
         self.assertEqual(self.client.post("/api/launch-scripts/scan").status_code, 404)
         self.assertEqual(self.client.post("/api/hf-cli/install").status_code, 404)

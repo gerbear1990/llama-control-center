@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from lcc_core.hf_metadata import infer_query
+from lcc_core.hf_metadata import infer_query, listed_repo_files
 
 
 class InferQueryTests(unittest.TestCase):
@@ -23,6 +23,24 @@ class InferQueryTests(unittest.TestCase):
 
     def test_never_returns_empty(self) -> None:
         self.assertTrue(infer_query("", r"C:\models\gguf"))
+
+
+class ListedRepoFilesTests(unittest.TestCase):
+    def test_reads_siblings_and_skips_blanks(self) -> None:
+        files = listed_repo_files({
+            "siblings": [
+                {"rfilename": "model-Q4_K_M.gguf"},
+                {"rfilename": "model-Q4_K_M.gguf"},
+                {"filename": "readme.md"},
+                {"rfilename": ""},
+                "bare.gguf",
+            ],
+        })
+        self.assertEqual(files, ["model-Q4_K_M.gguf", "readme.md", "bare.gguf"])
+
+    def test_empty_when_card_has_no_files(self) -> None:
+        self.assertEqual(listed_repo_files({}), [])
+        self.assertEqual(listed_repo_files(None), [])
 
 
 class DirUpdateCheckTests(unittest.TestCase):

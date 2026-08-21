@@ -727,11 +727,19 @@ def delete_profile(request: DeleteProfileRequest) -> dict[str, Any]:
     return {"success": True, "message": f"Deleted profile '{request.mode}'.", "mode": request.mode}
 
 
-@app.post("/api/profiles/scan")
-def scan_profiles() -> dict[str, Any]:
-    """Register any newly discovered models as launchable profiles."""
+class ScanRequest(BaseModel):
+    model_path: str | None = None
 
-    result = register_discovered_models()
+
+@app.post("/api/profiles/scan")
+def scan_profiles(request: ScanRequest = ScanRequest()) -> dict[str, Any]:
+    """Register newly discovered models as launchable profiles.
+
+    When ``model_path`` is set, only that file is considered — a row Register
+    must not enroll every new model on disk.
+    """
+    only = [request.model_path] if request.model_path else None
+    result = register_discovered_models(only_paths=only)
     payload = result.to_dict()
     payload["success"] = True
     return payload

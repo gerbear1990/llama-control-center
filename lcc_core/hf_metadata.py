@@ -186,6 +186,24 @@ def check_model_update(repo_id: str | None = None, name: str | None = None, path
     }
 
 
+def listed_repo_files(model: dict[str, Any] | None) -> list[str]:
+    """Filenames the HF model card actually lists. Never invents quants."""
+    names: list[str] = []
+    seen: set[str] = set()
+    siblings = (model or {}).get("siblings") or (model or {}).get("files") or []
+    for item in siblings:
+        if isinstance(item, dict):
+            name = item.get("rfilename") or item.get("filename") or item.get("name")
+        else:
+            name = str(item or "")
+        name = str(name or "").strip().replace("\\", "/")
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        names.append(name)
+    return names
+
+
 def fetch_model_info(repo_id: str | None = None, name: str | None = None, path: str | None = None) -> dict[str, Any]:
     query = repo_id or infer_query(name, path)
     try:
@@ -205,6 +223,7 @@ def fetch_model_info(repo_id: str | None = None, name: str | None = None, path: 
     summary = _readme_summary(model_id) if model_id else None
     card_data = model.get("cardData") or {}
     tags = model.get("tags") or []
+    files = listed_repo_files(model)
 
     return {
         "success": True,
@@ -217,6 +236,7 @@ def fetch_model_info(repo_id: str | None = None, name: str | None = None, path: 
         "pipeline_tag": model.get("pipeline_tag"),
         "library_name": model.get("library_name"),
         "tags": tags[:20],
+        "files": files,
         "card_data": card_data,
         "matches": [
             {

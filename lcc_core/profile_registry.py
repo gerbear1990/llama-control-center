@@ -23,7 +23,6 @@ from .paths import find_project_root
 from .profile_resolver import resolve_profiles
 
 SAFE_FILENAME_RE = re.compile(r"[^a-zA-Z0-9._-]+")
-DRAFT_NAME_RE = re.compile(r"(?i)(?:^|[-_.])(?:mtp|draft)(?:[-_.]|$)")
 
 MANIFEST_PARAM_KEYS = (
     "runtime",
@@ -71,13 +70,23 @@ def _is_draft_model(model_path: str) -> bool:
     """Heuristically detect speculative/draft companion models.
 
     These are consumed via a profile's ``draft_model`` parameter and must
-    not be registered as standalone server profiles.
+    not be registered as standalone server profiles. A path segment of
+    ``mtp`` / ``draft``, a ``mtp-`` / ``draft-`` filename prefix, or a
+    ``-draft-`` token is a companion. ``-MTP-`` in the middle of a product
+    name (e.g. NVFP4-MTP-Q8attn) is not.
     """
     path = Path(model_path)
-    parts = {segment.lower() for segment in path.parts}
+    parts = {segment.lower() for segment in path.parts[:-1]}
     if "mtp" in parts or "draft" in parts:
         return True
-    return bool(DRAFT_NAME_RE.search(path.name))
+    name = path.name.lower()
+    if re.match(r"(?:mtp|draft)[-_.]", name):
+        return True
+    if re.search(r"[-_.]draft[-_.]", name) or re.search(r"[-_.]draft\.gguf$", name):
+        return True
+    if re.search(r"[-_.]mtp\.gguf$", name):
+        return True
+    return False
 
 
 def _manifest_params(params: dict[str, Any]) -> dict[str, Any]:
@@ -175,6 +184,7 @@ def register_discovered_models(
     project_root: str | Path | None = None,
     model_dirs: list[str | Path] | None = None,
     config: AppConfig | None = None,
+    only_paths: list[str | Path] | None = None,
 ) -> ScanResult:
     """Scan model folders and register any brand-new model as a profile.
 
@@ -226,11 +236,18 @@ def register_discovered_models(
         draft_model = str(profile.params.get("draft_model", "")).strip()
         if draft_model:
             draft_paths.add(_norm_path(draft_model))
-        if profile.model and profile.model.get("path"):
+        pinned = str((profile.profile or {}).get("model_path") or "").strip()
+        if pinned:
+            handled_model_paths.add(_norm_path(pinned))
+        elif profile.model and profile.model.get("path"):
             handled_model_paths.add(_norm_path(profile.model["path"]))
+
+    only = {_norm_path(path) for path in (only_paths or []) if str(path).strip()}
 
     for model in discovered_models:
         resolved_path = _norm_path(model.path)
+        if only and resolved_path not in only:
+            continue
         if resolved_path in handled_model_paths:
             continue
         if resolved_path in ignored_model_paths:

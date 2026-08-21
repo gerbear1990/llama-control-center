@@ -116,7 +116,7 @@ _REASONS = {
     "gpu_layers": "offload as many layers to the accelerator as memory allows (biggest speed lever)",
     "ctx_size": "grow the context window into the remaining memory headroom",
     "cache_type_k": "pick the KV-cache quant that best balances fidelity and memory",
-    "cache_type_v": "pick the KV-cache quant that best balances fidelity and memory (V sheds bits before K)",
+    "cache_type_v": "pick the KV-cache quant that best balances fidelity and memory (same type as K)",
     "batch_size": "grow the logical batch into leftover memory headroom for faster prompt processing",
     "ubatch_size": "grow the physical batch into leftover memory headroom for faster prompt processing",
     "threads": "match generation threads to the CPU (decode is memory-bound; extra threads add contention)",
@@ -189,13 +189,16 @@ def _tune_batch(
     params: dict[str, Any],
     model: dict[str, Any] | None,
     hardware: dict[str, Any] | None,
+    keep_status: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
     """Grow batch/ubatch into the headroom left over by the main grid pick.
 
     Tries (batch, ubatch) pairs largest-first and keeps the first that still
     fits; the caller's pair is included so the result is never smaller than
-    what already fit. Returns the (possibly updated) params and the fit for
-    the chosen pair (None when nothing beat the caller's own pair).
+    what already fit. When ``keep_status`` is ``good``, a pair that would
+    turn the pick tight is skipped so batch growth cannot spend the safety
+    margin the ranker just chose. Returns the (possibly updated) params and
+    the fit for the chosen pair (None when nothing beat the caller's pair).
     """
     base_b = _int_or_none(params.get("batch_size")) or 512
     base_ub = _int_or_none(params.get("ubatch_size")) or min(base_b, 512)
@@ -206,6 +209,8 @@ def _tune_batch(
         cand = {**params, "batch_size": batch, "ubatch_size": ubatch}
         fit = estimate_memory_fit(cand, model, hardware)
         if fit["status"] in ("near_limit", "unknown"):
+            continue
+        if keep_status == "good" and fit["status"] != "good":
             continue
         return cand, fit
     return dict(params), None
@@ -285,24 +290,48 @@ def _collect_candidates(
     return candidates
 
 
-# Each key maximizes GPU layers first (the dominant fit/speed lever), then the
-# intent-specific trade-off between context and KV quant, then prefers the
-# roomier (non-tight) fit as a final safety tiebreak.
+# Layers first (the dominant speed lever). Balanced then prefers a roomy
+# (good) fit over a tight one so estimator error is less likely to OOM on
+# Start; quality/context only rank inside that safety band. Max-quality and
+# max-context still chase their axis first, and use roomy to break ties
+# before growing the other axis into a tighter fit.
 _INTENT_KEYS: dict[str, Callable[[dict[str, Any]], tuple]] = {
     "balanced": lambda c: (
         c["lf"],
-        _BALANCED_CACHE_WEIGHT * c["cache_norm"] + _BALANCED_CTX_WEIGHT * c["ctx_norm"],
-        c["cache_norm"],  # tie toward fidelity
         c["roomy"],
+        _BALANCED_CACHE_WEIGHT * c["cache_norm"] + _BALANCED_CTX_WEIGHT * c["ctx_norm"],
+        c["cache_norm"],
     ),
-    "max_quality": lambda c: (c["lf"], c["cache_norm"], c["ctx_norm"], c["roomy"]),
-    "max_context": lambda c: (c["lf"], c["ctx_norm"], c["cache_norm"], c["roomy"]),
+    "max_quality": lambda c: (c["lf"], c["cache_norm"], c["roomy"], c["ctx_norm"]),
+    "max_context": lambda c: (c["lf"], c["ctx_norm"], c["roomy"], c["cache_norm"]),
 }
 
 
 def _signature(cand: dict[str, Any]) -> tuple:
     p = cand["params"]
     return (str(p.get("gpu_layers")), p.get("ctx_size"), p.get("cache_type_k"), p.get("cache_type_v"))
+
+
+def _hardware_for_tune(hardware: dict[str, Any] | None) -> dict[str, Any]:
+    """Size the card, not leftover VRAM from a process that still holds it."""
+    hw = dict(hardware or {})
+    gpu = dict(hw.get("primary_gpu") or {})
+    total = gpu.get("vram_total_bytes")
+    if total:
+        gpu["vram_free_bytes"] = total
+    hw["primary_gpu"] = gpu
+    return hw
+
+
+def _gpu_occupied(hardware: dict[str, Any] | None, fit: dict[str, Any] | None) -> bool:
+    """True when live free VRAM cannot hold the recommended GPU-offload pick."""
+    gpu = (hardware or {}).get("primary_gpu") or {}
+    free = gpu.get("vram_free_bytes")
+    total = gpu.get("vram_total_bytes")
+    used = ((fit or {}).get("estimated") or {}).get("accelerator_used_mib")
+    if not total or free is None or used is None or used <= 0:
+        return False
+    return (free / 1024 / 1024) < float(used)
 
 
 def auto_tune_fit(
@@ -313,15 +342,21 @@ def auto_tune_fit(
 ) -> dict[str, Any]:
     """Search launch params for the best memory fit, by named intent.
 
-    Maximizes GPU offload first (the biggest speed lever), then trades context
-    against KV-cache fidelity. The default ("balanced") pick leans toward quant
-    quality so it never drops to a worse KV quant just to enlarge the cache.
+    Maximizes GPU offload first (the biggest speed lever), then prefers a
+    good fit over a tight one, then trades context against KV-cache fidelity.
+    The default ("balanced") pick will not spend a good margin just to grow
+    the window.
     Returns the balanced pick as ``tuned_params`` plus a ``suggestions`` list
     (balanced / max quality / max context) so a caller can choose by need.
     Rejects any candidate the estimator flags as near_limit or can't verify.
     """
     base = dict(params or {})
     base.setdefault("fit_target_mib", target_mib)
+    # Size the card (total VRAM), not whatever happens to be free this second.
+    # A running server would otherwise shrink or CPU-fallback a tune that the
+    # GPU can hold once that process is gone.
+    observed_hardware = hardware
+    hardware = _hardware_for_tune(hardware)
     # Parse the GGUF once up front so every grid eval below reads exact KV dims
     # from cache instead of re-opening the (slow) header.
     prime_model_meta(model)
@@ -354,7 +389,10 @@ def auto_tune_fit(
             continue
         # Refine the winner: grow batch sizes into the leftover headroom, then
         # match threads to the CPU and how much of the model stays on it.
-        tuned, refined_fit = _tune_batch(best["params"], model, hardware)
+        pick_status = (best.get("fit") or {}).get("status")
+        tuned, refined_fit = _tune_batch(
+            best["params"], model, hardware, keep_status=pick_status,
+        )
         fit = refined_fit or best["fit"]
         threads_rec = _recommend_threads(hardware, fit["inputs"]["gpu_layer_fraction"])
         if threads_rec:
@@ -379,32 +417,32 @@ def auto_tune_fit(
 
     notes = [
         "Suggestions come from the memory estimator, not a live run — verify with a fit test or benchmark.",
-        "Priority: max GPU layers, then a balance of KV-cache fidelity and context (quality-leaning).",
-        "K and V caches are tuned independently; V sheds bits before K and is never more precise than K.",
+        "Priority: max GPU layers, then a good (not tight) fit, then KV-cache fidelity and context.",
+        "K and V use the same cache type (mismatched pairs have no CUDA flash-attn kernel).",
         "Batch/ubatch grow into leftover headroom after context and KV quality are settled.",
         "Threads follow the CPU: physical cores for decode, logical cores for prompt batches.",
         "Pick 'Max quality' or 'Max context' from the suggestions when your need leans one way.",
         f"Jinja {'on' if jinja_rec['recommended'] else 'off'}: {jinja_rec['reason']}.",
     ]
 
-    # Guard against the silent CPU fallback: when a GPU is present but every
-    # GPU-offload candidate was rejected for lack of *free* VRAM, the only
-    # survivors are pure-CPU (gpu_layers=0) configs. Returning that as a happy
-    # "success" is how a tuned launch ends up running on the CPU. Surface it
-    # loudly so the user knows to free VRAM (usually: stop the server that's
-    # still holding it) and re-tune rather than launching a CPU-bound config.
+    # CPU fallback means the *card* cannot hold a GPU-offload config. Occupied
+    # VRAM from a running server is a separate warning: the tune still sizes
+    # the card, but Start will compete with whatever is holding memory now.
     gpu_present = bool(_gpu_descriptor(hardware).strip())
     tuned_lf = after_fit.get("inputs", {}).get("gpu_layer_fraction", 0)
     cpu_fallback = gpu_present and (tuned_lf or 0) <= 0
     if cpu_fallback:
-        cap = before_fit.get("estimated", {}).get("accelerator_capacity_mib")
-        cap_note = f" (only ~{int(cap)} MiB VRAM free)" if cap else ""
         notes.insert(
             0,
-            "⚠ A GPU was detected but no GPU-offload config fit in the free VRAM"
-            f"{cap_note}, so this recommendation runs on the CPU. Free VRAM "
-            "(stop any server still holding it) and re-run Smart Fit to offload "
-            "to the GPU.",
+            "This GPU cannot hold a GPU-offload config for this model, so this "
+            "recommendation runs on the CPU.",
+        )
+    elif _gpu_occupied(observed_hardware, after_fit):
+        notes.insert(
+            0,
+            "A process is already using this GPU. Smart Fit sized the full card, "
+            "not leftover VRAM. Stop the other server before Start, or the launch "
+            "will compete for memory.",
         )
 
     return {
