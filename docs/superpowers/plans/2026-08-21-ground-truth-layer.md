@@ -558,6 +558,11 @@ def read_facts(path: Path | str) -> ArchFacts:
     reader = gguf.GGUFReader(key)
     meta: dict = {}
     for field_key, field in reader.fields.items():
+        # tokenizer.ggml.tokens/merges/token_type are ~250k-element arrays on a
+        # modern vocab. Materialising them costs seconds and hundreds of MB, and
+        # nothing here is memory-relevant. Skip them.
+        if field_key.startswith("tokenizer."):
+            continue
         contents = getattr(field, "contents", None)
         if callable(contents):
             try:
@@ -724,7 +729,9 @@ def test_breakdown_totals():
     assert result.total_bytes == (
         result.weights_bytes + result.mmproj_bytes + result.kv_bytes + result.ssm_bytes
     )
-    assert round(result.total_bytes / GIB, 1) == 27.8
+    # 24.0374 weights + 0.8382 mmproj + 2.9219 KV + 0.0600 SSM = 27.8575 GiB.
+    # (The spec's 27.8 figure predates SSM state being counted.)
+    assert round(result.total_bytes / GIB, 1) == 27.9
     assert result.provenance == "computed"
 
 
@@ -966,17 +973,26 @@ class _Cursor:
             raise ValueError("truncated GGUF header")
         return raw.decode("utf-8", "replace")
 
-    def value(self, type_tag: int):
+    def value(self, type_tag: int, keep: bool = True):
+        """Read one value. With `keep` False the bytes are consumed but not
+        materialised — used for the ~250k-element tokenizer arrays, which must
+        be walked to stay byte-aligned but are never needed."""
         if type_tag == _TYPE_STRING:
-            return self.string()
+            text = self.string()
+            return text if keep else None
         if type_tag == _TYPE_ARRAY:
             elem_type = self.take("I")
             count = self.take("Q")
+            if not keep:
+                for _ in range(count):
+                    self.value(elem_type, keep=False)
+                return None
             return [self.value(elem_type) for _ in range(count)]
         fmt = _SCALAR_FMT.get(type_tag)
         if fmt is None:
             raise ValueError(f"unknown GGUF value type {type_tag}")
-        return self.take(fmt)
+        result = self.take(fmt)
+        return result if keep else None
 
 
 def parse_header_bytes(buf: bytes) -> ArchFacts:
@@ -996,7 +1012,11 @@ def parse_header_bytes(buf: bytes) -> ArchFacts:
     meta: dict = {}
     for _ in range(n_kv):
         key = cursor.string()
-        meta[key] = cursor.value(cursor.take("I"))
+        type_tag = cursor.take("I")
+        keep = not key.startswith("tokenizer.")
+        value = cursor.value(type_tag, keep=keep)
+        if keep:
+            meta[key] = value
 
     names: list[str] = []
     for _ in range(n_tensors):
