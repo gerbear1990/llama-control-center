@@ -19,7 +19,7 @@ Milestone: v0.17.0 — Close the Open Loops (0.17.0)
 Phase: 1 of 6 (Terminal-Instrument Design Pass)
 Plan: 0 of 0 in current phase
 Status: Ready to plan
-Last activity: 2026-08-21 — PAUL initialized; planning docs migrated from ROADMAP.md / REVIEW_MILESTONES.md / TODO.md / audit
+Last activity: 2026-08-21 — codebase mapped to .paul/codebase/ (7 docs); PAUL initialized and planning docs migrated earlier the same day
 
 Progress:
 - Milestone: [░░░░░░░░░░] 0%
@@ -66,14 +66,27 @@ that `REVIEW_MILESTONES.md` was already stale. All are now consolidated into
 
 ### Known traps
 
-- **Issue #14 needs a third fix the paused plan doesn't have.** T7+T8 make embedded-MTP
-  models *launchable*; `DRAFT_NAME_RE` at `profile_registry.py:26` still makes the scan
-  skip them entirely, so auto-discovery stays broken. Phase 2 covers all three.
+- **Issue #14 is half-fixed, and the fix is uncommitted.** The discovery half
+  (`DRAFT_NAME_RE` → `_is_draft_model()` in `profile_registry.py`) is done **in the working
+  tree only** — `git show HEAD:lcc_core/profile_registry.py` still has the old regex, so
+  discarding that WIP reintroduces the bug. The launch half is untouched: `profile_resolver.py`
+  still demands `draft_model` for any profile with "mtp" in its text. Phase 2 lands both.
   Workaround meanwhile: `POST /api/profiles/save` with "MTP" absent from mode/name/description.
 - **Phase 5 must not start before Phase 1 lands** — splitting a 4,105-line stylesheet while
   a restyle is uncommitted is an avoidable merge disaster.
 - Test suite needs `encoding="utf-8"` for node subprocess output. Baseline: 151 passed + 1 skipped.
 - `index.html` cache-buster (`?v=0.15.0`) is bumped by hand each release — already lagging 0.16.0.
+
+### Codebase map
+
+`.paul/codebase/` holds STACK, ARCHITECTURE, STRUCTURE, CONVENTIONS, TESTING, INTEGRATIONS,
+CONCERNS (mapped 2026-08-21 against `feat/terminal-instrument-design`). Read CONCERNS before
+planning any phase — it carries the load-bearing traps.
+
+Mapped inline rather than via the workflow's 4 parallel Explore agents. Two claims inherited
+from `docs/2026-07-14-audit.md` were checked and found **stale**, so don't quote that doc
+without verifying: `app.js` is 5,060 lines (audit said 3,816), and the `index.html`
+cache-buster is `?v=0.16.17` against `__version__` 0.16.0 (audit said `?v=0.15.0`).
 
 ## Session Continuity
 

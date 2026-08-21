@@ -50,8 +50,8 @@ shadows/lifts, active pane carries an accent left edge — with zero colour chan
 
 ### Phase 2: Embedded-MTP Support
 
-**Goal:** Models with the MTP head inside the GGUF (Qwen3.5/3.6) are both discoverable and
-launchable. Closes issue #14 completely.
+**Goal:** Close issue #14. Discovery is already fixed in the uncommitted WIP; this phase lands
+that, makes embedded-MTP profiles *launchable*, and adds regression cover.
 **Depends on:** Nothing
 **Research:** Unlikely (root cause already traced)
 
@@ -60,9 +60,11 @@ launchable. Closes issue #14 completely.
   (n_layer, kv_dims, supports_tools, context_length, mtp), scan `reader.tensors` for
   nextn/mtp names, `_store_meta_cache(..., mtp=)`, add `model_has_builtin_mtp`
 - T8 — resolver: stop demanding `draft_model` for built-in MTP (`profile_resolver.py:180`)
-- **Registry fix (not in the original plan):** `DRAFT_NAME_RE` at `profile_registry.py:26`
-  makes the scan skip these models entirely. T7+T8 fix launchability only — without this,
-  auto-discovery stays broken.
+- **Registry fix (not in the original plan) — ✅ already done in the uncommitted WIP.**
+  `DRAFT_NAME_RE` in `profile_registry.py` has been replaced by `_is_draft_model()`, which no
+  longer skips a model just because "MTP" appears mid-name. ⚠️ It exists **only in the working
+  tree** — HEAD still carries the old regex, so land that WIP or the bug returns. Add a
+  regression test pinning `NVFP4-MTP-Q8attn`-style names as *not* companions.
 - `--spec-type draft-mtp` as a profile param so MTP weights aren't loaded as dead capacity
   (`fit.py:build_fit_args`)
 
