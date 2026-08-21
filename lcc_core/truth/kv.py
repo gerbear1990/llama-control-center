@@ -10,28 +10,43 @@ from dataclasses import dataclass
 
 from .gguf import ArchFacts
 
-# Bytes per stored element by KV cache type. Quantized types carry block scales,
-# so q8_0 is 8.5 bits (1.0625 B), not 1.0.
+# Bytes per stored element by KV cache type, mirroring estimates.CACHE_BYTES
+# exactly (see that table's comment for the ggml block-struct derivation).
+# Quantized types carry block scales, so q8_0 is 8.5 bits (1.0625 B), not 1.0.
 CACHE_BYTES: dict[str, float] = {
     "F32": 4.0, "F16": 2.0, "BF16": 2.0,
     "Q8_0": 1.0625,
     "Q5_1": 0.75, "Q5_0": 0.6875,
-    "Q4_1": 0.5625, "Q4_0": 0.5,
+    "Q4_1": 0.625, "Q4_0": 0.5625,
     "IQ4_NL": 0.5625,
+    "NVFP4": 0.5625, "MXFP4": 0.53125,
 }
 
 _FALLBACK_BYTES = 2.0  # unknown type: assume f16 rather than guess smaller
 
 
 def cache_bytes_per_elem(name: str | None) -> float:
-    """Bytes per element for a llama.cpp KV cache type (``-ctk`` / ``-ctv``)."""
-    key = str(name or "f16").upper()
-    if key in CACHE_BYTES:
-        return CACHE_BYTES[key]
-    for prefix, value in (("Q8", 1.0625), ("Q6", 0.8125), ("Q5", 0.75),
-                          ("IQ4", 0.5625), ("Q4", 0.5625)):
-        if key.startswith(prefix):
-            return value
+    """Bytes per element for a llama.cpp KV cache type (``-ctk`` / ``-ctv``).
+
+    Must produce identical results to ``estimates._cache_bytes`` for every
+    input -- see ``test_cache_bytes_matches_legacy_estimator``.
+    """
+    value = str(name or "f16").upper()
+    for key, bytes_per_value in CACHE_BYTES.items():
+        if value == key or value.startswith(key):
+            return bytes_per_value
+    if value.startswith("Q8"):
+        return 1.0625
+    if value.startswith("Q6"):
+        return 0.8125
+    if value.startswith("Q5"):
+        return 0.75
+    if value.startswith("Q4") or value.startswith("IQ4"):
+        return 0.5625
+    if value.startswith("NVFP"):
+        return 0.5625
+    if value.startswith("MXFP"):
+        return 0.53125
     return _FALLBACK_BYTES
 
 
@@ -54,12 +69,21 @@ def kv_bytes_per_token(facts: ArchFacts, ctk: str | None = "f16",
 def ssm_state_bytes(facts: ArchFacts) -> int:
     """Recurrent state held by SSM layers. Constant in context length.
 
-    Per layer: a convolution window of ``inner_size x (conv_kernel - 1)`` plus a
-    recurrent state of ``inner_size x state_size``, both f32.
+    Per layer: a convolution window of
+    ``(conv_kernel - 1) x (inner_size + 2 * group_count * state_size)`` plus a
+    recurrent state of ``inner_size x state_size``, both f32. The conv term
+    mirrors llama.cpp's allocation of
+    ``(d_conv - 1) * (d_inner + 2 * n_group * d_state)``; when ``group_count``
+    is absent from the header it is treated as 0, which reduces to the plain
+    ``inner_size`` conv term.
+
+    llama.cpp allocates this recurrent state once per ``--parallel`` slot, so
+    this figure is for a single slot.
     """
     if not facts.is_hybrid or not facts.ssm_inner_size:
         return 0
-    conv = facts.ssm_inner_size * max(0, (facts.ssm_conv_kernel or 1) - 1)
+    conv_width = facts.ssm_inner_size + 2 * (facts.ssm_group_count or 0) * (facts.ssm_state_size or 0)
+    conv = conv_width * max(0, (facts.ssm_conv_kernel or 1) - 1)
     state = facts.ssm_inner_size * (facts.ssm_state_size or 0)
     return (conv + state) * 4 * facts.n_ssm_layers
 

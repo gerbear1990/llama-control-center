@@ -20,11 +20,21 @@ def test_records_divergence_between_legacy_and_truth(tmp_path, monkeypatch):
     assert result is not None
     assert round(result["truth_kv_mib"], 1) == 8.0
     assert result["legacy_kv_mib"] == 10.0
+    # delta_pct is (legacy - truth) / truth * 100: positive means legacy reads
+    # higher than truth, as it does here.
     assert round(result["delta_pct"]) == 25   # legacy is 25% above truth
+    assert result["ctk"] == "f16"
+    assert result["ctv"] == "f16"
+    # No prior estimates._kv_dims() call resolved exact dims for this model,
+    # so the legacy figure came from the KV_FALLBACK_FACTOR heuristic.
+    assert result["legacy_exact"] is False
 
     entry = json.loads(log.read_text().strip())
     assert entry["arch"] == "llama"
     assert entry["source"] == "tensor-scan"
+    assert entry["ctk"] == "f16"
+    assert entry["ctv"] == "f16"
+    assert entry["legacy_exact"] is False
 
 
 def test_never_raises_on_a_broken_file(tmp_path, monkeypatch):

@@ -17,7 +17,12 @@ from pathlib import Path
 
 import gguf
 
-_LAYER_RE = re.compile(r"(?:blk|layers?)\.(\d+)\.")
+# Layer-index patterns in tensor names. Must recognise the same set as
+# estimates._N_LAYER_PATTERNS so the two implementations never disagree about
+# which architectures have a discoverable attention-layer count: blk.N,
+# block.N, model.layers.N / transformer.layer.N, and .h[N]. (transformer.layer
+# and model.layers both match the trailing `layers?\.` alternative here.)
+_LAYER_RE = re.compile(r"\.h\[(\d+)\]\.|blk\.(\d+)\.|block\.(\d+)\.|layers?\.(\d+)\.")
 
 _ATTN_SUFFIXES = (".attn_k.weight", ".attn_v.weight")
 _ATTN_SUBSTRINGS = (".k_proj.", ".v_proj.", "attn_k", "attn_v")
@@ -47,6 +52,7 @@ class ArchFacts:
     ssm_conv_kernel: int | None
     ssm_state_size: int | None
     ssm_inner_size: int | None
+    ssm_group_count: int | None
     source: str  # "tensor-scan" | "interval-metadata" | "assumed-dense"
 
     @property
@@ -74,8 +80,19 @@ def _int(meta: dict, key: str) -> int | None:
 
 
 def _layer_index(name: str) -> int | None:
+    """Extract the transformer-layer index from a tensor name, or None.
+
+    ``_LAYER_RE`` has one capture group per alternative, so exactly one group
+    binds on a match -- return the first that did (mirrors
+    ``estimates._layer_index_from_tensor``).
+    """
     match = _LAYER_RE.search(name)
-    return int(match.group(1)) if match else None
+    if not match:
+        return None
+    for group in match.groups():
+        if group is not None:
+            return int(group)
+    return None
 
 
 def _is_attn_tensor(name: str) -> bool:
@@ -166,6 +183,7 @@ def _facts_from_kv_and_tensors(meta: dict, tensor_names: list[str]) -> ArchFacts
         ssm_conv_kernel=_int(meta, f"{arch}.ssm.conv_kernel") if arch else None,
         ssm_state_size=_int(meta, f"{arch}.ssm.state_size") if arch else None,
         ssm_inner_size=_int(meta, f"{arch}.ssm.inner_size") if arch else None,
+        ssm_group_count=_int(meta, f"{arch}.ssm.group_count") if arch else None,
         source=source,
     )
 
@@ -174,6 +192,18 @@ def _facts_from_kv_and_tensors(meta: dict, tensor_names: list[str]) -> ArchFacts
 # tensor's metadata. Memoise per process, keyed on size+mtime so an edited or
 # replaced file is re-read. This mirrors ``estimates._gguf_meta_mem``.
 _facts_memo: dict[str, tuple[tuple[int, int], ArchFacts]] = {}
+
+# On-disk cache mirroring estimates._meta_cache_file/_load_meta_cache/
+# _store_meta_cache: same cache_dir(), a distinct filename so the two caches
+# never collide, and its own version constant so a change to ArchFacts's shape
+# invalidates old entries instead of crashing on them. Without this, shadow
+# mode reopens the multi-GB header on the first estimate after every server
+# restart (~5.5s measured on a real file) -- the in-process memo above only
+# helps within one process's lifetime.
+_FACTS_CACHE_FILENAME = "truth_facts_cache.json"
+_FACTS_CACHE_VERSION = 1  # bump when ArchFacts's fields change
+
+_ARCHFACTS_FIELDS = tuple(ArchFacts.__dataclass_fields__)
 
 
 def _signature(path: Path | str) -> tuple[int, int] | None:
@@ -184,12 +214,73 @@ def _signature(path: Path | str) -> tuple[int, int] | None:
         return None
 
 
+def _facts_cache_file() -> Path | None:
+    try:
+        from ..paths import cache_dir
+        return cache_dir() / _FACTS_CACHE_FILENAME
+    except Exception:
+        return None
+
+
+def _load_facts_cache() -> dict:
+    path = _facts_cache_file()
+    if not path or not path.is_file():
+        return {}
+    try:
+        import json
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if data.get("_version", 1) != _FACTS_CACHE_VERSION:
+            return {}
+        return data
+    except Exception:
+        return {}
+
+
+def _facts_from_cache_entry(entry: dict) -> ArchFacts:
+    kwargs = {name: entry.get(name) for name in _ARCHFACTS_FIELDS}
+    kwargs["attn_layer_indices"] = tuple(entry.get("attn_layer_indices") or ())
+    return ArchFacts(**kwargs)
+
+
+def _store_facts_cache(key: str, sig: tuple[int, int], facts: ArchFacts) -> None:
+    path = _facts_cache_file()
+    if not path:
+        return
+    try:
+        import dataclasses
+        import json
+        data = _load_facts_cache()
+        data["_version"] = _FACTS_CACHE_VERSION
+        entry = dataclasses.asdict(facts)
+        entry["attn_layer_indices"] = list(entry["attn_layer_indices"])
+        entry["size"] = sig[0]
+        entry["mtime"] = sig[1]
+        data[key] = entry
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(json.dumps(data), encoding="utf-8")
+        tmp.replace(path)
+    except Exception:
+        pass
+
+
 def read_facts(path: Path | str) -> ArchFacts:
     key = str(path)
     sig = _signature(key)
     cached = _facts_memo.get(key)
     if cached is not None and sig is not None and cached[0] == sig:
         return cached[1]
+
+    if sig is not None:
+        disk_entry = _load_facts_cache().get(key)
+        if (disk_entry and disk_entry.get("size") == sig[0]
+                and disk_entry.get("mtime") == sig[1]):
+            try:
+                facts = _facts_from_cache_entry(disk_entry)
+                _facts_memo[key] = (sig, facts)
+                return facts
+            except Exception:
+                pass  # corrupt/unreadable entry: fall through and recompute
 
     reader = gguf.GGUFReader(key)
     meta: dict = {}
@@ -209,6 +300,7 @@ def read_facts(path: Path | str) -> ArchFacts:
     facts = _facts_from_kv_and_tensors(meta, [t.name for t in reader.tensors])
     if sig is not None:
         _facts_memo[key] = (sig, facts)
+        _store_facts_cache(key, sig, facts)
     return facts
 
 

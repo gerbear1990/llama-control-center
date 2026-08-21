@@ -13,6 +13,7 @@ def _facts(**over) -> ArchFacts:
         total_kv_heads=22, k_len=256, v_len=256, native_ctx=262144,
         n_experts=256, n_experts_used=8, has_mtp=True, needs_mmproj=True,
         ssm_conv_kernel=4, ssm_state_size=128, ssm_inner_size=4096,
+        ssm_group_count=16,
         source="tensor-scan",
     )
     base.update(over)
@@ -45,15 +46,30 @@ def test_undercounting_the_mtp_layer_is_the_9_percent_bug():
 
 
 def test_ssm_state_is_constant_in_context():
-    """30 SSM layers x (conv 4096x3 + state 4096x128) x 4 bytes f32."""
+    """llama.cpp's conv term is (d_conv-1) x (d_inner + 2 x n_group x d_state):
+    conv_width = 4096 + 2*16*128 = 8192; conv = 8192 x 3 = 24576.
+    state = 4096 x 128 = 524288.
+    per layer = (24576 + 524288) x 4 bytes = 2195456.
+    30 SSM layers x 2195456 = 65863680 bytes = 62.8125 MiB."""
     facts = _facts()
+    conv_width = 4096 + 2 * 16 * 128
+    assert kv.ssm_state_bytes(facts) == 30 * (conv_width * 3 + 4096 * 128) * 4
+    assert kv.ssm_state_bytes(facts) == 65863680
+    assert round(kv.ssm_state_bytes(facts) / 1024 ** 2) == 63
+
+
+def test_ssm_state_without_group_count_matches_the_plain_formula():
+    """A missing group_count is treated as 0, reducing the conv term to plain
+    inner_size x (conv_kernel - 1) -- the formula before Finding 5."""
+    facts = _facts(ssm_group_count=None)
     assert kv.ssm_state_bytes(facts) == 30 * (4096 * 3 + 4096 * 128) * 4
     assert round(kv.ssm_state_bytes(facts) / 1024 ** 2) == 61
 
 
 def test_dense_model_has_no_ssm_state():
     facts = _facts(n_layers=32, attn_layer_indices=tuple(range(32)),
-                   ssm_conv_kernel=None, ssm_state_size=None, ssm_inner_size=None)
+                   ssm_conv_kernel=None, ssm_state_size=None, ssm_inner_size=None,
+                   ssm_group_count=None)
     assert kv.ssm_state_bytes(facts) == 0
 
 
@@ -70,8 +86,9 @@ def test_breakdown_totals():
     assert result.total_bytes == (
         result.weights_bytes + result.mmproj_bytes + result.kv_bytes + result.ssm_bytes
     )
-    # 24.0374 weights + 0.8382 mmproj + 2.9219 KV + 0.0600 SSM = 27.8575 GiB.
-    # (The spec's 27.8 figure predates SSM state being counted.)
+    # 24.0374 weights + 0.8382 mmproj + 2.9219 KV + 0.0613 SSM = 27.8589 GiB.
+    # (The spec's 27.8 figure predates SSM state being counted; the SSM figure
+    # itself grew slightly under Finding 5's group-count-aware conv term.)
     assert round(result.total_bytes / GIB, 1) == 27.9
     assert result.provenance == "computed"
 
@@ -85,8 +102,20 @@ def test_breakdown_is_unknown_when_kv_dims_missing():
 
 @pytest.mark.parametrize("name,expected", [
     ("f16", 2.0), ("F16", 2.0), ("bf16", 2.0), ("f32", 4.0),
-    ("q8_0", 1.0625), ("q5_1", 0.75), ("q4_0", 0.5),
+    ("q8_0", 1.0625), ("q5_1", 0.75), ("q4_0", 0.5625), ("q4_1", 0.625),
+    ("nvfp4", 0.5625), ("mxfp4", 0.53125),
     (None, 2.0), ("nonsense", 2.0),
 ])
 def test_cache_bytes_per_elem(name, expected):
     assert kv.cache_bytes_per_elem(name) == expected
+
+
+@pytest.mark.parametrize("name", [
+    "f32", "f16", "bf16", "q8_0", "q6_k", "q5_0", "q5_1", "q4_0", "q4_1",
+    "iq4_nl", "nvfp4", "mxfp4", "Q8_0", "q5", "q4", "nonsense", None,
+])
+def test_cache_bytes_matches_legacy_estimator(name):
+    """Guards against Finding 1's row-shifted-table bug recurring: the truth
+    layer's cache-byte table must never silently drift from the legacy one."""
+    from lcc_core.estimates import _cache_bytes
+    assert kv.cache_bytes_per_elem(name) == _cache_bytes(name)

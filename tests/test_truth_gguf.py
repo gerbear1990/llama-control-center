@@ -62,6 +62,84 @@ def test_read_facts_memoises_on_size_and_mtime(tmp_path):
     assert read_facts(path) is read_facts(path)
 
 
+def test_read_facts_recognises_block_dot_n_tensor_naming(tmp_path):
+    """Finding 2: ``block.N.`` naming (not just ``blk.N.``) must be recognised,
+    or attention tensors are found but their layer index is lost, falsely
+    reporting source == "assumed-dense" instead of "tensor-scan"."""
+    attn = [0, 1, 2, 3]
+    path = write_minimal_gguf(
+        tmp_path / "block_naming.gguf",
+        arch="llama",
+        n_layer=4,
+        attn_layers=attn,
+        n_kv_heads=8,
+        k_len=128,
+        v_len=128,
+        tensor_prefix="block",
+    )
+    facts = read_facts(path)
+    assert facts.source == "tensor-scan"
+    assert facts.attn_layer_indices == tuple(attn)
+    assert facts.total_kv_heads == 32          # 4 layers x 8 KV heads
+    assert facts.n_ssm_layers == 0
+
+
+def test_read_facts_served_from_disk_cache_in_a_fresh_process(tmp_path, monkeypatch):
+    """Finding 3: the on-disk cache must survive a 'fresh process' (empty
+    in-process memo) so shadow mode doesn't stall ~5.5s on the first estimate
+    after every server restart."""
+    import lcc_core.truth.gguf as truth_gguf
+
+    path = write_minimal_gguf(
+        tmp_path / "diskcache.gguf",
+        arch="llama",
+        n_layer=4,
+        attn_layers=[0, 1, 2, 3],
+        n_kv_heads=2,
+        k_len=64,
+        v_len=64,
+    )
+    monkeypatch.setattr(truth_gguf, "_facts_cache_file", lambda: tmp_path / "facts_cache.json")
+
+    first = read_facts(path)
+
+    # Simulate a fresh process: the in-process memo is empty, but the on-disk
+    # cache written by the first read survives.
+    truth_gguf._facts_memo.clear()
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("read_facts reopened the file instead of using the disk cache")
+
+    monkeypatch.setattr(truth_gguf.gguf, "GGUFReader", _boom)
+
+    second = read_facts(path)
+    assert second == first
+
+
+def test_read_facts_degrades_to_recompute_on_a_corrupt_disk_cache(tmp_path, monkeypatch):
+    """A corrupt or unwritable disk cache must never raise -- it must degrade
+    to recomputing from the file."""
+    import lcc_core.truth.gguf as truth_gguf
+
+    path = write_minimal_gguf(
+        tmp_path / "corrupt.gguf",
+        arch="llama",
+        n_layer=4,
+        attn_layers=[0, 1, 2, 3],
+        n_kv_heads=2,
+        k_len=64,
+        v_len=64,
+    )
+    cache_file = tmp_path / "facts_cache.json"
+    cache_file.write_text("{not valid json", encoding="utf-8")
+    monkeypatch.setattr(truth_gguf, "_facts_cache_file", lambda: cache_file)
+    truth_gguf._facts_memo.clear()
+
+    facts = read_facts(path)
+    assert facts.arch == "llama"
+    assert facts.n_layers == 4
+
+
 ORNITH = Path(r"C:\Users\filth\models\Ornith-1.5-35B-A3B-GGUF\Ornith-1.5-35B-A3B-Q5_K_L.gguf")
 
 
@@ -81,6 +159,7 @@ def test_golden_ornith():
     assert facts.is_hybrid and facts.n_ssm_layers == 30
     assert facts.ssm_conv_kernel == 4 and facts.ssm_state_size == 128
     assert facts.ssm_inner_size == 4096
+    assert facts.ssm_group_count == 16
 
 
 def test_parse_header_bytes_matches_reader(tmp_path):

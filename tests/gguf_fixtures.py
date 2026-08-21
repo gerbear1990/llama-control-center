@@ -21,12 +21,17 @@ def write_minimal_gguf(
     k_len: int,
     v_len: int,
     extra_kv: dict | None = None,
+    tensor_prefix: str = "blk",
 ) -> Path:
     """Write a GGUF whose header says `arch`/`n_layer` and whose tensor list
     carries `attn_k.weight`/`attn_v.weight` only for the layers in `attn_layers`.
 
     `extra_kv` adds raw uint32 metadata keys (e.g. full_attention_interval),
     written under the `arch.` prefix.
+
+    `tensor_prefix` controls the per-layer tensor naming convention (default
+    `"blk"`, i.e. `blk.{i}.attn_k.weight`); pass e.g. `"block"` to exercise
+    the other conventions `_LAYER_RE` recognises.
     """
     writer = gguf.GGUFWriter(str(path), arch)
     writer.add_uint32(f"{arch}.block_count", n_layer)
@@ -41,8 +46,8 @@ def write_minimal_gguf(
 
     tiny = np.zeros((2, 2), dtype=np.float32)
     for idx in attn_layers:
-        writer.add_tensor(f"blk.{idx}.attn_k.weight", tiny)
-        writer.add_tensor(f"blk.{idx}.attn_v.weight", tiny)
+        writer.add_tensor(f"{tensor_prefix}.{idx}.attn_k.weight", tiny)
+        writer.add_tensor(f"{tensor_prefix}.{idx}.attn_v.weight", tiny)
 
     writer.write_header_to_file()
     writer.write_kv_data_to_file()
