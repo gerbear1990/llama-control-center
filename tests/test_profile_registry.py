@@ -281,5 +281,65 @@ class DraftModelDetectionTests(unittest.TestCase):
         self.assertTrue(_is_draft_model("Tiny-0.5B-draft-Q8_0.gguf"))
 
 
+class EmbeddedMtpResolutionTests(unittest.TestCase):
+    """Issue #14: whether a draft model is required is a property of the file.
+
+    Before this, the resolver decided from the profile's mode/name/description,
+    so any profile with "MTP" in its text was unlaunchable without a companion
+    file -- including Qwen3.5/3.6/3.8, which carry the MTP head inside the GGUF.
+    """
+
+    # A complete llama.cpp param set, so `launchable` reflects the MTP decision
+    # rather than unrelated missing required keys.
+    _BASE_PARAMS = {
+        "ctx_size": 4096, "threads": 8, "gpu_layers": "all",
+        "cache_type_k": "q8_0", "cache_type_v": "q8_0",
+    }
+
+    def _resolve(self, *, has_mtp, params=None, model=True):
+        from unittest import mock
+        from lcc_core import profile_resolver
+        from lcc_core.schema import ModelFile, ModelProfile
+
+        profile = ModelProfile(
+            mode="qwen3.8-27b-mtp",
+            name="Qwen3.8-27B MTP",
+            description="",
+            model_path=r"C:\models\Qwen3.8-27B-NVFP4-MTP-Q8attn.gguf",
+        )
+        candidate = ModelFile(
+            id="x",
+            name="Qwen3.8-27B-NVFP4-MTP-Q8attn",
+            path=r"C:\models\Qwen3.8-27B-NVFP4-MTP-Q8attn.gguf",
+            source="scan",
+            format="GGUF",
+            size_bytes=10,
+        ) if model else None
+        with mock.patch.object(profile_resolver, "_has_builtin_mtp", return_value=has_mtp):
+            merged = {**self._BASE_PARAMS, **(params or {})}
+            return profile_resolver._validate_resolved(profile, candidate, merged, 1.0)
+
+    def test_builtin_mtp_needs_no_draft_model(self) -> None:
+        launchable, _, missing = self._resolve(has_mtp=True)
+        self.assertTrue(launchable)
+        self.assertNotIn("draft_model", missing)
+
+    def test_no_builtin_mtp_still_requires_a_draft_model(self) -> None:
+        _, _, missing = self._resolve(has_mtp=False)
+        self.assertIn("draft_model", missing)
+
+    def test_unreadable_model_keeps_the_old_behaviour_and_warns(self) -> None:
+        _, warnings, missing = self._resolve(has_mtp=None)
+        self.assertIn("draft_model", missing)
+        self.assertTrue(any("could not read" in w.lower() for w in warnings))
+
+    def test_explicit_draft_model_is_still_validated(self) -> None:
+        _, warnings, missing = self._resolve(
+            has_mtp=True, params={"draft_model": r"C:\models\does-not-exist.gguf"}
+        )
+        self.assertIn("draft_model", missing)
+        self.assertTrue(any("does not exist" in w.lower() for w in warnings))
+
+
 if __name__ == "__main__":
     unittest.main()

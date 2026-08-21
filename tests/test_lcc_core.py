@@ -524,10 +524,13 @@ class LaunchArgsTests(unittest.TestCase):
         self.assertIn("--gpu-layers", cmd.argv)
         self.assertIn("all", cmd.argv)
         self.assertIn("--model-draft", cmd.argv)
-        # Upstream only knows --draft-max, and --spec-type is for speculation
-        # *without* a draft model, so it must not ride along with --model-draft.
+        # Upstream only knows --draft-max, not --spec-draft-n-max.
         self.assertNotIn("--spec-draft-n-max", cmd.argv)
-        self.assertNotIn("--spec-type", cmd.argv)
+        # --spec-type IS emitted alongside --model-draft: upstream treats the two
+        # as independent, and an explicit type overrides the inference llama.cpp
+        # would otherwise make from the draft sidecar/GGUF metadata.
+        # Verified against build 10472 (upstream 60eeeb608).
+        self.assertEqual(cmd.argv[cmd.argv.index("--spec-type") + 1], "draft-mtp")
         self.assertEqual(cmd.argv[cmd.argv.index("--draft-max") + 1], "4")
         self.assertIn("--temp", cmd.argv)
         self.assertIn("0.7", cmd.argv)
@@ -537,10 +540,37 @@ class LaunchArgsTests(unittest.TestCase):
         self.assertIn("--no-kv-offload", cmd.argv)
         self.assertIn("--no-op-offload", cmd.argv)
 
-    def test_spec_type_only_emitted_without_draft_model_and_when_supported(self) -> None:
+    def test_spec_type_emits_every_supported_value(self) -> None:
+        # Was test_spec_type_only_emitted_without_draft_model_and_when_supported,
+        # which asserted draft-mtp was unsupported. That mirrored the April source
+        # clone in tools/llama.cpp-source; the installed binary (build 10472,
+        # upstream 60eeeb608) accepts the whole draft-* family.
         cmd = build_llama_server_args("llama-server", "m.gguf", {"spec_type": "ngram-cache"})
         self.assertEqual(cmd.argv[cmd.argv.index("--spec-type") + 1], "ngram-cache")
-        bogus = build_llama_server_args("llama-server", "m.gguf", {"spec_type": "draft-mtp"})
+        # The embedded-MTP case from issue #14.
+        mtp = build_llama_server_args("llama-server", "m.gguf", {"spec_type": "draft-mtp"})
+        self.assertEqual(mtp.argv[mtp.argv.index("--spec-type") + 1], "draft-mtp")
+        self.assertFalse(mtp.warnings)
+
+    def test_spec_type_accepts_a_comma_separated_list(self) -> None:
+        # Upstream splits on ',' and appends each name to speculative.types.
+        cmd = build_llama_server_args(
+            "llama-server", "m.gguf", {"spec_type": "draft-mtp, ngram-cache"}
+        )
+        self.assertEqual(cmd.argv[cmd.argv.index("--spec-type") + 1], "draft-mtp,ngram-cache")
+        self.assertFalse(cmd.warnings)
+
+    def test_spec_type_drops_only_the_unsupported_entries(self) -> None:
+        cmd = build_llama_server_args(
+            "llama-server", "m.gguf", {"spec_type": "draft-mtp,not-a-real-type"}
+        )
+        # An unsupported value makes llama-server exit before it listens, so it is
+        # dropped -- but it must not take the valid entries down with it.
+        self.assertEqual(cmd.argv[cmd.argv.index("--spec-type") + 1], "draft-mtp")
+        self.assertTrue(any("not-a-real-type" in warning for warning in cmd.warnings))
+
+    def test_spec_type_wholly_unsupported_is_not_emitted(self) -> None:
+        bogus = build_llama_server_args("llama-server", "m.gguf", {"spec_type": "nonsense"})
         self.assertNotIn("--spec-type", bogus.argv)
         self.assertTrue(bogus.warnings)
 

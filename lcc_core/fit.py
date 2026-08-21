@@ -95,6 +95,18 @@ FIT_APPLY_KEYS = {
 
 
 def build_fit_args(fit_binary: str, model_path: str, params: dict[str, Any], target_mib: int = 1024) -> list[str]:
+    """Build the llama-fit-params argv for a profile.
+
+    Speculative decoding, deliberately (issue #14 follow-up):
+
+    - **Embedded MTP** (Qwen3.5/3.6/3.8) needs nothing here. The MTP head lives
+      inside the same GGUF passed as ``-m``, so llama-fit-params already reads
+      those tensors and prices them. They are not "dead capacity".
+    - **A separate draft model** is NOT priced. ``draft_model`` is never passed
+      through, so for a profile using a companion file the estimate under-counts
+      by roughly the whole draft model. Tracked in the ROADMAP backlog; fixing it
+      means teaching llama-fit-params about the draft, not just appending a flag.
+    """
     gpu_layers = normalize_gpu_layers(params.get("gpu_layers"))
     if gpu_layers is None:
         gpu_layers = 999

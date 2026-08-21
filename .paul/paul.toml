@@ -21,12 +21,12 @@ phases = 6
 [phase]
 number = 2
 name = "Embedded-MTP Support"
-status = "planning"
+status = "in_progress"
 plans_completed = 0
 
 # ─── Loop ────────────────────────────────────────────────────
 [loop]
-position = "PLAN"
+position = "APPLY"
 plan = "02-01"
 plan_path = "phases/02-embedded-mtp/02-01-PLAN.md"
 

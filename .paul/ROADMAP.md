@@ -145,6 +145,17 @@ Carried from the retired planning docs; promote into a phase when a milestone pi
 - `AppConfig.load()` re-reads config.json per endpoint — mtime-checked cached loader
 - Startup autoscan blocks the ASGI lifespan — move to a background task
 
+**Found during Phase 2 (2026-08-21):**
+- **Fit under-counts a separate draft model.** `fit.build_fit_args()` never passes
+  `draft_model`, so a profile using a companion draft file is estimated as if the draft
+  weren't loaded — under-counting by roughly the whole draft model. (Embedded MTP is fine:
+  those tensors are in the `-m` file and already priced.) Needs llama-fit-params to learn
+  about the draft, not just a flag.
+- **`SPEC_TYPES` drifted from the installed binary and nothing caught it.** It mirrored
+  `tools/llama.cpp-source` (April, `71a81f6fc`) while the binary is build 10472
+  (`60eeeb608`, August) — five `draft-*` values missing. Worth a startup check that
+  reconciles known flag vocabularies against `llama-server --help`.
+
 **Features:**
 - **[M4.1]** Quant picker: repo file listing × `fit.py` verdict per quant
 - **[M4.4]** Ollama integration — discovery, launch/status, pulls, updates

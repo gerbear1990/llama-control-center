@@ -18,12 +18,12 @@ See: .paul/PROJECT.md (updated 2026-08-21)
 Milestone: v0.17.0 — Close the Open Loops (0.17.0)
 Phase: 2 of 6 (Embedded-MTP Support)
 Plan: 1 of 1 in current phase (02-01)
-Status: Planning — plan written, awaiting approval
-Last activity: 2026-08-21 — WIP landed (cb1818f, 820e873, ad85599); Phase 1 complete; Phase 2 planned
+Status: Applying — all auto tasks done, blocked on the human-verify checkpoint
+Last activity: 2026-08-21 — Phase 2 T1/T3/T4/T5/T6 applied; awaiting human-verify (launch a real MTP model)
 
 Progress:
 - Milestone: [█░░░░░░░░░] 17% (1 of 6 phases)
-- Phase: [░░░░░░░░░░] 0%
+- Phase: [████████░░] 83% (5 of 6 tasks; human-verify pending)
 
 ## Loop Position
 

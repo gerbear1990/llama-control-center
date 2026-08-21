@@ -175,6 +175,32 @@ def _resolved_params(profile: ModelProfile) -> dict[str, Any]:
     return params
 
 
+def _has_builtin_mtp(model_path: str) -> bool | None:
+    """Does this GGUF carry its own MTP head? None when the file can't be read.
+
+    Qwen3.5/3.6/3.8 ship the multi-token-prediction head inside the model file,
+    so they speculate without a separate draft model. Ask the file rather than
+    the profile's name: "MTP" is also just a product-name token
+    (NVFP4-MTP-Q8attn), which is what made issue #14 misfire in both directions.
+
+    ``read_facts`` is memoized in-process and cached on disk on (size, mtime) --
+    a cold header read measured ~5.5s -- so calling this per resolve is cheap
+    after the first read. Do not add another cache.
+
+    Imported lazily, mirroring how estimates.py reaches .truth.shadow, so the
+    resolver still imports if the truth layer is unavailable. The except is
+    broad on purpose: a truncated or non-GGUF file surfaces as struct/ValueError
+    from the gguf package, and an unreadable model must degrade to the old
+    text-based behaviour rather than take resolution down with it.
+    """
+    try:
+        from .truth.gguf import read_facts
+
+        return bool(read_facts(model_path).has_mtp)
+    except Exception:
+        return None
+
+
 def _validate_resolved(profile: ModelProfile, model: ModelFile | None, params: dict[str, Any], confidence: float) -> tuple[bool, list[str], list[str]]:
     warnings = list(profile.portable_warnings)
     missing: list[str] = []
@@ -187,12 +213,25 @@ def _validate_resolved(profile: ModelProfile, model: ModelFile | None, params: d
     text = " ".join([profile.mode, profile.name, profile.description]).lower()
     if "mtp" in text and runtime == "llama.cpp":
         draft_model = str(params.get("draft_model", "")).strip()
-        if not draft_model:
+        # The profile's text is only the cheap gate for *when to ask*. Whether a
+        # draft model is actually required is a property of the model file.
+        builtin_mtp = _has_builtin_mtp(model.path) if model else None
+        if draft_model:
+            if not Path(draft_model).expanduser().exists():
+                missing.append("draft_model")
+                warnings.append(f"Draft model does not exist: {draft_model}")
+        elif builtin_mtp:
+            # Head is inside the GGUF -- llama.cpp speculates via
+            # `--spec-type draft-mtp` with no companion file. Requiring one here
+            # is what made these profiles unlaunchable (issue #14).
+            pass
+        else:
             missing.append("draft_model")
-        elif not Path(draft_model).expanduser().exists():
-            missing.append("draft_model")
-            warnings.append(f"Draft model does not exist: {draft_model}")
-        if model and "mtp" not in model.path.lower() and "gemma" not in text:
+            if builtin_mtp is None and model:
+                warnings.append(
+                    "Could not read MTP support from the model file; assuming a draft model is required."
+                )
+        if builtin_mtp is False and "gemma" not in text:
             warnings.append("MTP profile matched a non-MTP model path; this may require a WSL or custom backend.")
 
     required = (
