@@ -146,6 +146,11 @@ Carried from the retired planning docs; promote into a phase when a milestone pi
 - Startup autoscan blocks the ASGI lifespan — move to a background task
 
 **Found during Phase 2 (2026-08-21):**
+- **`_next_free_port` can't suggest anything on a default Windows host.** It only searches
+  *upward*, and treats the dynamic range as reserved — but that range is 49152–65535 by
+  default, so bumping past it leaves the port space entirely and returns None. The crash
+  this caused is fixed; the unhelpfulness isn't. Searching below the dynamic range (or
+  preferring the 8000–48000 band) would actually give the operator a usable port.
 - **Fit under-counts a separate draft model.** `fit.build_fit_args()` never passes
   `draft_model`, so a profile using a companion draft file is estimated as if the draft
   weren't loaded — under-counting by roughly the whole draft model. (Embedded MTP is fine:

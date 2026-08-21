@@ -152,8 +152,15 @@ def tail_file(path: str | Path | None, lines: int = 120) -> str:
 # on a busy port can make subsequent probes return ``ECONNREFUSED``,
 # which a connect-based probe would misinterpret as "free". The bind
 # probe doesn't have that failure mode.
+MAX_PORT = 65535
+
+
 def _is_port_free(host: str, port: int, *, timeout: float = 0.6) -> bool:
-    if not port or port <= 0:
+    # Upper bound matters as much as the lower one: bind() raises
+    # OverflowError (not OSError) above 65535, which the except below would
+    # not catch. _next_free_port can reach here with 65536 by bumping past a
+    # dynamic range that ends at exactly MAX_PORT.
+    if not port or port <= 0 or port > MAX_PORT:
         return False
     probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
@@ -192,6 +199,11 @@ def _next_free_port(host: str, start: int, *, max_tries: int = 50) -> int | None
             start = dyn["end"] + 1
     for offset in range(max_tries):
         candidate = start + offset
+        if candidate > MAX_PORT:
+            # Walked off the end of the port space. Windows' dynamic range
+            # routinely ends at exactly 65535, so bumping past it puts `start`
+            # at 65536 before the first probe.
+            return None
         if _is_port_free(host, candidate):
             return candidate
     return None

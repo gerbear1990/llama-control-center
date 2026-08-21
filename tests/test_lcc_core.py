@@ -2234,16 +2234,38 @@ class PortAvailabilityTests(unittest.TestCase):
     def test_next_free_port_skips_windows_reserved_range(self):
         if sys.platform != "win32":
             self.skipTest("reserved-range skip is Windows-only")
-        from lcc_core.server_manager import _next_free_port, _windows_dynamic_port_range
+        from lcc_core.server_manager import MAX_PORT, _next_free_port, _windows_dynamic_port_range
         rng = _windows_dynamic_port_range()
         if rng is None:
             self.skipTest("netsh not available")
-        # Start *inside* the reserved range. The first free port above it
-        # should land past the range end, not at ``start + 1``.
+        # Start *inside* the reserved range. The search must skip past the
+        # range end rather than returning ``start + 1``.
+        #
+        # On a default Windows host the dynamic range is 49152-65535, i.e. it
+        # runs to the end of the port space, so there is no port above it to
+        # find. The contract is therefore: either a port above the range end,
+        # or None -- never a port inside the range, and never a crash.
         start = rng["start"] + 1000  # safely inside the range
         chosen = _next_free_port("127.0.0.1", start)
-        self.assertIsNotNone(chosen)
-        self.assertGreater(chosen, rng["end"])
+        if rng["end"] >= MAX_PORT:
+            self.assertIsNone(chosen)
+        else:
+            self.assertIsNotNone(chosen)
+            self.assertGreater(chosen, rng["end"])
+
+    def test_port_above_the_port_space_is_never_probed(self):
+        # bind() raises OverflowError above 65535 -- not OSError -- so an
+        # unguarded probe crashed instead of reporting "not free". Reached in
+        # practice by bumping past a dynamic range that ends at exactly 65535.
+        from lcc_core.server_manager import MAX_PORT, _is_port_free, _next_free_port
+        self.assertFalse(_is_port_free("127.0.0.1", MAX_PORT + 1))
+        self.assertFalse(_is_port_free("127.0.0.1", 999999))
+        self.assertIsNone(_next_free_port("127.0.0.1", MAX_PORT + 1))
+        # Whatever the walk returns near the boundary, it must be a real port.
+        # (Asserting None here instead would be host-dependent: on Windows the
+        # dynamic range swallows 65535, on Linux it may well be bindable.)
+        near = _next_free_port("127.0.0.1", MAX_PORT - 2, max_tries=5)
+        self.assertTrue(near is None or 0 < near <= MAX_PORT)
 
     def test_next_free_port_returns_none_when_all_bound(self):
         from lcc_core.server_manager import _next_free_port
@@ -2362,10 +2384,19 @@ class PortAvailabilityTests(unittest.TestCase):
         self.assertFalse(probe["free"])
         self.assertEqual(probe["reason"], "reserved")
         self.assertIn("range", probe)
-        # Suggested port must be above the range end, not just port + 1.
+        # Suggested port must be above the range end, not just port + 1 --
+        # unless the reserved space runs to the end of the port range, in
+        # which case there is nothing above it and None is the honest answer.
+        from lcc_core.server_manager import MAX_PORT, _windows_dynamic_port_range
         above = _next_free_port("127.0.0.1", port)
-        self.assertIsNotNone(above)
-        self.assertGreater(above, rng["end"])
+        dyn = _windows_dynamic_port_range()
+        no_room = rng["end"] >= MAX_PORT or (dyn and dyn["end"] >= MAX_PORT
+                                             and dyn["start"] <= rng["end"] + 1 <= dyn["end"])
+        if no_room:
+            self.assertIsNone(above)
+        else:
+            self.assertIsNotNone(above)
+            self.assertGreater(above, rng["end"])
 
 
 import gguf as _gguf_pkg
