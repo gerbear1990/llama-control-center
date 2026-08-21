@@ -18,7 +18,12 @@
 - **Never start the LCC API from an agent session** — startup autoscan rewrites `models.json`.
 - The repository has pre-existing uncommitted changes in `lcc_api/app.py`, `lcc_api/static/app.js`, `lcc_api/static/index.html`, `lcc_api/static/styles.css` and `TODO.md`. These belong to the operator. Do not stage, revert, or commit them.
 - Tests must not depend on multi-gigabyte model files. Use synthetic GGUF fixtures.
-- Run tests with `.venv/Scripts/python.exe -m pytest` from the repository root.
+- **Run tests with `C:/Users/filth/AppData/Local/Programs/Python/Python313/python.exe -m pytest` from the repository root.** The project `.venv` does NOT have pytest installed; the system Python 3.13 does (pytest 9.1.1, gguf, numpy). Every `.venv/Scripts/python.exe` command in the task steps below should use this interpreter instead.
+- **Known-failing baseline on this branch (NOT caused by this work — do not fix, do not chase):**
+  `tests/test_launch_smoke.py::LaunchSmokeTests::test_launch_smoke_18717`,
+  `tests/test_lcc_core.py::PortAvailabilityTests::test_next_free_port_skips_windows_reserved_range`,
+  `tests/test_lcc_core.py::PortAvailabilityTests::test_windows_reserved_range_detected_via_probe`.
+  A clean checkout of the base commit reports `3 failed, 176 passed, 4 skipped`. Your task is done when your new tests pass and no NEW failure appears.
 
 **Scope:** This plan covers steps 0-3 of the spec's sequencing, stopping at shadow mode. Flipping the displayed numbers over to the truth layer is deliberately deferred to a follow-up plan, because that decision should be made with real divergence data in hand rather than in advance. Steps 4-6 (`build.py`, `observed.py`, `relevance.py`) get their own plan.
 
@@ -147,7 +152,7 @@ def test_attn_layer_count_falls_back_to_interval_when_no_tensors_match(tmp_path)
 
 - [ ] **Step 3: Run tests to verify the first fails**
 
-Run: `.venv/Scripts/python.exe -m pytest tests/test_lcc_core.py -k attn_layer_count -v`
+Run: `C:/Users/filth/AppData/Local/Programs/Python/Python313/python.exe -m pytest tests/test_lcc_core.py -k attn_layer_count -v`
 
 Expected: `test_attn_layer_count_prefers_tensor_scan_over_interval` FAILS with `assert 10 == 11`. The fallback test PASSES already.
 
@@ -218,7 +223,7 @@ _KV_META_CACHE_VERSION = 4  # bump when kv_dims computation changes to invalidat
 
 - [ ] **Step 6: Run the full suite**
 
-Run: `.venv/Scripts/python.exe -m pytest tests/ -v`
+Run: `C:/Users/filth/AppData/Local/Programs/Python/Python313/python.exe -m pytest tests/ -v`
 
 Expected: PASS, including both new tests. If any pre-existing test asserted the old count for a hybrid fixture, that assertion encoded the bug — update it and say so in the commit body.
 
@@ -227,7 +232,7 @@ Expected: PASS, including both new tests. If any pre-existing test asserted the 
 Run:
 
 ```bash
-.venv/Scripts/python.exe -c "
+C:/Users/filth/AppData/Local/Programs/Python/Python313/python.exe -c "
 import sys; sys.path.insert(0,'.')
 from lcc_core import estimates as E
 import gguf
@@ -337,7 +342,7 @@ def test_read_facts_memoises_on_size_and_mtime(tmp_path):
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `.venv/Scripts/python.exe -m pytest tests/test_truth_gguf.py -v`
+Run: `C:/Users/filth/AppData/Local/Programs/Python/Python313/python.exe -m pytest tests/test_truth_gguf.py -v`
 
 Expected: FAIL with `ModuleNotFoundError: No module named 'lcc_core.truth'`
 
@@ -568,7 +573,7 @@ def read_facts(path: Path | str) -> ArchFacts:
 
 - [ ] **Step 5: Run tests to verify they pass**
 
-Run: `.venv/Scripts/python.exe -m pytest tests/test_truth_gguf.py -v`
+Run: `C:/Users/filth/AppData/Local/Programs/Python/Python313/python.exe -m pytest tests/test_truth_gguf.py -v`
 
 Expected: PASS (3 tests)
 
@@ -603,7 +608,7 @@ def test_golden_ornith():
 
 - [ ] **Step 7: Run the golden test**
 
-Run: `.venv/Scripts/python.exe -m pytest tests/test_truth_gguf.py -v`
+Run: `C:/Users/filth/AppData/Local/Programs/Python/Python313/python.exe -m pytest tests/test_truth_gguf.py -v`
 
 Expected: PASS (4 tests). If `test_golden_ornith` fails on a field, the header is the authority — fix the code, not the assertion, and re-verify by dumping that field directly.
 
@@ -741,7 +746,7 @@ def test_cache_bytes_per_elem(name, expected):
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `.venv/Scripts/python.exe -m pytest tests/test_truth_kv.py -v`
+Run: `C:/Users/filth/AppData/Local/Programs/Python/Python313/python.exe -m pytest tests/test_truth_kv.py -v`
 
 Expected: FAIL with `ModuleNotFoundError: No module named 'lcc_core.truth.kv'`
 
@@ -846,7 +851,7 @@ def breakdown(facts: ArchFacts, *, weights_bytes: int, ctx: int,
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `.venv/Scripts/python.exe -m pytest tests/test_truth_kv.py -v`
+Run: `C:/Users/filth/AppData/Local/Programs/Python/Python313/python.exe -m pytest tests/test_truth_kv.py -v`
 
 Expected: PASS (14 tests, counting the parametrized cases)
 
@@ -920,7 +925,7 @@ def test_parse_header_bytes_rejects_truncation(tmp_path):
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `.venv/Scripts/python.exe -m pytest tests/test_truth_gguf.py -k parse_header -v`
+Run: `C:/Users/filth/AppData/Local/Programs/Python/Python313/python.exe -m pytest tests/test_truth_gguf.py -k parse_header -v`
 
 Expected: FAIL with `ImportError: cannot import name 'parse_header_bytes'`
 
@@ -1022,7 +1027,7 @@ def read_facts_remote(url: str, *, max_bytes: int = 32_000_000) -> ArchFacts:
 
 - [ ] **Step 4: Run the whole truth suite**
 
-Run: `.venv/Scripts/python.exe -m pytest tests/test_truth_gguf.py tests/test_truth_kv.py -v`
+Run: `C:/Users/filth/AppData/Local/Programs/Python/Python313/python.exe -m pytest tests/test_truth_gguf.py tests/test_truth_kv.py -v`
 
 Expected: PASS, including `test_parse_header_bytes_matches_reader`, which is the assertion that both paths agree.
 
@@ -1096,7 +1101,7 @@ def test_never_raises_on_a_broken_file(tmp_path, monkeypatch):
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `.venv/Scripts/python.exe -m pytest tests/test_truth_shadow.py -v`
+Run: `C:/Users/filth/AppData/Local/Programs/Python/Python313/python.exe -m pytest tests/test_truth_shadow.py -v`
 
 Expected: FAIL with `ModuleNotFoundError: No module named 'lcc_core.truth.shadow'`
 
@@ -1175,7 +1180,7 @@ def record_divergence(model_path: str | None, params: dict[str, Any],
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `.venv/Scripts/python.exe -m pytest tests/test_truth_shadow.py -v`
+Run: `C:/Users/filth/AppData/Local/Programs/Python/Python313/python.exe -m pytest tests/test_truth_shadow.py -v`
 
 Expected: PASS (2 tests)
 
@@ -1202,7 +1207,7 @@ Gate on `probe_model` so batch callers such as the profiles-list refresh stay fa
 
 - [ ] **Step 6: Run the full suite**
 
-Run: `.venv/Scripts/python.exe -m pytest tests/ -v`
+Run: `C:/Users/filth/AppData/Local/Programs/Python/Python313/python.exe -m pytest tests/ -v`
 
 Expected: PASS. No existing assertion should change — shadow mode alters no output.
 
@@ -1211,7 +1216,7 @@ Expected: PASS. No existing assertion should change — shadow mode alters no ou
 Confirm `estimate_memory_fit` returns identical output with shadow mode present:
 
 ```bash
-.venv/Scripts/python.exe -c "
+C:/Users/filth/AppData/Local/Programs/Python/Python313/python.exe -c "
 import sys; sys.path.insert(0,'.')
 from lcc_core.estimates import estimate_memory_fit
 params={'ctx_size':262144,'cache_type_k':'q8_0','cache_type_v':'q8_0'}
@@ -1245,7 +1250,7 @@ so it cannot break the path it observes."
 Let shadow mode run over normal use, then read `kv_divergence.jsonl`:
 
 ```bash
-.venv/Scripts/python.exe -c "
+C:/Users/filth/AppData/Local/Programs/Python/Python313/python.exe -c "
 import json,collections
 rows=[json.loads(l) for l in open(__import__('lcc_core.paths',fromlist=['x']).cache_dir()/'kv_divergence.jsonl')]
 by=collections.defaultdict(list)
