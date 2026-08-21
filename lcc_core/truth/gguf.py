@@ -308,5 +308,5 @@ def read_facts_remote(url: str, *, max_bytes: int = 32_000_000) -> ArchFacts:
     with urllib.request.urlopen(request, timeout=120) as response:
         if response.status not in (200, 206):
             raise ValueError(f"range request failed: HTTP {response.status}")
-        buf = response.read()
+        buf = response.read(max_bytes)
     return parse_header_bytes(buf)

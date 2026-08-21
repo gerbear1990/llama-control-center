@@ -1,10 +1,11 @@
 from pathlib import Path
+import urllib.request
 
 import pytest
 
 from tests.gguf_fixtures import write_minimal_gguf
 from lcc_core.truth.gguf import ArchFacts, read_facts
-from lcc_core.truth.gguf import parse_header_bytes
+from lcc_core.truth.gguf import parse_header_bytes, read_facts_remote
 
 
 def test_read_facts_hybrid_counts_attention_layers_from_tensors(tmp_path):
@@ -108,3 +109,41 @@ def test_parse_header_bytes_rejects_truncation(tmp_path):
     )
     with pytest.raises(ValueError, match="truncated"):
         parse_header_bytes(path.read_bytes()[:32])
+
+
+def test_read_facts_remote_bounds_the_read(tmp_path, monkeypatch):
+    """The remote path must bound its read to max_bytes regardless of HTTP
+    status. A 200 response is what a server sends when it ignores the Range
+    header and returns the whole body -- calling .read() unbounded there
+    would download the entire multi-GB file, defeating the point of this
+    function."""
+    path = write_minimal_gguf(
+        tmp_path / "remote.gguf",
+        arch="llama", n_layer=4,
+        attn_layers=[0, 1, 2, 3], n_kv_heads=2, k_len=64, v_len=64,
+    )
+    data = path.read_bytes()
+    calls = []
+
+    class FakeResponse:
+        status = 200
+
+        def read(self, n=None):
+            calls.append(n)
+            return data[:n] if n is not None else data
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def fake_urlopen(request, timeout=None):
+        return FakeResponse()
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    facts = read_facts_remote("http://example.invalid/model.gguf", max_bytes=len(data))
+    assert facts == read_facts(path)
+    assert calls == [len(data)]
+    assert calls[0] is not None
