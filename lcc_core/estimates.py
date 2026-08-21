@@ -744,6 +744,20 @@ def estimate_memory_fit(
     else:
         avg_cache = (cache_k + cache_v) / 2.0
         kv_cache_mib = ctx * params_b * avg_cache * KV_FALLBACK_FACTOR
+
+    # Shadow mode: observe how the truth layer would have answered. Logs only;
+    # the displayed figure is unchanged. See docs/superpowers/specs/
+    # 2026-08-21-ground-truth-layer-design.md
+    if probe_model:
+        try:
+            from .truth import shadow as _shadow
+            _m = model or {}
+            _shadow.record_divergence(
+                _m.get("path") or _m.get("model_path"), params, kv_cache_mib
+            )
+        except Exception:
+            pass
+
     compute_mib = 420.0 + min(batch, 4096.0) * 0.28 + min(ubatch, 2048.0) * 0.18
     if params.get("flash_attn", True):
         compute_mib *= 0.86
