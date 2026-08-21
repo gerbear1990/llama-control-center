@@ -1,8 +1,16 @@
+> **ARCHIVED 2026-08-21 — superseded by `.paul/ROADMAP.md`.**
+> Kept for history. Every open item was migrated into PAUL phases or the ROADMAP backlog,
+> including the Obsidian Rail overhaul (ROADMAP → Backlog → Design). Do not add new work here.
+
 # Llama Control Center TODO
 
 > **New**: Full code review (engineering + UI/UX) was completed on 2026-07-09.  
 > All findings, priorities, and chunked work are tracked in **[REVIEW_MILESTONES.md](./REVIEW_MILESTONES.md)**.  
 > This document (TODO.md) is retained for historical quick-list items. New work should primarily use the milestones doc.
+
+## Later — visual overhaul
+
+- [ ] **Full GUI overhaul on [Obsidian Rail](https://freedesignmd.com/system/obsidian-rail).** Precision dark instrument: near-black `#0c0d0f`, 1px hairlines at 8% white, Inter + Geist Mono (`tabular-nums`), electric mint `#5fe3b1` only on active status / primary CTA / focus. Replace the current token world (do not mix). Source: drop their `DESIGN.md` into the repo and restyle `lcc_api/static/` against it. Out of scope for the current instrument-console IA pass (`/impeccable shape`).
 
 ## Current Feature Pass
 
