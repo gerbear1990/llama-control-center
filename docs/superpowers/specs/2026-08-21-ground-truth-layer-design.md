@@ -274,3 +274,55 @@ is available to inform it.
 - Divergence threshold before flagging: proportional, absolute, or both.
 - Whether shadow mode (step 2) ships to the operator or stays on a local branch.
 - Whether `models.json` should cache `ArchFacts` for faster startup, at the cost of another staleness surface, or always re-derive from file mtime.
+
+---
+
+## Execution findings (steps 0-3 landed 2026-08-21)
+
+Recorded here because they change the argument for step 3.
+
+### The flip is less urgent than this spec assumed
+
+Shadow mode's first real data point: `Ornith-1.5-35B-A3B-Q5_K_L` at 262144 ctx, q8_0 KV —
+legacy **2992.0 MiB**, truth **2992.0 MiB**, divergence **0.0%**.
+
+Once step 0 corrected the attention-layer count, the legacy estimator's KV arithmetic already
+matched. **The 9% error was entirely the layer-count bug, not the KV formula.** A cross-check over
+every GGUF on disk found `estimates._extract_kv_dims` and `truth.read_facts` agree exactly on all 10
+text models — including gemma-4's per-layer-array KV (210 and 840 heads), both qwen35 hybrids,
+muse-glimmer and dflash.
+
+So the truth layer's remaining value is **not** KV correction. It is: SSM state accounting the
+estimator never modelled, provenance labels, facts the estimator never read (expert counts, MTP,
+mmproj requirement), remote pre-download reads, and testability. Weigh step 3 on those, not on
+"the numbers are wrong".
+
+### Deferred, for whoever picks up steps 4-6
+
+- `ArchFacts.quant_type` — named in this spec, not implemented; nothing in steps 0-3 consumes it.
+- No test covers memo/disk-cache **invalidation** after an mtime change (same key scheme as the
+  already-shipped `estimates` cache).
+- No unit test covers the `interval-metadata` or `assumed-dense` source branches. Both were verified
+  equivalent to the legacy path by hand and in the wild; `len(range(i-1,n,i)) == n//i` for all n, i>=1.
+- `truth` reads `n_layers` only from `{arch}.block_count`; `estimates` also tries `{arch}.n_layer`
+  and a tensor max-index scan. A file with only `n_layer` yields `None` and silently disables both
+  fallbacks.
+- `truth` has no plausibility clamp; `estimates` rejects `total_kv_heads > 200000` and dims > 4096.
+  A misread field currently yields a confident `provenance="computed"` where `unknown` exists.
+- The per-layer-array KV branch never validates array length against the attention-layer count. Both
+  implementations share this logic, so shadow mode is structurally blind to it.
+- `read_facts_remote` has no test against a real HTTP server (redirects, non-range servers). The
+  bounded read caps the blast radius at `max_bytes`.
+- `tests/test_truth_differential.py` takes ~212 s warm; it is `slow`-marked, deselect with
+  `-m "not slow"`.
+
+### Pre-existing defects found while working here — NOT caused by this work
+
+- `lcc_core/server_manager.py` can compute a port above 65535 and pass it to `bind()`, raising
+  `OverflowError: bind(): port must be 0-65535`. Two `PortAvailabilityTests` fail on it.
+- Two `tests/test_launch_smoke.py` tests fail with `TimeoutError` on a socket read.
+  Both confirmed failing identically on base commit `8ab846d`.
+- `pytest` at the repo root collects the gitignored vendored `graphify/` checkout — ~2,900 extra
+  tests, ~46 failing for unrelated reasons. Run `pytest tests/` for this project's own suite.
+  `graphify/tests/__init__.py` also shadows a `tests.`-prefixed import, which is why test modules
+  here import `gguf_fixtures` bare.
