@@ -191,18 +191,14 @@ def _extract_n_attn_layers(reader, arch: str | None, n_layer: int | None) -> int
     not the total block count.
 
     Detection priority:
-    1. Architecture-specific interval metadata (``full_attention_interval``).
-    2. Tensor scan: count layers with explicit ``attn_k.weight`` / ``attn_v.weight``
-       tensors. SSM-only layers lack these.
+    1. Tensor scan: count layers with explicit ``attn_k.weight`` / ``attn_v.weight``
+       tensors. SSM-only layers lack these. This is ground truth.
+    2. Architecture-specific interval metadata (``full_attention_interval``), for
+       files whose tensor names match no known pattern. Note this is a derived
+       shortcut: ``n_layer // interval`` cannot see an MTP/nextn layer that also
+       carries attention, which is why it is not tried first.
     3. Fall back to ``n_layer`` (standard all-attention architecture).
     """
-    if arch:
-        val = _gguf_field_value(reader.get_field(f"{arch}.full_attention_interval"))
-        if isinstance(val, int) and val > 1 and isinstance(n_layer, int) and n_layer > 0:
-            result = n_layer // val
-            if result > 0:
-                return result
-
     attn_layers: set[int] = set()
     for tensor in reader.tensors:
         name = tensor.name
@@ -226,6 +222,13 @@ def _extract_n_attn_layers(reader, arch: str | None, n_layer: int | None) -> int
             attn_layers.add(idx)
     if attn_layers:
         return len(attn_layers)
+
+    if arch:
+        val = _gguf_field_value(reader.get_field(f"{arch}.full_attention_interval"))
+        if isinstance(val, int) and val > 1 and isinstance(n_layer, int) and n_layer > 0:
+            result = n_layer // val
+            if result > 0:
+                return result
 
     return n_layer
 
@@ -274,7 +277,7 @@ def _extract_kv_dims(reader, arch: str | None, n_layer: int | None) -> tuple[int
 # the tiny result. ``_gguf_meta_mem`` caches within a process; the on-disk cache
 # (keyed by size+mtime) survives restarts, so a profiles refresh never re-parses.
 _GGUF_META_CACHE_FILENAME = "gguf_meta_cache.json"
-_KV_META_CACHE_VERSION = 3  # bump when kv_dims computation changes to invalidate stale entries
+_KV_META_CACHE_VERSION = 4  # bump when kv_dims computation changes to invalidate stale entries
 _gguf_meta_mem: dict[str, tuple[tuple[int, int], int | None, tuple | None, bool | None, int | None]] = {}
 
 # Substrings that, in a GGUF chat template, indicate the model was trained to emit

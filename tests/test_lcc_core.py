@@ -2304,5 +2304,48 @@ class PortAvailabilityTests(unittest.TestCase):
         self.assertGreater(above, rng["end"])
 
 
+import gguf as _gguf_pkg
+
+from tests.gguf_fixtures import write_minimal_gguf
+from lcc_core import estimates as E
+
+
+def test_attn_layer_count_prefers_tensor_scan_over_interval(tmp_path):
+    """Ornith shape: 41 blocks, interval 4, but 11 layers really carry attn_k.
+
+    41 // 4 == 10, which misses the MTP layer at index 40. The tensor scan is
+    ground truth and must win.
+    """
+    attn = [3, 7, 11, 15, 19, 23, 27, 31, 35, 39, 40]
+    path = write_minimal_gguf(
+        tmp_path / "hybrid.gguf",
+        arch="qwen35moe",
+        n_layer=41,
+        attn_layers=attn,
+        n_kv_heads=2,
+        k_len=256,
+        v_len=256,
+        extra_kv={"full_attention_interval": 4},
+    )
+    reader = _gguf_pkg.GGUFReader(str(path))
+    assert E._extract_n_attn_layers(reader, "qwen35moe", 41) == 11
+
+
+def test_attn_layer_count_falls_back_to_interval_when_no_tensors_match(tmp_path):
+    """A file whose tensor names follow no known pattern still gets an answer."""
+    path = write_minimal_gguf(
+        tmp_path / "opaque.gguf",
+        arch="mystery",
+        n_layer=41,
+        attn_layers=[],
+        n_kv_heads=2,
+        k_len=256,
+        v_len=256,
+        extra_kv={"full_attention_interval": 4},
+    )
+    reader = _gguf_pkg.GGUFReader(str(path))
+    assert E._extract_n_attn_layers(reader, "mystery", 41) == 10
+
+
 if __name__ == "__main__":
     unittest.main()
