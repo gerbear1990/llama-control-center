@@ -9,6 +9,7 @@ from pathlib import Path
 
 from lcc_core.config import AppConfig
 from lcc_core.profile_registry import (
+    _is_draft_model,
     register_discovered_models,
     startup_autoscan_if_enabled,
 )
@@ -241,6 +242,43 @@ class PinMatchTests(unittest.TestCase):
         self.assertIsNone(model)
         self.assertEqual(score, 0.0)
         self.assertTrue(any("missing" in warning.lower() for warning in warnings))
+
+
+class DraftModelDetectionTests(unittest.TestCase):
+    """Direct cover for the companion-vs-standalone rule (issue #14).
+
+    The registry tests above exercise this end-to-end, but only through the
+    path-segment and mid-name branches. These pin every branch of the rule
+    itself, so a regression names the rule instead of surfacing as a model
+    that mysteriously stopped appearing in the dashboard.
+
+    The asymmetry between mtp and draft is deliberate: "-MTP-" is a common
+    product-name token (NVFP4-MTP-Q8attn), "-draft-" is not.
+    """
+
+    def test_mtp_in_product_name_is_not_a_companion(self) -> None:
+        # The exact issue #14 regression: this model was skipped entirely.
+        self.assertFalse(_is_draft_model("Qwen3.8-27B-NVFP4-MTP-Q8attn.gguf"))
+        self.assertFalse(_is_draft_model("models/Qwen3.6-27B-Q6_K-MTP-variant.gguf"))
+
+    def test_ordinary_model_is_not_a_companion(self) -> None:
+        self.assertFalse(_is_draft_model("Gemma-4-31B-it-Q5_K_L.gguf"))
+
+    def test_companion_directory_segment(self) -> None:
+        self.assertTrue(_is_draft_model("some/dir/mtp/model.gguf"))
+        self.assertTrue(_is_draft_model("some/dir/draft/model.gguf"))
+
+    def test_companion_filename_prefix(self) -> None:
+        self.assertTrue(_is_draft_model("mtp-draft.gguf"))
+        self.assertTrue(_is_draft_model("draft-model.gguf"))
+
+    def test_companion_filename_suffix(self) -> None:
+        self.assertTrue(_is_draft_model("model.mtp.gguf"))
+        self.assertTrue(_is_draft_model("model-draft.gguf"))
+
+    def test_draft_token_mid_name_is_a_companion(self) -> None:
+        # Unlike mtp, a "-draft-" token mid-name does mark a companion.
+        self.assertTrue(_is_draft_model("Tiny-0.5B-draft-Q8_0.gguf"))
 
 
 if __name__ == "__main__":
