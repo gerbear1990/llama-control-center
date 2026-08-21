@@ -11,19 +11,24 @@ about: "llama-control-center"
 See: .paul/PROJECT.md (updated 2026-08-21)
 
 **Core value:** Operators can see whether a local model actually fits this machine before they launch it — and watch it once it runs.
-**Current focus:** v0.17.0 — Close the Open Loops, Phase 2 (Embedded-MTP Support)
+**Current focus:** v0.17.0 — Close the Open Loops, Phase 4 (Running-Server Observability UI)
 
 ## Current Position
 
 Milestone: v0.17.0 — Close the Open Loops (0.17.0)
-Phase: 2 of 6 (Embedded-MTP Support)
-Plan: 1 of 1 in current phase (02-01)
-Status: Applying — all auto tasks done, blocked on the human-verify checkpoint
-Last activity: 2026-08-21 — Phase 2 T1/T3/T4/T5/T6 applied; awaiting human-verify (launch a real MTP model)
+Phase: 4 of 6 (Running-Server Observability UI) — taken ahead of 3 by choice
+Plan: 1 of 1 in current phase (04-01)
+Status: Planning — plan written
+Branch: feat/observability-ui (from main @ 83f957b)
+
+⏸ Phase 2 is complete in code but parked on its human-verify checkpoint: the embedded-MTP
+launch path is proven against `--help` and upstream source at the build commit, but not by
+a running server. Issue #14 stays open until it is.
+Last activity: 2026-08-21 — PR #16 merged to main (83f957b); port bug fixed, suite fully green; Phase 4 planned
 
 Progress:
-- Milestone: [█░░░░░░░░░] 17% (1 of 6 phases)
-- Phase: [████████░░] 83% (5 of 6 tasks; human-verify pending)
+- Milestone: [██░░░░░░░░] 25% (1 complete, 1 awaiting verify)
+- Phase: [░░░░░░░░░░] 0% (04-01 planned)
 
 ## Loop Position
 
