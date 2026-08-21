@@ -4,6 +4,7 @@ import pytest
 
 from tests.gguf_fixtures import write_minimal_gguf
 from lcc_core.truth.gguf import ArchFacts, read_facts
+from lcc_core.truth.gguf import parse_header_bytes
 
 
 def test_read_facts_hybrid_counts_attention_layers_from_tensors(tmp_path):
@@ -79,3 +80,31 @@ def test_golden_ornith():
     assert facts.is_hybrid and facts.n_ssm_layers == 30
     assert facts.ssm_conv_kernel == 4 and facts.ssm_state_size == 128
     assert facts.ssm_inner_size == 4096
+
+
+def test_parse_header_bytes_matches_reader(tmp_path):
+    """The hand-rolled parser and GGUFReader must agree on the same file."""
+    attn = [3, 7, 11, 15, 19, 23, 27, 31, 35, 39, 40]
+    path = write_minimal_gguf(
+        tmp_path / "hybrid.gguf",
+        arch="qwen35moe", n_layer=41, attn_layers=attn,
+        n_kv_heads=2, k_len=256, v_len=256,
+        extra_kv={"full_attention_interval": 4},
+    )
+    from_reader = read_facts(path)
+    from_bytes = parse_header_bytes(path.read_bytes())
+    assert from_bytes == from_reader
+
+
+def test_parse_header_bytes_rejects_bad_magic():
+    with pytest.raises(ValueError, match="not a GGUF"):
+        parse_header_bytes(b"NOPE" + b"\x00" * 64)
+
+
+def test_parse_header_bytes_rejects_truncation(tmp_path):
+    path = write_minimal_gguf(
+        tmp_path / "t.gguf", arch="llama", n_layer=4,
+        attn_layers=[0, 1, 2, 3], n_kv_heads=2, k_len=64, v_len=64,
+    )
+    with pytest.raises(ValueError, match="truncated"):
+        parse_header_bytes(path.read_bytes()[:32])

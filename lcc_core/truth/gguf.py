@@ -7,8 +7,11 @@ how the attention-layer count was determined.
 """
 from __future__ import annotations
 
+import io
 import os
 import re
+import struct
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -207,3 +210,103 @@ def read_facts(path: Path | str) -> ArchFacts:
     if sig is not None:
         _facts_memo[key] = (sig, facts)
     return facts
+
+
+_GGUF_MAGIC = b"GGUF"
+
+# GGUF metadata value type tags -> struct format
+_SCALAR_FMT = {0: "B", 1: "b", 2: "H", 3: "h", 4: "I", 5: "i",
+               6: "f", 7: "?", 10: "Q", 11: "q", 12: "d"}
+_TYPE_STRING = 8
+_TYPE_ARRAY = 9
+
+
+class _Cursor:
+    def __init__(self, buf: bytes):
+        self._buf = io.BytesIO(buf)
+        self._len = len(buf)
+
+    def take(self, fmt: str):
+        size = struct.calcsize(fmt)
+        raw = self._buf.read(size)
+        if len(raw) != size:
+            raise ValueError("truncated GGUF header")
+        return struct.unpack("<" + fmt, raw)[0]
+
+    def string(self) -> str:
+        length = self.take("Q")
+        raw = self._buf.read(length)
+        if len(raw) != length:
+            raise ValueError("truncated GGUF header")
+        return raw.decode("utf-8", "replace")
+
+    def value(self, type_tag: int, keep: bool = True):
+        """Read one value. With `keep` False the bytes are consumed but not
+        materialised — used for the ~250k-element tokenizer arrays, which must
+        be walked to stay byte-aligned but are never needed."""
+        if type_tag == _TYPE_STRING:
+            text = self.string()
+            return text if keep else None
+        if type_tag == _TYPE_ARRAY:
+            elem_type = self.take("I")
+            count = self.take("Q")
+            if not keep:
+                for _ in range(count):
+                    self.value(elem_type, keep=False)
+                return None
+            return [self.value(elem_type) for _ in range(count)]
+        fmt = _SCALAR_FMT.get(type_tag)
+        if fmt is None:
+            raise ValueError(f"unknown GGUF value type {type_tag}")
+        result = self.take(fmt)
+        return result if keep else None
+
+
+def parse_header_bytes(buf: bytes) -> ArchFacts:
+    """Build ArchFacts from raw GGUF header bytes.
+
+    Accepts a prefix of the file: everything needed lives in the metadata and
+    tensor-info sections, before any tensor data.
+    """
+    if buf[:4] != _GGUF_MAGIC:
+        raise ValueError("not a GGUF file")
+    cursor = _Cursor(buf)
+    cursor.take("I")  # magic, already checked
+    cursor.take("I")  # version
+    n_tensors = cursor.take("Q")
+    n_kv = cursor.take("Q")
+
+    meta: dict = {}
+    for _ in range(n_kv):
+        key = cursor.string()
+        type_tag = cursor.take("I")
+        keep = not key.startswith("tokenizer.")
+        value = cursor.value(type_tag, keep=keep)
+        if keep:
+            meta[key] = value
+
+    names: list[str] = []
+    for _ in range(n_tensors):
+        name = cursor.string()
+        n_dims = cursor.take("I")
+        for _ in range(n_dims):
+            cursor.take("Q")
+        cursor.take("I")  # ggml type
+        cursor.take("Q")  # offset
+        names.append(name)
+
+    return _facts_from_kv_and_tensors(meta, names)
+
+
+def read_facts_remote(url: str, *, max_bytes: int = 32_000_000) -> ArchFacts:
+    """Read facts from a remote GGUF without downloading the body.
+
+    ``max_bytes`` must cover the metadata and tensor-info sections; 32 MB is
+    ample for a 250k-token vocabulary plus ~1000 tensor entries.
+    """
+    request = urllib.request.Request(url, headers={"Range": f"bytes=0-{max_bytes - 1}"})
+    with urllib.request.urlopen(request, timeout=120) as response:
+        if response.status not in (200, 206):
+            raise ValueError(f"range request failed: HTTP {response.status}")
+        buf = response.read()
+    return parse_header_bytes(buf)
