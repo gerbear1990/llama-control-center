@@ -654,6 +654,59 @@ class ManifestHelpersTests(unittest.TestCase):
         shutil.rmtree(self._tmp, ignore_errors=True)
 
 
+
+class NodeSuiteTests(unittest.TestCase):
+    """Run every .js test in tests/ as part of the Python suite.
+
+    Frontend logic is tested by lifting pure helpers to module scope and
+    exercising them under node. That only counts if the suite actually runs
+    them: four files (test_css_shell, test_empty_copy, test_launch_lock,
+    test_smart_fit_ui) sat here passing-when-run-by-hand and referenced by no
+    driver, i.e. coverage that did not exist.
+
+    Discovery is by glob rather than a hand-maintained list, so the next .js
+    test is picked up by existing. Each file signals failure with a non-zero
+    exit and prints one JSON line with an `ok` field.
+    """
+
+    def test_every_js_test_passes(self):
+        import json
+        import subprocess
+        from pathlib import Path as P
+
+        repo = P(__file__).parent.parent
+        js_tests = sorted(P(__file__).parent.glob("test_*.js"))
+        self.assertTrue(js_tests, "no .js tests discovered - check the glob")
+
+        for js_test in js_tests:
+            with self.subTest(js=js_test.name):
+                proc = subprocess.run(
+                    ["node", str(js_test)],
+                    capture_output=True,
+                    # Node emits UTF-8; decode explicitly so output survives on
+                    # machines whose locale encoding is not UTF-8 (cp1252 Windows).
+                    encoding="utf-8",
+                    cwd=str(repo),
+                )
+                self.assertEqual(
+                    proc.returncode, 0,
+                    chr(10).join([
+                        js_test.name + " failed:",
+                        proc.stdout or "",
+                        proc.stderr or "",
+                    ]),
+                )
+                # Exit code is the contract. Most files also print an `ok`
+                # field; the older test_server_metrics_formatter.js prints the
+                # formatted line instead and lets its own Python test assert on
+                # it, so `ok` is checked only when the file offers one.
+                last = [ln for ln in (proc.stdout or "").splitlines() if ln.strip()]
+                self.assertTrue(last, f"{js_test.name} printed no result line")
+                payload = json.loads(last[-1])
+                if "ok" in payload:
+                    self.assertTrue(payload["ok"], f"{js_test.name} reported {payload}")
+
+
 class ServerMetricsFormatterTests(unittest.TestCase):
     """Unit test for the *shipped* formatServerMetricsLine (pure, extracted per strategy).
     Ev als the real lcc_api/static/app.js via Node + vm with minimal stubs.

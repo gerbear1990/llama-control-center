@@ -52,7 +52,7 @@ Related: `--spec-type draft-mtp` isn't a profile param, so MTP weights load as d
 
 ## Test Coverage Gaps
 
-⚠️ **Four JS test files never run.** `tests/test_css_shell.js`, `test_empty_copy.js`, `test_launch_lock.js`, `test_smart_fit_ui.js` are referenced by no driver — verified by grepping the whole repo. JS tests only execute when a pytest test shells out to node (`tests/test_lcc_api.py` does this for exactly two files). These four were written and are silently dead. Either wire them in or delete them; leaving them looks like coverage that doesn't exist.
+✅ **Fixed 2026-08-21 (Phase 4 T4).** `NodeSuiteTests` in `tests/test_lcc_api.py` globs `tests/test_*.js` and runs each under node as a subtest, so a new `.js` file is picked up by existing. Verified to bite: breaking one fails the Python suite by name. Previously: ~~**Four JS test files never run.**~~ `tests/test_css_shell.js`, `test_empty_copy.js`, `test_launch_lock.js`, `test_smart_fit_ui.js` are referenced by no driver — verified by grepping the whole repo. JS tests only execute when a pytest test shells out to node (`tests/test_lcc_api.py` does this for exactly two files). These four were written and are silently dead. Either wire them in or delete them; leaving them looks like coverage that doesn't exist.
 
 - No coverage tooling configured at all
 - The WSL/vLLM launch+stop path is hard to exercise and thinly covered

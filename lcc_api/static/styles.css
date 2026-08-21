@@ -4154,3 +4154,74 @@ th,
     white-space: normal;
   }
 }
+
+/* ----- Observability: metrics panel + log streams -------------------------
+   Machine data in mono with tabular figures so columns do not jitter as
+   readings tick; structure drawn with 1px hairlines, per DESIGN.md. */
+
+.metrics-head {
+  padding: 10px 14px 0;
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+}
+
+.metrics-grid {
+  margin: 0;
+  padding: 8px 14px 14px;
+}
+
+.metrics-row {
+  display: flex;
+  gap: 12px;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.metrics-row:last-child { border-bottom: 0; }
+
+.metrics-row dt {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.metrics-row dd {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin: 0;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.metrics-row dd .live-bar { width: 84px; }
+
+.log-follow {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  color: var(--muted);
+  font-size: 0.78rem;
+  white-space: nowrap;
+}
+
+.log-streams {
+  display: flex;
+  flex-direction: column;
+}
+
+.log-stream + .log-stream { border-top: 1px solid var(--border); }
+
+.log-stream-label {
+  padding: 6px 14px 0;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}

@@ -405,10 +405,22 @@
                   <h3>Logs</h3>
                   <p>Latest tracked output.</p>
                 </div>
-                <button class="button ghost" id="open-logs-button" type="button">Open logs</button>
+                <div class="panel-heading-actions">
+                  <label class="log-follow" for="log-follow"><input type="checkbox" id="log-follow"> Follow</label>
+                  <button class="button ghost" id="open-logs-button" type="button">Open logs</button>
+                </div>
               </div>
               <div id="log-empty" class="empty-state" hidden></div>
-              <pre class="log-preview" id="log-preview">No tracked server selected.</pre>
+              <div class="log-streams" id="log-streams">
+                <div class="log-stream" id="log-stream-stderr">
+                  <div class="log-stream-label">stderr</div>
+                  <pre class="log-preview" id="log-preview">No tracked server selected.</pre>
+                </div>
+                <div class="log-stream" id="log-stream-stdout" hidden>
+                  <div class="log-stream-label">stdout</div>
+                  <pre class="log-preview" id="log-stdout"></pre>
+                </div>
+              </div>
             </section>
             </div>
             <div class="session-view" id="session-server" data-session="server" role="tabpanel" aria-labelledby="session-tab-server" hidden>
@@ -424,6 +436,16 @@
                 </div>
               </div>
               <div class="server-box" id="server-box"></div>
+            </section>
+            <section class="panel" id="server-metrics">
+              <div class="panel-heading compact">
+                <div>
+                  <h3>Metrics</h3>
+                  <p>Live readings from the selected server.</p>
+                </div>
+              </div>
+              <div id="server-metrics-empty" class="empty-state">No tracked server selected.</div>
+              <div id="server-metrics-body" hidden></div>
             </section>
             </div>
           </section>
@@ -488,6 +510,9 @@
               <div class="panel-heading">
                 <div>
                   <h3>Models</h3>
+                </div>
+                <div class="panel-heading-actions">
+                  <button class="mini-button" type="button" id="models-rescan" title="Scan every model root and register anything new. Registration otherwise only runs at startup.">Rescan models</button>
                 </div>
               </div>
               <div class="model-list" id="model-list"></div>

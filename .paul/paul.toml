@@ -26,7 +26,7 @@ plans_completed = 0
 
 # ─── Loop ────────────────────────────────────────────────────
 [loop]
-position = "PLAN"
+position = "APPLY"
 plan = "04-01"
 plan_path = "phases/04-observability-ui/04-01-PLAN.md"
 

@@ -18,17 +18,17 @@ See: .paul/PROJECT.md (updated 2026-08-21)
 Milestone: v0.17.0 — Close the Open Loops (0.17.0)
 Phase: 4 of 6 (Running-Server Observability UI) — taken ahead of 3 by choice
 Plan: 1 of 1 in current phase (04-01)
-Status: Planning — plan written
+Status: Applying — T1–T4 done, blocked on the human-verify checkpoint
 Branch: feat/observability-ui (from main @ 83f957b)
 
 ⏸ Phase 2 is complete in code but parked on its human-verify checkpoint: the embedded-MTP
 launch path is proven against `--help` and upstream source at the build commit, but not by
 a running server. Issue #14 stays open until it is.
-Last activity: 2026-08-21 — PR #16 merged to main (83f957b); port bug fixed, suite fully green; Phase 4 planned
+Last activity: 2026-08-21 — Phase 4 T1–T4 applied: metrics panel, following log tail, global rescan, node-suite driver
 
 Progress:
 - Milestone: [██░░░░░░░░] 25% (1 complete, 1 awaiting verify)
-- Phase: [░░░░░░░░░░] 0% (04-01 planned)
+- Phase: [████████░░] 80% (4 of 5 tasks; human-verify pending)
 
 ## Loop Position
 
