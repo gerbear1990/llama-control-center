@@ -1,3 +1,7 @@
+> **ARCHIVED 2026-08-21 — superseded by `.paul/ROADMAP.md`.**
+> Kept for history. Do not add new work here; open items were migrated into PAUL
+> phases and the ROADMAP backlog. See `.paul/STATE.md` for the migration table.
+
 # Roadmap
 
 This roadmap collects candidate features before they are designed and scheduled.
