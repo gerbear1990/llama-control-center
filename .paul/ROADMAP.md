@@ -18,7 +18,7 @@ in the milestone because it must not collide with the restyle.
 
 **v0.17.0 — Close the Open Loops**
 Status: In progress
-Phases: 1 of 6 complete
+Phases: 2 of 6 complete (Phase 2 code-complete, parked on its human-verify)
 
 ## Phases
 
@@ -27,7 +27,7 @@ Phases: 1 of 6 complete
 | 1 | Terminal-Instrument Design Pass | 1 | ✅ Complete | 2026-08-21 |
 | 2 | Embedded-MTP Support | 1 | ⏸ Awaiting human-verify | - |
 | 3 | vLLM-WSL Fit Estimator + Auto-Tuner | TBD | Deferred (after 4) | - |
-| 4 | Running-Server Observability UI | 1 | 🚧 Planning | - |
+| 4 | Running-Server Observability UI | 1 | ✅ Complete | 2026-08-21 |
 | 5 | Frontend Module Split | TBD | Not started | - |
 | 6 | Release v0.17.0 | TBD | Not started | - |
 
@@ -104,6 +104,11 @@ only the global rescan is genuinely **missing**.
 - "Rescan models" button for `POST /api/profiles/scan` — registration otherwise runs only at startup
 
 **Source:** `docs/2026-07-14-audit.md` §3
+
+**Status:** ✅ Complete 2026-08-21 — landed as `03975cc`, verified in a browser by the
+operator ("looks and performs much better"). Summary:
+`.paul/phases/04-observability-ui/04-01-SUMMARY.md`. Suite: 258 passed, 2 skipped,
+16 node subtests (up from 9 — the four orphaned `.js` files now run).
 
 ---
 
