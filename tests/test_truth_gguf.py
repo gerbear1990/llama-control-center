@@ -3,7 +3,10 @@ import urllib.request
 
 import pytest
 
-from tests.gguf_fixtures import write_minimal_gguf
+# gguf_fixtures lives in this directory; a bare import is required because a
+# gitignored vendored checkout (graphify/) ships its own tests package, which
+# shadows a `tests.` prefixed import when the whole repo is collected.
+from gguf_fixtures import write_minimal_gguf
 from lcc_core.truth.gguf import ArchFacts, read_facts
 from lcc_core.truth.gguf import parse_header_bytes, read_facts_remote
 

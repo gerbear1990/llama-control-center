@@ -970,19 +970,51 @@ class SmartTuneTests(unittest.TestCase):
         fit = estimate_memory_fit({"ctx_size": 262144, "gpu_layers": "all"}, model, self._hw(24))
         self.assertTrue(any("trained window" in w for w in fit["warnings"]))
 
-    def test_cpu_fallback_flagged_when_gpu_present_but_vram_full(self) -> None:
-        # A GPU exists but only a sliver of VRAM is free (a stale server is still
-        # holding it). Every GPU-offload config is rejected, so the tuner can only
-        # land on a CPU-only pick — it must flag that loudly, not report a clean win.
+    def test_sizes_against_total_vram_when_another_process_holds_the_card(self) -> None:
+        # A stale server can leave only a sliver of free VRAM. Smart Fit must
+        # still size the card (total), not the leftover, so the recommendation
+        # stays GPU-offload and warns that Start will compete for memory.
         from lcc_core.smart_tune import auto_tune_fit
 
         hw = self._hw(24)
         hw["primary_gpu"]["vram_free_bytes"] = int(0.3 * 1024**3)  # ~300 MiB free
+        model = {"name": "test-7B", "params_b": 7, "quant": "Q4_K_M"}
+        out = auto_tune_fit({"gpu_layers": 0, "ctx_size": 2048}, model, hw)
+        self.assertTrue(out["success"])
+        self.assertFalse(out["cpu_fallback"])
+        self.assertGreater(out["after"]["fit_status"]["inputs"]["gpu_layer_fraction"], 0)
+        self.assertEqual(str(out["tuned_params"]["gpu_layers"]), "all")
+        self.assertTrue(any("already using" in note.lower() for note in out["notes"]))
+
+    def test_cpu_fallback_when_the_card_cannot_hold_the_model(self) -> None:
+        # Tiny total VRAM: no GPU-offload config can fit the card itself.
+        from lcc_core.smart_tune import auto_tune_fit
+
         model = {"name": "test-32B", "params_b": 32, "quant": "Q4_K_M"}
-        out = auto_tune_fit({"gpu_layers": "all", "ctx_size": 8192}, model, hw)
-        if out["success"] and out["after"]["fit_status"]["inputs"]["gpu_layer_fraction"] <= 0:
-            self.assertTrue(out["cpu_fallback"])
-            self.assertTrue(any("runs on the CPU" in note for note in out["notes"]))
+        out = auto_tune_fit({"gpu_layers": "all", "ctx_size": 8192}, model, self._hw(2))
+        self.assertTrue(out["success"])
+        self.assertTrue(out["cpu_fallback"])
+        self.assertLessEqual(out["after"]["fit_status"]["inputs"]["gpu_layer_fraction"], 0)
+        self.assertTrue(any("cannot hold" in note.lower() for note in out["notes"]))
+
+    def test_balanced_prefers_good_over_tight_when_both_exist(self) -> None:
+        # 32B Q4 on 24 GB: short-context full offload is good, longer is tight.
+        # Balanced (the auto-applied pick) must not spend that extra window if
+        # it turns a good fit into a tight one.
+        from lcc_core.smart_tune import auto_tune_fit, _collect_candidates
+
+        model = {"name": "test-32B", "params_b": 32, "quant": "Q4_K_M"}
+        hw = self._hw(24)
+        base = {"gpu_layers": 0, "ctx_size": 2048, "batch_size": 128, "ubatch_size": 128}
+        candidates = _collect_candidates(base, model, hw)
+        self.assertTrue(candidates)
+        max_lf = max(c["lf"] for c in candidates)
+        self.assertTrue(any(c["lf"] == max_lf and c["roomy"] for c in candidates))
+        self.assertTrue(any(c["lf"] == max_lf and not c["roomy"] for c in candidates))
+
+        out = auto_tune_fit(base, model, hw)
+        self.assertTrue(out["success"])
+        self.assertEqual(out["after"]["fit_status"]["status"], "good")
 
     def test_reports_named_suggestions(self) -> None:
         from lcc_core.smart_tune import auto_tune_fit
@@ -1077,7 +1109,9 @@ class SmartTuneTests(unittest.TestCase):
     def test_batch_grows_into_headroom_but_never_shrinks(self) -> None:
         from lcc_core.smart_tune import auto_tune_fit
 
-        model = {"name": "test-7B", "params_b": 7, "quant": "Q4_K_M"}
+        # Cap the trained window so leftover VRAM is real batch headroom,
+        # not already spent on the last good context rung.
+        model = {"name": "test-7B", "params_b": 7, "quant": "Q4_K_M", "context_length": 8192}
         out = auto_tune_fit(
             {"gpu_layers": 0, "ctx_size": 2048, "batch_size": 512, "ubatch_size": 128},
             model, self._hw(24),
@@ -2306,7 +2340,10 @@ class PortAvailabilityTests(unittest.TestCase):
 
 import gguf as _gguf_pkg
 
-from tests.gguf_fixtures import write_minimal_gguf
+# gguf_fixtures lives in this directory; a bare import is required because a
+# gitignored vendored checkout (graphify/) ships its own tests package, which
+# shadows a `tests.` prefixed import when the whole repo is collected.
+from gguf_fixtures import write_minimal_gguf
 from lcc_core import estimates as E
 
 

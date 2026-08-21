@@ -1,6 +1,9 @@
 import json
 
-from tests.gguf_fixtures import write_minimal_gguf
+# gguf_fixtures lives in this directory; a bare import is required because a
+# gitignored vendored checkout (graphify/) ships its own tests package, which
+# shadows a `tests.` prefixed import when the whole repo is collected.
+from gguf_fixtures import write_minimal_gguf
 from lcc_core.truth import shadow
 
 
