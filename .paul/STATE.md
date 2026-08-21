@@ -11,18 +11,18 @@ about: "llama-control-center"
 See: .paul/PROJECT.md (updated 2026-08-21)
 
 **Core value:** Operators can see whether a local model actually fits this machine before they launch it — and watch it once it runs.
-**Current focus:** v0.17.0 — Close the Open Loops, Phase 1 (Terminal-Instrument Design Pass)
+**Current focus:** v0.17.0 — Close the Open Loops, Phase 2 (Embedded-MTP Support)
 
 ## Current Position
 
 Milestone: v0.17.0 — Close the Open Loops (0.17.0)
-Phase: 1 of 6 (Terminal-Instrument Design Pass)
-Plan: 0 of 0 in current phase
-Status: Ready to plan
-Last activity: 2026-08-21 — codebase mapped to .paul/codebase/ (7 docs); PAUL initialized and planning docs migrated earlier the same day
+Phase: 2 of 6 (Embedded-MTP Support)
+Plan: 1 of 1 in current phase (02-01)
+Status: Planning — plan written, awaiting approval
+Last activity: 2026-08-21 — WIP landed (cb1818f, 820e873, ad85599); Phase 1 complete; Phase 2 planned
 
 Progress:
-- Milestone: [░░░░░░░░░░] 0%
+- Milestone: [█░░░░░░░░░] 17% (1 of 6 phases)
 - Phase: [░░░░░░░░░░] 0%
 
 ## Loop Position

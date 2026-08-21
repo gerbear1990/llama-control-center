@@ -19,14 +19,16 @@ phases = 6
 
 # ─── Phase ───────────────────────────────────────────────────
 [phase]
-number = 1
-name = "Terminal-Instrument Design Pass"
-status = "in_progress"
+number = 2
+name = "Embedded-MTP Support"
+status = "planning"
 plans_completed = 0
 
 # ─── Loop ────────────────────────────────────────────────────
 [loop]
-position = "IDLE"
+position = "PLAN"
+plan = "02-01"
+plan_path = "phases/02-embedded-mtp/02-01-PLAN.md"
 
 # ─── Satellite ───────────────────────────────────────────────
 [satellite]
@@ -36,4 +38,4 @@ groom = true
 [stats]
 total_plans = 0
 total_phases = 6
-last_activity = "2026-08-21T16:00:00Z"
+last_activity = "2026-08-21T18:00:00Z"

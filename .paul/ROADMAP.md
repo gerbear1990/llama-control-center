@@ -18,14 +18,14 @@ in the milestone because it must not collide with the restyle.
 
 **v0.17.0 — Close the Open Loops**
 Status: In progress
-Phases: 0 of 6 complete
+Phases: 1 of 6 complete
 
 ## Phases
 
 | Phase | Name | Plans | Status | Completed |
 |-------|------|-------|--------|-----------|
-| 1 | Terminal-Instrument Design Pass | TBD | In progress | - |
-| 2 | Embedded-MTP Support | TBD | Not started | - |
+| 1 | Terminal-Instrument Design Pass | 1 | ✅ Complete | 2026-08-21 |
+| 2 | Embedded-MTP Support | 1 | 🚧 Planning | - |
 | 3 | vLLM-WSL Fit Estimator + Auto-Tuner | TBD | Not started | - |
 | 4 | Running-Server Observability UI | TBD | Not started | - |
 | 5 | Frontend Module Split | TBD | Not started | - |
@@ -37,12 +37,10 @@ Phases: 0 of 6 complete
 
 **Goal:** Machine data reads in monospace, structure drawn with 1px hairlines instead of
 shadows/lifts, active pane carries an accent left edge — with zero colour changes.
-**Depends on:** Nothing (already in flight)
-**Research:** Unlikely (spec exists)
-
-**Scope:**
-- Restyle `lcc_api/static/` per the design pass
-- Land the 20 uncommitted files currently on `feat/terminal-instrument-design`
+**Status:** ✅ Complete 2026-08-21 — landed as `820e873` (UI) and `cb1818f` (backend half
+of the same working session), plus `ad85599` retiring TODO.md.
+**Note:** the plan document's 32 step checkboxes were never ticked during execution, so
+plan-state there is not a reliable completion signal — the commits are.
 
 **Source:** `docs/superpowers/plans/2026-07-17-terminal-instrument-design.md` + matching spec
 
@@ -50,8 +48,9 @@ shadows/lifts, active pane carries an accent left edge — with zero colour chan
 
 ### Phase 2: Embedded-MTP Support
 
-**Goal:** Close issue #14. Discovery is already fixed in the uncommitted WIP; this phase lands
-that, makes embedded-MTP profiles *launchable*, and adds regression cover.
+**Goal:** Close issue #14. Discovery landed in `cb1818f`; this phase makes embedded-MTP
+profiles *launchable* and adds the regression cover that fix never got.
+**Plan:** `.paul/phases/02-embedded-mtp/02-01-PLAN.md`
 **Depends on:** Nothing
 **Research:** Unlikely (root cause already traced)
 
