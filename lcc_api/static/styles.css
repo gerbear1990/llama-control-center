@@ -3,7 +3,7 @@
    light or dark before it lands here), so there is no prefers-color-scheme
    branch in this file — the two blocks below are the whole palette.
 
-   Machine-produced values read in --font-mono; human text reads in Inter.
+   Machine-produced values read in --font-mono; human text reads in --font-sans.
    Structure is drawn with 1px hairlines, not shadows: only overlays (modals,
    popup menus, toasts, the palette) float. */
 :root {
@@ -49,8 +49,14 @@
   --log-bg: #f7fafb;
   --shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 18px 44px rgba(15, 23, 42, 0.035);
   --radius: 8px;
-  /* Type */
+  /* Type: system faces we actually have. Four real weights — 650/680/760
+     never painted on Segoe/SF and snapped every title to the same bold. */
+  --font-sans: "Segoe UI Variable Text", "Segoe UI Variable", ui-sans-serif, system-ui, "Segoe UI", -apple-system, sans-serif;
   --font-mono: "Cascadia Code", "JetBrains Mono", Consolas, ui-monospace, monospace;
+  --fw-body: 400;
+  --fw-medium: 500;
+  --fw-ui: 600;
+  --fw-strong: 700;
   /* Motion */
   --dur-fast: 60ms;
   --dur-base: 120ms;
@@ -58,7 +64,8 @@
   /* Hairlines: structure drawn with 1px rules, not shadows */
   --rule: var(--border);
   --inset-top: 0 1px 0 var(--inset-highlight) inset;
-  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --rail: inset 3px 0 0 var(--accent);
+  font-family: var(--font-sans);
 }
 
 [data-theme="dark"] {
@@ -110,6 +117,9 @@ body {
   background: var(--bg);
   color: var(--text);
   min-width: 320px;
+  font-size: 14px;
+  font-weight: var(--fw-body);
+  line-height: 1.45;
 }
 
 body.modal-open {
@@ -171,8 +181,27 @@ select:focus {
   border: 0;
 }
 
+.skip-link {
+  position: absolute;
+  left: 12px;
+  top: 8px;
+  z-index: 40;
+  padding: 8px 12px;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  transform: translateY(-160%);
+}
+
+.skip-link:focus {
+  transform: none;
+}
+
 .app-shell {
   min-height: 100vh;
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
   display: grid;
   grid-template-columns: 218px minmax(0, 1fr);
 }
@@ -235,7 +264,7 @@ select:focus {
   display: grid;
   place-items: center;
   border-radius: 8px;
-  font-weight: 760;
+  font-weight: var(--fw-strong);
   font-size: 13px;
 }
 
@@ -243,7 +272,7 @@ select:focus {
   margin: 0;
   font-size: 15px;
   line-height: 1.2;
-  font-weight: 760;
+  font-weight: var(--fw-strong);
 }
 
 .brand p {
@@ -269,7 +298,7 @@ select:focus {
   color: var(--muted);
   text-decoration: none;
   font-size: 13px;
-  font-weight: 650;
+  font-weight: var(--fw-ui);
   transition: background var(--dur-base) ease, color var(--dur-base) ease, transform 120ms ease;
 }
 
@@ -433,14 +462,14 @@ select:focus {
   gap: 9px;
   color: var(--muted);
   font-size: 12px;
-  font-weight: 650;
+  font-weight: var(--fw-ui);
 }
 
 .sidebar-footer-version {
   margin-left: auto;
   color: var(--subtle);
   font-size: 11px;
-  font-weight: 700;
+  font-weight: var(--fw-strong);
   font-variant-numeric: tabular-nums;
 }
 
@@ -448,10 +477,13 @@ select:focus {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 16px;
-  height: 16px;
+  width: 22px;
+  height: 22px;
   margin-left: 4px;
-  border-radius: 3px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  border-radius: 4px;
   color: var(--subtle);
   cursor: pointer;
   transition: background 120ms ease, color 120ms ease;
@@ -508,7 +540,7 @@ select:focus {
   margin: 0;
   font-size: 23px;
   line-height: 1.15;
-  font-weight: 760;
+  font-weight: var(--fw-strong);
   letter-spacing: 0;
 }
 
@@ -527,50 +559,6 @@ select:focus {
   gap: 8px;
   grid-column: 2;
   min-width: 0;
-}
-
-.hardware-widget {
-  display: grid;
-  grid-column: 1 / -1;
-  grid-row: 2;
-  grid-template-columns: repeat(4, minmax(118px, 1fr));
-  gap: 8px;
-  max-width: 880px;
-  min-width: 0;
-}
-
-.hardware-chip {
-  min-height: 40px;
-  padding: 6px 10px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: color-mix(in srgb, var(--surface) 82%, var(--bg));
-  box-shadow: 0 1px 0 var(--inset-highlight) inset;
-  position: relative;
-  min-width: 0;
-}
-
-.hardware-chip span {
-  display: flex;
-  align-items: center;
-  color: var(--muted);
-  font-size: 10px;
-  font-weight: 780;
-  text-transform: uppercase;
-}
-
-.hardware-chip strong {
-  margin-top: 3px;
-  color: var(--text);
-  font-size: 11px;
-  line-height: 1.2;
-  /* Wrap to two lines before truncating so short names never get clipped. */
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-  word-break: break-word;
 }
 
 .search-field {
@@ -680,7 +668,7 @@ select:focus {
   background: var(--accent);
   cursor: pointer;
   font-size: 13px;
-  font-weight: 720;
+  font-weight: var(--fw-ui);
   white-space: nowrap;
 }
 
@@ -765,7 +753,7 @@ select:focus {
   display: block;
   font-size: 24px;
   line-height: 1;
-  font-weight: 760;
+  font-weight: var(--fw-strong);
 }
 
 .metric-label {
@@ -773,7 +761,7 @@ select:focus {
   margin-top: 5px;
   color: var(--muted);
   font-size: 12px;
-  font-weight: 700;
+  font-weight: var(--fw-strong);
 }
 
 .metric.warning .metric-value {
@@ -782,21 +770,64 @@ select:focus {
 
 .workspace {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 348px;
+  grid-template-columns: minmax(0, 1fr);
   gap: 20px;
   align-items: start;
 }
 
-.content-column,
-.inspector {
+.destination {
   display: grid;
-  gap: 20px;
+  gap: 16px;
   min-width: 0;
 }
 
-.inspector {
-  position: sticky;
-  top: 18px;
+.destination[hidden] {
+  display: none;
+}
+
+.session-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  border-bottom: 1px solid var(--border);
+}
+
+.session-tab {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  font-weight: var(--fw-ui);
+  min-height: 36px;
+  padding: 6px 12px;
+}
+
+.session-tab:hover {
+  color: var(--text);
+}
+
+.session-tab.active,
+.session-tab[aria-selected="true"] {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+}
+
+.session-view[hidden] {
+  display: none;
+}
+
+.stage-instrument {
+  display: grid;
+  gap: 16px;
+  width: 100%;
+}
+
+.main:not([data-destination="inventory"]) .status-strip {
+  display: none;
 }
 
 .panel {
@@ -830,7 +861,7 @@ select:focus {
   margin: 0;
   font-size: 15px;
   line-height: 1.2;
-  font-weight: 760;
+  font-weight: var(--fw-strong);
 }
 
 .panel-heading-actions {
@@ -1020,7 +1051,7 @@ select:focus {
   background: var(--surface-2);
   color: var(--muted);
   font-size: 11px;
-  font-weight: 760;
+  font-weight: var(--fw-strong);
   transition: background var(--dur-base) ease, border-color var(--dur-base) ease;
 }
 
@@ -1061,7 +1092,7 @@ th {
   border-bottom: 1px solid var(--border);
   font-size: 11px;
   line-height: 1.2;
-  font-weight: 760;
+  font-weight: var(--fw-strong);
   text-transform: uppercase;
 }
 
@@ -1083,7 +1114,7 @@ tr.selected td {
 }
 
 tr.selected td:first-child {
-  box-shadow: inset 3px 0 0 var(--accent);
+  box-shadow: var(--rail);
 }
 
 tr.selected:hover td {
@@ -1105,7 +1136,7 @@ tr.profile-group-header td {
 }
 
 .profile-group-title {
-  font-weight: 600;
+  font-weight: var(--fw-ui);
   font-size: 0.78rem;
   color: var(--text-secondary);
   text-transform: uppercase;
@@ -1115,7 +1146,7 @@ tr.profile-group-header td {
 .group-toggle {
   border: 0;
   background: transparent;
-  font-weight: 720;
+  font-weight: var(--fw-ui);
   font-size: 11px;
   color: var(--text-secondary);
   text-transform: uppercase;
@@ -1187,7 +1218,7 @@ td:nth-child(7) {
 }
 
 .cell-title {
-  font-weight: 730;
+  font-weight: var(--fw-strong);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1217,7 +1248,7 @@ td:nth-child(7) {
   color: var(--text);
   cursor: pointer;
   font-size: 12px;
-  font-weight: 720;
+  font-weight: var(--fw-ui);
   white-space: nowrap;
   transition: background var(--dur-base) ease, border-color var(--dur-base) ease, transform var(--dur-fast) ease, box-shadow var(--dur-base) ease;
 }
@@ -1331,6 +1362,40 @@ td:nth-child(7) {
   font-size: 12px;
   line-height: 1.4;
   overflow-wrap: anywhere;
+}
+
+.empty-state {
+  display: grid;
+  gap: 10px;
+  justify-items: start;
+}
+
+.empty-state > p {
+  margin: 0;
+}
+
+.empty-state > strong {
+  display: block;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: var(--fw-ui);
+}
+
+.empty-state-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.empty-state-stage {
+  padding: 20px 22px;
+}
+
+.modal-note {
+  margin: 0 0 4px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 .server-metrics {
@@ -1485,7 +1550,7 @@ td:nth-child(7) {
 .chat-role {
   color: var(--muted);
   font-size: 11px;
-  font-weight: 600;
+  font-weight: var(--fw-ui);
   letter-spacing: 0.04em;
   text-align: right;
   /* Line up the gutter with the first line of the text it labels. */
@@ -1505,7 +1570,7 @@ td:nth-child(7) {
 .chat-empty {
   margin: 8px 0;
   padding: 10px 12px;
-  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+  font-family: var(--font-sans);
   font-size: 12px;
 }
 
@@ -1567,7 +1632,7 @@ td:nth-child(7) {
 }
 
 .hf-label {
-  font-weight: 700;
+  font-weight: var(--fw-strong);
   font-size: 12px;
   text-transform: uppercase;
   color: var(--muted);
@@ -1578,7 +1643,7 @@ td:nth-child(7) {
 .hf-status-row span:last-child:not(.badge) {
   color: var(--text);
   font-size: 13px;
-  font-weight: 600;
+  font-weight: var(--fw-ui);
 }
 
 #hf-cli-path {
@@ -1667,7 +1732,7 @@ td:nth-child(7) {
 }
 
 .draft-suggestion-item .draft-name {
-  font-weight: 600;
+  font-weight: var(--fw-ui);
   color: var(--text);
 }
 
@@ -1685,6 +1750,10 @@ td:nth-child(7) {
   left: 50%;
   bottom: 20px;
   z-index: 120;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
   max-width: min(520px, calc(100vw - 32px));
   padding: 10px 12px;
   border: 1px solid color-mix(in srgb, var(--toast-bg) 22%, transparent);
@@ -1693,7 +1762,7 @@ td:nth-child(7) {
   color: var(--toast-text);
   box-shadow: 0 16px 44px rgba(0, 0, 0, 0.18);
   font-size: 13px;
-  font-weight: 700;
+  font-weight: var(--fw-strong);
   line-height: 1.35;
   opacity: 0;
   pointer-events: none;
@@ -1703,6 +1772,7 @@ td:nth-child(7) {
 
 .toast.show {
   opacity: 1;
+  pointer-events: auto;
   transform: translateX(-50%) translateY(0);
 }
 
@@ -1729,7 +1799,6 @@ td:nth-child(7) {
 }
 
 #prepare-selected-button {
-  grid-column: 1 / -1;
   min-height: 36px;
 }
 
@@ -1739,7 +1808,7 @@ td:nth-child(7) {
   border-top: 1px solid var(--border);
   color: var(--text-secondary);
   font-size: 11px;
-  font-weight: 780;
+  font-weight: var(--fw-strong);
   text-transform: uppercase;
   transition: color var(--dur-base) ease;
 }
@@ -1769,7 +1838,7 @@ td:nth-child(7) {
 .check-row label {
   color: var(--muted);
   font-size: 11px;
-  font-weight: 760;
+  font-weight: var(--fw-strong);
 }
 
 .field > span,
@@ -1819,7 +1888,7 @@ td:nth-child(7) {
   color: var(--surface);
   box-shadow: var(--shadow);
   font-size: 11px;
-  font-weight: 650;
+  font-weight: var(--fw-ui);
   line-height: 1.35;
   opacity: 0;
   overflow-wrap: anywhere;
@@ -1960,7 +2029,7 @@ td:nth-child(7) {
 .estimate-card span {
   color: var(--muted);
   font-size: 11px;
-  font-weight: 780;
+  font-weight: var(--fw-strong);
   text-transform: uppercase;
 }
 
@@ -2012,7 +2081,7 @@ td:nth-child(7) {
 .note-block-title {
   margin: 0 0 8px;
   font-size: 11px;
-  font-weight: 600;
+  font-weight: var(--fw-ui);
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--muted);
@@ -2080,6 +2149,18 @@ td:nth-child(7) {
   text-align: right;
 }
 
+.tune-notes {
+  margin: 0 0 10px;
+  padding: 0 0 0 18px;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.tune-notes li + li {
+  margin-top: 4px;
+}
+
 .tune-suggestions {
   display: grid;
   gap: 8px;
@@ -2137,7 +2218,7 @@ td:nth-child(7) {
   cursor: pointer;
   padding: 9px 10px;
   color: var(--text);
-  font-weight: 720;
+  font-weight: var(--fw-ui);
 }
 
 .fit-details code {
@@ -2248,7 +2329,7 @@ td:nth-child(7) {
 .settings-form .settings-group-title {
   margin: 0 0 8px;
   font-size: 13px;
-  font-weight: 600;
+  font-weight: var(--fw-ui);
   color: var(--text);
 }
 
@@ -2419,12 +2500,6 @@ td:nth-child(7) {
     grid-template-columns: minmax(220px, 1fr) auto;
     align-items: start;
   }
-
-  .hardware-widget {
-    grid-column: 1 / -1;
-    grid-row: 2;
-    max-width: 720px;
-  }
 }
 
 @media (max-width: 1500px) {
@@ -2434,10 +2509,6 @@ td:nth-child(7) {
 
   .workspace {
     grid-template-columns: 1fr;
-  }
-
-  .inspector {
-    position: static;
   }
 
   .runtime-grid {
@@ -2493,11 +2564,6 @@ td:nth-child(7) {
     flex: 1 1 100%;
   }
 
-  .hardware-widget {
-    grid-column: auto;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
   .status-strip,
   .runtime-grid {
     grid-template-columns: 1fr;
@@ -2528,7 +2594,7 @@ td:nth-child(7) {
   }
 
   table {
-    min-width: 760px;
+    min-width: 560px;
   }
 }
 
@@ -2537,7 +2603,7 @@ td:nth-child(7) {
   padding: 0.05em 0.4em;
   border-radius: 999px;
   font-size: 0.72em;
-  font-weight: 600;
+  font-weight: var(--fw-ui);
   text-transform: uppercase;
   letter-spacing: 0.02em;
   color: var(--accent);
@@ -2555,7 +2621,7 @@ td:nth-child(7) {
   background: var(--surface);
 }
 
-.sidebar-toggle {
+.sidebar-collapsed .sidebar-live-hardware {
   display: none;
 }
 
@@ -2602,7 +2668,7 @@ td:nth-child(7) {
   border: 0;
   border-radius: 8px;
   font-size: 14px;
-  font-weight: 680;
+  font-weight: var(--fw-ui);
   text-align: left;
 }
 
@@ -2621,8 +2687,8 @@ td:nth-child(7) {
    running servers, the focused panel); an earlier pass suppressed it here in
    light mode only. One idiom, both themes. */
 .nav-item.active {
-  box-shadow: inset 3px 0 0 var(--accent);
-  font-weight: 760;
+  box-shadow: var(--rail);
+  font-weight: var(--fw-strong);
 }
 
 .nav-icon {
@@ -2660,13 +2726,13 @@ td:nth-child(7) {
 }
 
 .topbar {
-  min-height: 78px;
+  min-height: 56px;
   display: grid;
-  grid-template-columns: minmax(300px, 1fr) minmax(560px, 640px) auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   grid-template-rows: auto;
   align-items: center;
   gap: 12px;
-  margin-bottom: 20px;
+  margin-bottom: 16px;
 }
 
 .topbar-title {
@@ -2674,9 +2740,9 @@ td:nth-child(7) {
 }
 
 .topbar h2 {
-  font-size: 28px;
-  line-height: 1.05;
-  font-weight: 760;
+  font-size: 22px;
+  line-height: 1.15;
+  font-weight: var(--fw-strong);
 }
 
 .topbar p,
@@ -2686,40 +2752,13 @@ td:nth-child(7) {
   font-size: 14px;
 }
 
-.hardware-widget {
-  grid-column: 2;
-  grid-row: 1;
-  max-width: none;
-  grid-template-columns: repeat(4, minmax(126px, 1fr));
-  gap: 8px;
-}
-
-.hardware-chip {
-  min-height: 80px;
-  padding: 12px 18px;
-  border-radius: 8px;
-  background: var(--surface);
-  border-color: var(--border);
-}
-
-.hardware-chip span {
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.hardware-chip strong {
-  margin-top: 5px;
-  color: var(--text);
-  font-size: 13px;
-  line-height: 1.25;
-  -webkit-line-clamp: 3;
-  line-clamp: 3;
-}
-
 .topbar-actions {
-  grid-column: 3;
+  grid-column: 2;
   gap: 10px;
+}
+
+.main:not([data-destination="inventory"]) .search-field {
+  display: none;
 }
 
 .search-field,
@@ -2757,7 +2796,7 @@ td:nth-child(7) {
   background: var(--surface-2);
   font-size: 12px;
   font-family: var(--font-mono);
-  font-weight: 650;
+  font-weight: var(--fw-ui);
 }
 
 .button {
@@ -2794,11 +2833,11 @@ td:nth-child(7) {
 }
 
 .metric {
-  min-height: 88px;
+  min-height: 56px;
   display: flex;
   align-items: center;
-  gap: 22px;
-  padding: 18px 24px;
+  gap: 12px;
+  padding: 10px 16px;
   border-radius: 7px;
   background: var(--surface);
   box-shadow: none;
@@ -2862,24 +2901,19 @@ td:nth-child(7) {
 
 .metric-value {
   font-size: 27px;
-  font-weight: 760;
+  font-weight: var(--fw-strong);
 }
 
 .metric-label {
   margin: 0;
   color: var(--muted);
   font-size: 15px;
-  font-weight: 500;
+  font-weight: var(--fw-medium);
 }
 
 .workspace {
-  grid-template-columns: minmax(0, 1fr) clamp(340px, 22vw, 386px);
+  grid-template-columns: minmax(0, 1fr);
   gap: 20px;
-}
-
-.content-column,
-.inspector {
-  gap: 12px;
 }
 
 .panel {
@@ -2888,18 +2922,18 @@ td:nth-child(7) {
 }
 
 .panel-heading {
-  min-height: 72px;
-  padding: 18px 20px;
+  min-height: 52px;
+  padding: 12px 16px;
   background: var(--heading-bg);
 }
 
 .panel-heading.compact {
-  min-height: 72px;
+  min-height: 48px;
 }
 
 .panel-heading h3 {
   font-size: 17px;
-  font-weight: 760;
+  font-weight: var(--fw-strong);
 }
 
 .panel-heading-actions {
@@ -2927,7 +2961,7 @@ td:nth-child(7) {
   color: var(--muted);
   background: var(--heading-bg);
   font-size: 12px;
-  font-weight: 760;
+  font-weight: var(--fw-strong);
   text-transform: none;
 }
 
@@ -3004,7 +3038,7 @@ td:nth-child(7) {
   color: var(--accent);
   cursor: pointer;
   font-size: 13px;
-  font-weight: 720;
+  font-weight: var(--fw-ui);
   text-decoration: none;
 }
 
@@ -3074,7 +3108,7 @@ td:nth-child(7) {
   border: 1px solid var(--border);
   border-radius: 6px;
   font-size: 12px;
-  font-weight: 720;
+  font-weight: var(--fw-ui);
   white-space: nowrap;
   cursor: pointer;
 }
@@ -3113,7 +3147,7 @@ td:nth-child(7) {
 }
 
 #profiles table {
-  min-width: 720px;
+  min-width: 560px;
   table-layout: fixed;
 }
 
@@ -3128,23 +3162,17 @@ td:nth-child(7) {
 }
 
 #profiles th:nth-child(1),
-#profiles td:nth-child(1) { width: 22%; }
+#profiles td:nth-child(1) { width: 26%; }
 #profiles th:nth-child(2),
-#profiles td:nth-child(2) { width: 16%; }
+#profiles td:nth-child(2) { width: 22%; }
 #profiles th:nth-child(3),
-#profiles td:nth-child(3) { width: 14%; }
+#profiles td:nth-child(3) { width: 12%; }
 #profiles th:nth-child(4),
-#profiles td:nth-child(4),
+#profiles td:nth-child(4) { width: 10%; }
 #profiles th:nth-child(5),
-#profiles td:nth-child(5),
+#profiles td:nth-child(5) { width: 14%; }
 #profiles th:nth-child(6),
-#profiles td:nth-child(6) { width: 9%; }
-#profiles th:nth-child(7),
-#profiles td:nth-child(7) { width: 9%; }
-#profiles th:nth-child(8),
-#profiles td:nth-child(8) { width: 10%; }
-#profiles th:nth-child(9),
-#profiles td:nth-child(9) { width: 11%; }
+#profiles td:nth-child(6) { width: 16%; }
 
 tr.profile-group-header td {
   height: 30px;
@@ -3154,7 +3182,7 @@ tr.profile-group-header td {
 .group-toggle {
   color: var(--text);
   font-size: 12px;
-  font-weight: 760;
+  font-weight: var(--fw-strong);
   text-transform: none;
 }
 
@@ -3166,7 +3194,7 @@ tr.profile-group-header td {
 }
 
 .cell-title {
-  font-weight: 650;
+  font-weight: var(--fw-ui);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -3202,10 +3230,6 @@ tr.profile-group-header td {
   padding: 0;
 }
 
-.inspector {
-  top: 18px;
-}
-
 .param-form {
   padding: 18px;
   gap: 14px;
@@ -3217,7 +3241,7 @@ tr.profile-group-header td {
   color: var(--text);
   border-top-color: var(--border);
   font-size: 13px;
-  font-weight: 780;
+  font-weight: var(--fw-strong);
   text-transform: uppercase;
 }
 
@@ -3283,7 +3307,7 @@ tr.profile-group-header td {
   display: block;
 }
 
-/* Save Profile keeps its own row with the unsaved-edits chip above it; the six
+/* Save parameters keeps its own row with the unsaved-edits chip above it; the six
    occasional tools live behind the disclosure next to it. */
 #parameters .save-actions {
   display: grid;
@@ -3348,7 +3372,6 @@ tr.profile-group-header td {
   color: var(--muted);
 }
 
-
 #parameters .launch-actions {
   display: grid;
   grid-template-columns: 1fr;
@@ -3357,32 +3380,112 @@ tr.profile-group-header td {
   width: 100%;
 }
 
+#parameters .launch-lock,
 #parameters .launch-primary,
-#parameters .launch-secondary,
+#parameters .launch-stop-button,
 #parameters .save-actions,
 #parameters .tools-menu {
   grid-column: 1 / -1;
   width: 100%;
 }
 
+.launch-lock {
+  display: grid;
+  gap: 8px;
+  padding: 12px 13px;
+  border: 1px solid var(--badge-ok-border);
+  border-radius: var(--radius);
+  background: var(--badge-ok-bg);
+  box-shadow: var(--rail);
+}
+
+.launch-lock[hidden] {
+  display: none;
+}
+
+.launch-lock-main {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.launch-lock-endpoint {
+  min-width: 0;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 16px;
+  font-weight: var(--fw-strong);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+
+.launch-lock-detail {
+  margin: 0;
+  color: color-mix(in srgb, var(--text) 72%, var(--badge-ok-border));
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.launch-lock-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.launch-lock.just-locked {
+  animation: field-applied-flash 420ms ease;
+}
+
 #parameters .launch-primary {
-  min-height: 40px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 44px;
   width: 100%;
   font-size: 15px;
 }
 
-#parameters .launch-secondary {
-  display: grid;
-  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
-  gap: 8px;
+#parameters .launch-primary.busy {
+  color: inherit;
 }
 
-#parameters .launch-secondary #prepare-selected-button {
-  grid-column: auto;
+#parameters .launch-primary.busy::after {
+  display: none;
 }
 
-#parameters .launch-secondary .mini-button {
+#parameters .launch-primary.busy .launch-glyph {
+  display: none;
+}
+
+#parameters .launch-stop-button {
   min-height: 38px;
+  width: 100%;
+}
+
+.param-disclosure {
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+}
+
+.param-disclosure > summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: var(--fw-ui);
+  list-style: none;
+}
+
+.param-disclosure > summary::-webkit-details-marker {
+  display: none;
+}
+
+.param-disclosure[open] > summary {
+  color: var(--text);
+  margin-bottom: 12px;
 }
 
 .launch-stop-button {
@@ -3391,16 +3494,7 @@ tr.profile-group-header td {
 }
 
 @media (max-width: 1500px) {
-  .topbar {
-    grid-template-columns: minmax(260px, 1fr) minmax(540px, 620px);
-  }
-
-  .hardware-widget {
-    grid-column: 2;
-  }
-
   .topbar-actions {
-    grid-column: 1 / -1;
     justify-content: flex-end;
   }
 
@@ -3427,10 +3521,6 @@ tr.profile-group-header td {
 @media (max-width: 1180px) {
   .workspace {
     grid-template-columns: 1fr;
-  }
-
-  .inspector {
-    position: static;
   }
 
   #profiles .panel-heading {
@@ -3479,20 +3569,11 @@ tr.profile-group-header td {
     grid-row: 1;
   }
 
-  .hardware-widget,
   .topbar-actions {
     grid-column: 1;
-  }
-
-  .topbar-actions {
     grid-row: 2;
   }
 
-  .hardware-widget {
-    grid-row: 3;
-  }
-
-  .hardware-widget,
   .status-strip {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -3504,7 +3585,6 @@ tr.profile-group-header td {
 }
 
 @media (max-width: 560px) {
-  .hardware-widget,
   .status-strip {
     grid-template-columns: 1fr;
   }
@@ -3552,7 +3632,7 @@ tr.profile-group-header td {
 }
 
 .live-gpu-card-head .gpu-name {
-  font-weight: 600;
+  font-weight: var(--fw-ui);
   font-size: 0.9rem;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -3606,7 +3686,7 @@ tr.profile-group-header td {
 }
 
 .live-ram-row .live-bar-label .label-title {
-  font-weight: 600;
+  font-weight: var(--fw-ui);
 }
 
 .benchmark-history-list {
@@ -3657,6 +3737,8 @@ tr.profile-group-header td {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .sidebar-live-head {
@@ -3668,7 +3750,7 @@ tr.profile-group-header td {
 
 .sidebar-live-title {
   font-size: 0.78rem;
-  font-weight: 600;
+  font-weight: var(--fw-ui);
   letter-spacing: 0.04em;
   text-transform: uppercase;
   color: var(--muted);
@@ -3694,7 +3776,7 @@ tr.profile-group-header td {
 
 .sidebar-live-hardware .live-gpu-card-head .gpu-name {
   font-size: 0.82rem;
-  font-weight: 600;
+  font-weight: var(--fw-ui);
 }
 
 .sidebar-live-hardware .live-gpu-card-head .gpu-stats {
@@ -3801,17 +3883,16 @@ tr.profile-group-header td {
   50% { opacity: 0.4; }
 }
 
-/* Toast action button: short label shown to the right of the toast text
-   for the lifetime of the toast (5s). Used by 'Use port N' on launch failure. */
+/* Toast action stays until used or dismissed. Info toasts still expire. */
 .toast-action {
-  margin-left: 12px;
+  margin: 0;
   padding: 4px 10px;
   border-radius: 999px;
   border: 1px solid var(--border-strong);
   background: var(--surface-2);
   color: var(--text);
   font-size: 0.78rem;
-  font-weight: 600;
+  font-weight: var(--fw-ui);
   cursor: pointer;
 }
 
@@ -3821,7 +3902,7 @@ tr.profile-group-header td {
 
 /* ===== Terminal-instrument pass =====
    Rule of thumb: values the machine produced (and labels classifying them)
-   are mono; anything you read or click stays Inter. Appended last so these
+   are mono; anything you read or click stays --font-sans. Appended last so these
    override the two earlier passes by cascade order. No colour changes. */
 
 .metric-value {
@@ -3844,8 +3925,6 @@ th,
   letter-spacing: 0.05em;
 }
 
-.hardware-chip span,
-.hardware-chip strong,
 .live-gpu-card-head .gpu-stats,
 .live-bar-label {
   font-family: var(--font-mono);
@@ -3878,54 +3957,15 @@ th,
   box-shadow: var(--inset-top);
 }
 
-/* Full-height rule in the gap between content column and inspector.
-   Offset mirrors the .workspace grid template: inspector clamp() + half the 20px gap. */
-.workspace {
-  position: relative;
-}
-
-.workspace::after {
-  content: "";
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  right: calc(clamp(340px, 22vw, 386px) + 10px);
-  width: 1px;
-  background: var(--rule);
-  pointer-events: none;
-}
-
-@media (max-width: 1180px) {
-  .workspace::after {
-    display: none;
-  }
-}
-
 /* Horizontal divider separating the page-header zone from metrics + workspace. */
 .topbar {
   border-bottom: 1px solid var(--rule);
   padding-bottom: 16px;
 }
 
-/* Category eyebrow above each panel title. */
-.panel-eyebrow {
-  display: block;
-  margin: 0 0 3px;
-  font-family: var(--font-mono);
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--muted);
-}
-
 /* Active-pane edge: accent inset-left rail, same language as nav + selected rows. */
 .server-item.running {
-  box-shadow: inset 3px 0 0 var(--accent);
-}
-
-.panel:focus-within {
-  box-shadow: inset 3px 0 0 var(--accent), var(--inset-top);
+  box-shadow: var(--rail);
 }
 
 /* Metrics that act as filters are controls: they take the pointer, the keyboard,
@@ -3946,7 +3986,7 @@ th,
 }
 
 /* Unsaved-parameter chip. It shares .param-hint's pill styling and spans the
-   button row so it reads as a heading over Save Profile rather than taking a
+   button row so it reads as a heading over Save parameters rather than taking a
    button's cell. */
 .param-dirty-chip {
   grid-column: 1 / -1;
@@ -3982,7 +4022,7 @@ th,
 /* The palette highlight follows aria-activedescendant while focus stays in the
    filter box, so the row needs a visible marker of its own. */
 .palette-list li.selected {
-  box-shadow: inset 2px 0 0 var(--accent);
+  box-shadow: var(--rail);
 }
 
 /* ----- Reduced motion -------------------------------------------------------
@@ -4002,5 +4042,115 @@ th,
   .mini-button.busy::after {
     animation: none;
     border-right-color: currentColor;
+  }
+}
+
+/* Touch and 200% zoom: 44px targets. Fine-pointer desktop stays denser. */
+@media (pointer: coarse) {
+  .button,
+  .mini-button,
+  .nav-item,
+  .session-tab,
+  .sidebar-toggle,
+  .panel-toggle,
+  .group-toggle,
+  .api-copy-btn {
+    min-height: 44px;
+  }
+
+  .icon-button,
+  .api-copy-btn,
+  .sidebar-toggle,
+  .panel-toggle {
+    min-width: 44px;
+  }
+
+  #profiles .icon-button {
+    width: 44px;
+    min-height: 44px;
+  }
+}
+
+/* Narrow / zoomed: profiles table becomes labeled cards. 900px catches
+   200% zoom on a 1800px laptop (layout width ≈ 900). */
+@media (max-width: 900px) {
+  .button,
+  .mini-button,
+  .session-tab,
+  .group-toggle {
+    min-height: 44px;
+  }
+
+  #profiles .table-wrap {
+    overflow: visible;
+  }
+
+  #profiles table {
+    min-width: 0;
+    width: 100%;
+  }
+
+  #profiles thead {
+    display: none;
+  }
+
+  #profiles tbody {
+    display: block;
+  }
+
+  #profiles tr.profile-group-header,
+  #profiles tr.profile-group-header td {
+    display: block;
+    width: 100%;
+    height: auto;
+  }
+
+  #profiles tr.profile-row {
+    display: block;
+    width: 100%;
+    margin: 0 0 10px;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface);
+  }
+
+  #profiles tr.profile-row td {
+    display: grid;
+    grid-template-columns: 6.5rem minmax(0, 1fr);
+    align-items: center;
+    gap: 8px;
+    width: auto;
+    padding: 6px 0;
+    border: 0;
+  }
+
+  #profiles tr.profile-row td::before {
+    content: attr(data-label);
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: var(--fw-ui);
+  }
+
+  #profiles tr.profile-row td:last-child {
+    grid-template-columns: 1fr;
+  }
+
+  #profiles tr.profile-row td:last-child::before {
+    display: none;
+  }
+
+  #profiles .row-actions {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  #profiles .icon-button {
+    width: 44px;
+    min-height: 44px;
+  }
+
+  .cell-title {
+    white-space: normal;
   }
 }
