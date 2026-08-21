@@ -2,6 +2,8 @@
 __pycache__/
 *.py[cod]
 *.pyo
+*.egg-info/
+uv.lock
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
@@ -26,6 +28,8 @@ graphify/
 graphify-out/
 lcc_smoke_*.log
 backups/
+models.json.bak-*
+.impeccable/
 .sandbox-home/
 .sandbox-tmp/
 .claw/

@@ -70,6 +70,20 @@ class LinuxCpuInfoTests(unittest.TestCase):
         self.assertEqual(_parse_cpuinfo(""), {"name": None, "physical_cores": None})
 
 
+class MemoryTypeTests(unittest.TestCase):
+    def test_smbios_codes_map_to_ddr5_and_lpddr4(self) -> None:
+        # SMBIOS 0x1E is LPDDR4 and DDR5 is 0x22; mapping 30 to DDR5 sent real
+        # DDR5 boxes down the generic bandwidth formula (~2x understated).
+        from lcc_core.hardware import _calculate_ram_bandwidth, _windows_memory_type
+
+        self.assertEqual(_windows_memory_type(30), "LPDDR4")
+        self.assertEqual(_windows_memory_type(34), "DDR5")
+        self.assertEqual(_windows_memory_type(35), "LPDDR5")
+        self.assertEqual(_windows_memory_type(26), "DDR4")
+        self.assertEqual(_calculate_ram_bandwidth(6000, "DDR5"), 96.0)
+        self.assertEqual(_calculate_ram_bandwidth(6400, "LPDDR5"), 102.4)
+
+
 class ModelDiscoveryTests(unittest.TestCase):
     def test_parse_quant_and_params(self) -> None:
         self.assertEqual(parse_quant("Qwen3-14B-Q4_K_M.gguf"), "Q4_K_M")
@@ -444,6 +458,36 @@ class ProfileResolverTests(unittest.TestCase):
 
 
 class LaunchArgsTests(unittest.TestCase):
+    def test_polling_off_by_default_when_layers_are_offloaded(self) -> None:
+        """An offloaded server must not busy-wait.
+
+        llama.cpp defaults --poll to 50, so its threadpool spins every
+        --threads core at 100% even with no request in flight. Measured on an
+        idle server: 7.99 cpu-sec/sec at --threads 8, versus 0.01 with --poll 0.
+        With the model on the GPU those threads have nothing to do between
+        batches, so polling is pure waste.
+        """
+        gpu = build_llama_server_args(
+            "llama-server", "Tiny-1B-Q8_0.gguf",
+            {"gpu_layers": 999, "threads": 8},
+        )
+        self.assertEqual(gpu.argv[gpu.argv.index("--poll") + 1], "0")
+
+        # CPU-only inference genuinely needs the worker threads hot, so the
+        # llama.cpp default is preserved there.
+        cpu = build_llama_server_args(
+            "llama-server", "Tiny-1B-Q8_0.gguf",
+            {"gpu_layers": 0, "threads": 8},
+        )
+        self.assertEqual(cpu.argv[cpu.argv.index("--poll") + 1], "50")
+
+        # An explicit value always wins.
+        explicit = build_llama_server_args(
+            "llama-server", "Tiny-1B-Q8_0.gguf",
+            {"gpu_layers": 999, "threads": 8, "poll": 25},
+        )
+        self.assertEqual(explicit.argv[explicit.argv.index("--poll") + 1], "25")
+
     def test_builds_llama_server_args_without_shell_string_rebuild(self) -> None:
         cmd = build_llama_server_args(
             "llama-server",
@@ -480,8 +524,14 @@ class LaunchArgsTests(unittest.TestCase):
         self.assertIn("--gpu-layers", cmd.argv)
         self.assertIn("all", cmd.argv)
         self.assertIn("--model-draft", cmd.argv)
-        self.assertIn("--spec-type", cmd.argv)
-        self.assertIn("--spec-draft-n-max", cmd.argv)
+        # Upstream only knows --draft-max, not --spec-draft-n-max.
+        self.assertNotIn("--spec-draft-n-max", cmd.argv)
+        # --spec-type IS emitted alongside --model-draft: upstream treats the two
+        # as independent, and an explicit type overrides the inference llama.cpp
+        # would otherwise make from the draft sidecar/GGUF metadata.
+        # Verified against build 10472 (upstream 60eeeb608).
+        self.assertEqual(cmd.argv[cmd.argv.index("--spec-type") + 1], "draft-mtp")
+        self.assertEqual(cmd.argv[cmd.argv.index("--draft-max") + 1], "4")
         self.assertIn("--temp", cmd.argv)
         self.assertIn("0.7", cmd.argv)
         self.assertIn("--top-p", cmd.argv)
@@ -489,6 +539,47 @@ class LaunchArgsTests(unittest.TestCase):
         self.assertIn("--predict", cmd.argv)
         self.assertIn("--no-kv-offload", cmd.argv)
         self.assertIn("--no-op-offload", cmd.argv)
+
+    def test_spec_type_emits_every_supported_value(self) -> None:
+        # Was test_spec_type_only_emitted_without_draft_model_and_when_supported,
+        # which asserted draft-mtp was unsupported. That mirrored the April source
+        # clone in tools/llama.cpp-source; the installed binary (build 10472,
+        # upstream 60eeeb608) accepts the whole draft-* family.
+        cmd = build_llama_server_args("llama-server", "m.gguf", {"spec_type": "ngram-cache"})
+        self.assertEqual(cmd.argv[cmd.argv.index("--spec-type") + 1], "ngram-cache")
+        # The embedded-MTP case from issue #14.
+        mtp = build_llama_server_args("llama-server", "m.gguf", {"spec_type": "draft-mtp"})
+        self.assertEqual(mtp.argv[mtp.argv.index("--spec-type") + 1], "draft-mtp")
+        self.assertFalse(mtp.warnings)
+
+    def test_spec_type_accepts_a_comma_separated_list(self) -> None:
+        # Upstream splits on ',' and appends each name to speculative.types.
+        cmd = build_llama_server_args(
+            "llama-server", "m.gguf", {"spec_type": "draft-mtp, ngram-cache"}
+        )
+        self.assertEqual(cmd.argv[cmd.argv.index("--spec-type") + 1], "draft-mtp,ngram-cache")
+        self.assertFalse(cmd.warnings)
+
+    def test_spec_type_drops_only_the_unsupported_entries(self) -> None:
+        cmd = build_llama_server_args(
+            "llama-server", "m.gguf", {"spec_type": "draft-mtp,not-a-real-type"}
+        )
+        # An unsupported value makes llama-server exit before it listens, so it is
+        # dropped -- but it must not take the valid entries down with it.
+        self.assertEqual(cmd.argv[cmd.argv.index("--spec-type") + 1], "draft-mtp")
+        self.assertTrue(any("not-a-real-type" in warning for warning in cmd.warnings))
+
+    def test_spec_type_wholly_unsupported_is_not_emitted(self) -> None:
+        bogus = build_llama_server_args("llama-server", "m.gguf", {"spec_type": "nonsense"})
+        self.assertNotIn("--spec-type", bogus.argv)
+        self.assertTrue(bogus.warnings)
+
+    def test_draft_max_alias_maps_to_upstream_flag(self) -> None:
+        cmd = build_llama_server_args(
+            "llama-server", "m.gguf", {"draft_model": "d.gguf", "draft_max": 8, "draft_min": 2}
+        )
+        self.assertEqual(cmd.argv[cmd.argv.index("--draft-max") + 1], "8")
+        self.assertEqual(cmd.argv[cmd.argv.index("--draft-min") + 1], "2")
 
     def test_string_gpu_layers_do_not_crash(self) -> None:
         # 'all'/'auto' and float-ish strings are valid manifest values elsewhere
@@ -554,7 +645,14 @@ class LaunchArgsTests(unittest.TestCase):
         self.assertIn("-tb", args)
         self.assertIn("-nkvo", args)
         self.assertIn("--op-offload", args)
-        parsed = parse_fit_output("-c 262144 -ngl -2\n", "CUDA0 22201 2879 814")
+        # llama-fit-params parses with LLAMA_EXAMPLE_COMMON and rejects the whole
+        # command line on an unknown flag, so only real upstream flags may appear.
+        self.assertNotIn("-fitp", args)
+        self.assertNotIn("--reasoning", args)
+        parsed = parse_fit_output(
+            "-c 262144 -ngl -2\n",
+            "llama_memory_breakdown_print: |   - CUDA0 (RTX 4090)   | 26000 =   106 + (25894 = 22201 +    2879 +     814) +           0 |",
+        )
         self.assertEqual(parsed["suggestions"]["ctx_size"], 262144)
         self.assertEqual(parsed["suggestions"]["gpu_layers"], 999)
         self.assertEqual(parsed["suggestions"]["cuda_memory_mib"]["context"], 2879)
@@ -571,7 +669,8 @@ class LaunchArgsTests(unittest.TestCase):
         """
         parsed = parse_fit_output(
             output,
-            "CUDA0 26090 1803 826\nprojected to use 28719 MiB on CUDA0 vs. 32606 MiB free",
+            "llama_memory_breakdown_print: |   - CUDA0 (RTX 5090)   | 32606 =  3887 + (28719 = 26090 +    1803 +     826) +           0 |"
+            "\nprojected to use 28719 MiB on CUDA0 vs. 32606 MiB free",
         )
         suggestions = parsed["suggestions"]
         self.assertEqual(suggestions["ctx_size"], 131072)
@@ -770,6 +869,21 @@ class KvMetaProbeTests(unittest.TestCase):
         self.assertEqual(self.parse_calls, [])  # never opened the GGUF
         self.assertIsNotNone(fit["estimated"]["kv_cache_mib"])  # heuristic still produced a number
 
+    def test_partial_gpu_layers_badge_does_not_parse_gguf(self) -> None:
+        # A partial -ngl needs the model's layer count; on the badge path that
+        # must come from cache or the heuristic, never from a live header read.
+        fit = self.est.estimate_memory_fit(
+            {"ctx_size": 4096, "gpu_layers": 20}, self.model, None, probe_model=False
+        )
+        self.assertEqual(self.parse_calls, [])
+        self.assertEqual(fit["inputs"]["gpu_layer_fraction"], round(20 / 80, 2))
+        # With probing allowed the real layer count (32) is used instead.
+        fit = self.est.estimate_memory_fit(
+            {"ctx_size": 4096, "gpu_layers": 20}, self.model, None, probe_model=True
+        )
+        self.assertEqual(len(self.parse_calls), 1)
+        self.assertEqual(fit["inputs"]["gpu_layer_fraction"], round(20 / 32, 2))
+
     def test_probe_parses_once_then_persists(self) -> None:
         self.est.estimate_memory_fit({"ctx_size": 4096}, self.model, None, probe_model=True)
         self.assertEqual(len(self.parse_calls), 1)
@@ -886,19 +1000,51 @@ class SmartTuneTests(unittest.TestCase):
         fit = estimate_memory_fit({"ctx_size": 262144, "gpu_layers": "all"}, model, self._hw(24))
         self.assertTrue(any("trained window" in w for w in fit["warnings"]))
 
-    def test_cpu_fallback_flagged_when_gpu_present_but_vram_full(self) -> None:
-        # A GPU exists but only a sliver of VRAM is free (a stale server is still
-        # holding it). Every GPU-offload config is rejected, so the tuner can only
-        # land on a CPU-only pick — it must flag that loudly, not report a clean win.
+    def test_sizes_against_total_vram_when_another_process_holds_the_card(self) -> None:
+        # A stale server can leave only a sliver of free VRAM. Smart Fit must
+        # still size the card (total), not the leftover, so the recommendation
+        # stays GPU-offload and warns that Start will compete for memory.
         from lcc_core.smart_tune import auto_tune_fit
 
         hw = self._hw(24)
         hw["primary_gpu"]["vram_free_bytes"] = int(0.3 * 1024**3)  # ~300 MiB free
+        model = {"name": "test-7B", "params_b": 7, "quant": "Q4_K_M"}
+        out = auto_tune_fit({"gpu_layers": 0, "ctx_size": 2048}, model, hw)
+        self.assertTrue(out["success"])
+        self.assertFalse(out["cpu_fallback"])
+        self.assertGreater(out["after"]["fit_status"]["inputs"]["gpu_layer_fraction"], 0)
+        self.assertEqual(str(out["tuned_params"]["gpu_layers"]), "all")
+        self.assertTrue(any("already using" in note.lower() for note in out["notes"]))
+
+    def test_cpu_fallback_when_the_card_cannot_hold_the_model(self) -> None:
+        # Tiny total VRAM: no GPU-offload config can fit the card itself.
+        from lcc_core.smart_tune import auto_tune_fit
+
         model = {"name": "test-32B", "params_b": 32, "quant": "Q4_K_M"}
-        out = auto_tune_fit({"gpu_layers": "all", "ctx_size": 8192}, model, hw)
-        if out["success"] and out["after"]["fit_status"]["inputs"]["gpu_layer_fraction"] <= 0:
-            self.assertTrue(out["cpu_fallback"])
-            self.assertTrue(any("runs on the CPU" in note for note in out["notes"]))
+        out = auto_tune_fit({"gpu_layers": "all", "ctx_size": 8192}, model, self._hw(2))
+        self.assertTrue(out["success"])
+        self.assertTrue(out["cpu_fallback"])
+        self.assertLessEqual(out["after"]["fit_status"]["inputs"]["gpu_layer_fraction"], 0)
+        self.assertTrue(any("cannot hold" in note.lower() for note in out["notes"]))
+
+    def test_balanced_prefers_good_over_tight_when_both_exist(self) -> None:
+        # 32B Q4 on 24 GB: short-context full offload is good, longer is tight.
+        # Balanced (the auto-applied pick) must not spend that extra window if
+        # it turns a good fit into a tight one.
+        from lcc_core.smart_tune import auto_tune_fit, _collect_candidates
+
+        model = {"name": "test-32B", "params_b": 32, "quant": "Q4_K_M"}
+        hw = self._hw(24)
+        base = {"gpu_layers": 0, "ctx_size": 2048, "batch_size": 128, "ubatch_size": 128}
+        candidates = _collect_candidates(base, model, hw)
+        self.assertTrue(candidates)
+        max_lf = max(c["lf"] for c in candidates)
+        self.assertTrue(any(c["lf"] == max_lf and c["roomy"] for c in candidates))
+        self.assertTrue(any(c["lf"] == max_lf and not c["roomy"] for c in candidates))
+
+        out = auto_tune_fit(base, model, hw)
+        self.assertTrue(out["success"])
+        self.assertEqual(out["after"]["fit_status"]["status"], "good")
 
     def test_reports_named_suggestions(self) -> None:
         from lcc_core.smart_tune import auto_tune_fit
@@ -993,7 +1139,9 @@ class SmartTuneTests(unittest.TestCase):
     def test_batch_grows_into_headroom_but_never_shrinks(self) -> None:
         from lcc_core.smart_tune import auto_tune_fit
 
-        model = {"name": "test-7B", "params_b": 7, "quant": "Q4_K_M"}
+        # Cap the trained window so leftover VRAM is real batch headroom,
+        # not already spent on the last good context rung.
+        model = {"name": "test-7B", "params_b": 7, "quant": "Q4_K_M", "context_length": 8192}
         out = auto_tune_fit(
             {"gpu_layers": 0, "ctx_size": 2048, "batch_size": 512, "ubatch_size": 128},
             model, self._hw(24),
@@ -1063,6 +1211,19 @@ class RuntimeUpdatesTests(unittest.TestCase):
         self.assertEqual(parse_version("1.2.3-rc1"), (1, 2, 3))
         self.assertIsNone(parse_version("unknown"))
         self.assertIsNone(parse_version(None))
+
+    def test_parse_version_reads_raw_binary_version_output(self) -> None:
+        """Regression: `--version` lines never parsed, so update_available was
+        permanently False. `_strip_leading_v` ate the 'v' of "version:" and the
+        anchored regexes then matched nothing."""
+        from lcc_core.runtime_updates import compare_versions, parse_version
+
+        self.assertEqual(parse_version("version: b4488 (build c8a8a9d5)"), (4488,))
+        self.assertEqual(parse_version("ollama version is 0.5.7"), (0, 5, 7))
+        # A bare build hash carries no version and must not be mistaken for one.
+        self.assertIsNone(parse_version("c8a8a9d5"))
+        self.assertLess(compare_versions("version: b4488 (build c8a8a9d5)", "b4500"), 0)
+        self.assertLess(compare_versions("ollama version is 0.5.7", "v0.6.0"), 0)
 
     def test_compare_versions(self) -> None:
         from lcc_core.runtime_updates import compare_versions
@@ -1230,14 +1391,36 @@ class ServerStopTests(unittest.TestCase):
             proc.stdout.close()
 
 
+    def test_fit_parser_reads_upstream_memory_breakdown_line(self) -> None:
+        # Verbatim from tools/fit-params/README.md (template_gpu in
+        # llama_memory_breakdown_print): total = free + (self = model + context + compute) + unaccounted.
+        breakdown = (
+            "llama_memory_breakdown_print: | memory breakdown [MiB] | total   free     self   model   context   compute    unaccounted |\n"
+            "llama_memory_breakdown_print: |   - CUDA0 (RTX 4090)   | 24077 =  945 + (19187 = 17904 +     384 +     898) +        3945 |\n"
+            "llama_memory_breakdown_print: |   - Host               |                 58271 = 58259 +       0 +      12                |"
+        )
+        parsed = parse_fit_output("-c 4096 -ngl 48\n", breakdown)
+        memory = parsed["suggestions"]["cuda_memory_mib"]
+        self.assertEqual(memory["model"], 17904)
+        self.assertEqual(memory["context"], 384)
+        self.assertEqual(memory["compute"], 898)
+        self.assertEqual(memory["projected"], 19187)
+
     def test_fit_parser_reads_metal_memory_line(self) -> None:
-        parsed = parse_fit_output("-c 8192 -ngl -2\n", "MTL0 2883 47 548\nHost 2208 0 82")
+        parsed = parse_fit_output(
+            "-c 8192 -ngl -2\n",
+            "llama_memory_breakdown_print: |   - Metal0 (Apple M2 Max) |  6144 =  2666 + ( 3478 =  2883 +      47 +     548) +           0 |"
+            "\nllama_memory_breakdown_print: |   - Host                 |                  2290 =  2208 +       0 +      82                |",
+        )
         self.assertEqual(parsed["suggestions"]["cuda_memory_mib"]["model"], 2883)
         self.assertEqual(parsed["suggestions"]["cuda_memory_mib"]["context"], 47)
         self.assertEqual(parsed["suggestions"]["cuda_memory_mib"]["compute"], 548)
 
     def test_fit_parser_reads_rocm_memory_line(self) -> None:
-        parsed = parse_fit_output("-c 4096 -ngl 32\n", "ROCM0 1500 30 200")
+        parsed = parse_fit_output(
+            "-c 4096 -ngl 32\n",
+            "llama_memory_breakdown_print: |   - ROCm0 (RX 7900 XTX) | 24560 = 22830 + ( 1730 =  1500 +      30 +     200) +           0 |",
+        )
         self.assertEqual(parsed["suggestions"]["cuda_memory_mib"]["model"], 1500)
 
     def test_mmproj_in_middle_of_filename_is_skipped(self) -> None:
@@ -1271,7 +1454,102 @@ class ServerStopTests(unittest.TestCase):
         self.assertTrue((root / "pyproject.toml").exists())
 
 
+class WslVllmStopGuardTests(unittest.TestCase):
+    """The in-distro stop script walks /proc descendants from the pidfile PID.
+    With a missing pidfile the root was 0, and since PID 1 has ppid 0 on Linux
+    the walk collected every process in the distro and SIGKILLed it — stopping
+    one vLLM server tore down the whole WSL install."""
+
+    def test_stop_script_aborts_without_a_valid_root_pid(self) -> None:
+        from lcc_core.server_manager import WSL_STOP_NO_ROOT_MARKER, _wsl_stop_script
+
+        script = _wsl_stop_script("/tmp/vllm.pid")
+        self.assertIn("if root <= 0:", script)
+        self.assertIn(WSL_STOP_NO_ROOT_MARKER, script)
+        self.assertIn("sys.exit(3)", script)
+        # The guard has to precede the /proc walk to be worth anything.
+        self.assertLess(script.index("if root <= 0:"), script.index("os.listdir('/proc')"))
+        compile(script, "<wsl-stop-script>", "exec")
+
+    def test_stop_script_with_missing_pidfile_kills_nothing(self) -> None:
+        import os
+        import subprocess
+        import sys
+
+        from lcc_core.server_manager import WSL_STOP_NO_ROOT_MARKER, _wsl_stop_script
+
+        if os.name != "posix":
+            self.skipTest("the stop script targets Linux /proc semantics")
+        missing = str(Path(tempfile.mkdtemp()) / "absent.pid")
+        proc = subprocess.run(
+            [sys.executable, "-c", _wsl_stop_script(missing)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(proc.returncode, 3)
+        self.assertIn(WSL_STOP_NO_ROOT_MARKER, proc.stdout)
+
+    def test_stop_reports_failure_when_script_aborts(self) -> None:
+        import subprocess
+        from unittest import mock
+
+        from lcc_core import server_manager
+
+        aborted = subprocess.CompletedProcess(
+            [], 3, server_manager.WSL_STOP_NO_ROOT_MARKER + "\n", ""
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(server_manager, "cache_dir", return_value=Path(tmp)):
+                server_manager.write_state({"servers": [{
+                    "id": "vllm-1", "mode": "vllm-wsl", "pid": 424242,
+                    "wsl_pidfile": "/tmp/vllm.pid", "wsl_distro": "Ubuntu-24.04",
+                }]})
+                with mock.patch.object(subprocess, "run", return_value=aborted) as ran:
+                    result = server_manager._stop_wsl_vllm(
+                        server_manager._find_server("vllm-1"), timeout=5
+                    )
+                stored = server_manager._find_server("vllm-1")
+
+        self.assertFalse(result["success"])
+        self.assertIn("pidfile", result["message"])
+        self.assertEqual(stored["status"], "stop_failed")
+        # The aborted script must be the only stop action: no taskkill fallback
+        # may run, or the client would die while vLLM kept the GPU. Match on
+        # call contents, not count — pid_is_running may issue tasklist probes
+        # via subprocess when psutil is unavailable.
+        commands = [" ".join(map(str, call.args[0])) for call in ran.call_args_list]
+        self.assertEqual(sum("wsl" in cmd and "python3" in cmd for cmd in commands), 1)
+        self.assertFalse(any("taskkill" in cmd for cmd in commands))
+
+
 class RuntimeDispatchTests(unittest.TestCase):
+    def test_binary_version_extracts_the_version_token(self) -> None:
+        """Regression: the whole `--version` line was stored, which parse_version
+        could not read, so llama.cpp never reported an available update."""
+        import subprocess
+        from unittest import mock
+
+        from lcc_core import backends
+
+        def fake_run(cmd, **kwargs):
+            return subprocess.CompletedProcess(cmd, 0, "version: b4488 (build c8a8a9d5)\n", "")
+
+        with mock.patch.object(backends.subprocess, "run", side_effect=fake_run):
+            self.assertEqual(backends._binary_version("llama-server"), "b4488")
+
+        def fake_ollama(cmd, **kwargs):
+            return subprocess.CompletedProcess(cmd, 0, "ollama version is 0.5.7\n", "")
+
+        # Ollama prints no colon, so the raw line is kept and parse_version copes.
+        with mock.patch.object(backends.subprocess, "run", side_effect=fake_ollama):
+            version = backends._binary_version("ollama")
+        self.assertEqual(version, "ollama version is 0.5.7")
+
+        from lcc_core.runtime_updates import parse_version
+
+        self.assertEqual(parse_version(version), (0, 5, 7))
+
     def test_detect_runtime_maps_ids_and_rejects_unknown(self) -> None:
         from lcc_core.backends import LAUNCHABLE_RUNTIMES, detect_runtime
 
@@ -1341,19 +1619,59 @@ class LayerIndexAndCacheBytesTests(unittest.TestCase):
         self.assertEqual(_cache_bytes(""), 2.0)
         self.assertEqual(_cache_bytes("unknown"), 2.0)
 
-    def test_smart_fit_fp4_ladder_gated_by_nvidia_hardware(self) -> None:
+    def test_cache_ladder_only_offers_flash_attn_supported_types(self) -> None:
+        """Every rung must have a CUDA flash-attention kernel.
+
+        llama.cpp does not error on a KV type it has no FA kernel for -- it
+        silently runs attention on the CPU, which cost ~20x on prompt processing
+        (measured: q5_1 151 tok/s vs q8_0 3054). nvfp4/mxfp4 are worse still:
+        llama.cpp rejects them as cache types and the server won't start.
+        """
         from lcc_core.smart_tune import _cache_ladder
 
         cuda_hw = {"primary_gpu": {"name": "NVIDIA GeForce RTX 4090", "acceleration_backend": "cuda"}}
         amd_hw = {"primary_gpu": {"name": "AMD Radeon RX 7900 XTX", "acceleration_backend": "rocm"}}
         none_hw = {"primary_gpu": {}}
+
+        supported = {"f16", "bf16", "q8_0", "q4_0"}
+        for hw in (cuda_hw, amd_hw, none_hw):
+            self.assertTrue(set(_cache_ladder(hw)) <= supported, _cache_ladder(hw))
+
         cuda_ladder = _cache_ladder(cuda_hw)
-        self.assertIn("nvfp4", cuda_ladder)
-        self.assertIn("mxfp4", cuda_ladder)
-        self.assertIn("bf16", cuda_ladder)  # CUDA also unlocks BF16
-        # Non-NVIDIA hardware must not get FP4 rungs (no acceleration benefit).
-        self.assertNotIn("nvfp4", _cache_ladder(amd_hw))
-        self.assertNotIn("nvfp4", _cache_ladder(none_hw))
+        self.assertIn("bf16", cuda_ladder)  # CUDA unlocks BF16
+        # Types that fall back to the CPU attention path must never be offered.
+        for bad in ("q5_1", "q5_0", "q4_1", "iq4_nl", "nvfp4", "mxfp4"):
+            self.assertNotIn(bad, cuda_ladder)
+        # BF16 stays gated on hardware that runs it natively.
+        self.assertNotIn("bf16", _cache_ladder(amd_hw))
+        self.assertNotIn("bf16", _cache_ladder(none_hw))
+
+    def test_smart_fit_never_suggests_mismatched_k_and_v(self) -> None:
+        """K and V must always match -- a mismatched pair has no CUDA FA kernel.
+
+        Measured: f16 K / q8_0 V ran prompt processing at 177 tok/s with 8 CPU
+        threads pegged, against 3123 tok/s for f16/f16 on the same prompt.
+        """
+        from lcc_core.smart_tune import auto_tune_fit
+
+        hw = {
+            "primary_gpu": {
+                "name": "NVIDIA GeForce RTX 5090",
+                "acceleration_backend": "CUDA",
+                "vram_bandwidth_gbps": 1000,
+                "vram_total_bytes": 24 * 1024**3,
+                "vram_free_bytes": 24 * 1024**3,
+            },
+            "memory": {"total_bytes": 64 * 1024**3, "available_bytes": 48 * 1024**3},
+            "cpu": {"logical_cores": 16},
+        }
+        model = {"name": "test-7B", "params_b": 7, "quant": "Q4_K_M"}
+        out = auto_tune_fit({"gpu_layers": 0, "ctx_size": 2048}, model, hw)
+        self.assertTrue(out["success"])
+        self.assertTrue(out["suggestions"])
+        for s in out["suggestions"]:
+            p = s["params"]
+            self.assertEqual(p["cache_type_k"], p["cache_type_v"], p)
 
 
 class ServerCrashWatchdogTests(unittest.TestCase):
@@ -1567,6 +1885,9 @@ class PerProcessMemoryTests(unittest.TestCase):
         self._orig_apps_unavail = sm._compute_apps_unavailable
         self._orig_get_json = sm._get_json
         self._orig_get_text = sm._get_text
+        self._orig_psutil = sm.psutil
+        sm._process_handles.clear()
+        self.addCleanup(sm._process_handles.clear)
         # Reset cache so each test starts cold.
         sm._compute_apps_cache = None
         sm._compute_apps_cache_ts = 0.0
@@ -1582,6 +1903,7 @@ class PerProcessMemoryTests(unittest.TestCase):
         self.sm._compute_apps_unavailable = self._orig_apps_unavail
         self.sm._get_json = self._orig_get_json
         self.sm._get_text = self._orig_get_text
+        self.sm.psutil = self._orig_psutil
 
     def _wire_running_server(self, pid=12345):
         self.sm._find_server = lambda sid, mode=None: {
@@ -1642,6 +1964,36 @@ class PerProcessMemoryTests(unittest.TestCase):
             except ValueError:
                 continue
         self.assertEqual(parsed, {111: 2048 * 1024 * 1024, 222: 4096 * 1024 * 1024, 333: 8192 * 1024 * 1024})
+
+    def test_process_memory_reuses_one_handle_so_cpu_has_a_baseline(self):
+        """Regression: a fresh psutil.Process every poll meant cpu_percent always
+        returned the meaningless first-call 0.0, which was then coerced to None —
+        CPU% was permanently blank."""
+        import os
+
+        if self.sm.psutil is None:
+            self.skipTest("psutil is not installed")
+        pid = os.getpid()
+
+        first = self.sm._process_memory(pid)
+        self.assertIsNotNone(first["rss_bytes"])
+        # No baseline on the first poll for a PID: None, never a fabricated 0.0.
+        self.assertIsNone(first["cpu_percent"])
+
+        handle = self.sm._process_handles[pid]
+        second = self.sm._process_memory(pid)
+        self.assertIs(self.sm._process_handles[pid], handle, "handle must be reused")
+        self.assertIsInstance(second["cpu_percent"], float)
+        self.assertGreaterEqual(second["cpu_percent"], 0.0)
+
+    def test_process_memory_forgets_dead_pids(self):
+        if self.sm.psutil is None:
+            self.skipTest("psutil is not installed")
+        dead = 2147483647
+        result = self.sm._process_memory(dead)
+        self.assertIsNone(result["rss_bytes"])
+        self.assertIsNone(result["cpu_percent"])
+        self.assertNotIn(dead, self.sm._process_handles)
 
     def test_process_memory_handles_missing_psutil(self):
         # psutil is a soft dep; absence must produce all-None, not crash.
@@ -1882,16 +2234,38 @@ class PortAvailabilityTests(unittest.TestCase):
     def test_next_free_port_skips_windows_reserved_range(self):
         if sys.platform != "win32":
             self.skipTest("reserved-range skip is Windows-only")
-        from lcc_core.server_manager import _next_free_port, _windows_dynamic_port_range
+        from lcc_core.server_manager import MAX_PORT, _next_free_port, _windows_dynamic_port_range
         rng = _windows_dynamic_port_range()
         if rng is None:
             self.skipTest("netsh not available")
-        # Start *inside* the reserved range. The first free port above it
-        # should land past the range end, not at ``start + 1``.
+        # Start *inside* the reserved range. The search must skip past the
+        # range end rather than returning ``start + 1``.
+        #
+        # On a default Windows host the dynamic range is 49152-65535, i.e. it
+        # runs to the end of the port space, so there is no port above it to
+        # find. The contract is therefore: either a port above the range end,
+        # or None -- never a port inside the range, and never a crash.
         start = rng["start"] + 1000  # safely inside the range
         chosen = _next_free_port("127.0.0.1", start)
-        self.assertIsNotNone(chosen)
-        self.assertGreater(chosen, rng["end"])
+        if rng["end"] >= MAX_PORT:
+            self.assertIsNone(chosen)
+        else:
+            self.assertIsNotNone(chosen)
+            self.assertGreater(chosen, rng["end"])
+
+    def test_port_above_the_port_space_is_never_probed(self):
+        # bind() raises OverflowError above 65535 -- not OSError -- so an
+        # unguarded probe crashed instead of reporting "not free". Reached in
+        # practice by bumping past a dynamic range that ends at exactly 65535.
+        from lcc_core.server_manager import MAX_PORT, _is_port_free, _next_free_port
+        self.assertFalse(_is_port_free("127.0.0.1", MAX_PORT + 1))
+        self.assertFalse(_is_port_free("127.0.0.1", 999999))
+        self.assertIsNone(_next_free_port("127.0.0.1", MAX_PORT + 1))
+        # Whatever the walk returns near the boundary, it must be a real port.
+        # (Asserting None here instead would be host-dependent: on Windows the
+        # dynamic range swallows 65535, on Linux it may well be bindable.)
+        near = _next_free_port("127.0.0.1", MAX_PORT - 2, max_tries=5)
+        self.assertTrue(near is None or 0 < near <= MAX_PORT)
 
     def test_next_free_port_returns_none_when_all_bound(self):
         from lcc_core.server_manager import _next_free_port
@@ -2010,10 +2384,65 @@ class PortAvailabilityTests(unittest.TestCase):
         self.assertFalse(probe["free"])
         self.assertEqual(probe["reason"], "reserved")
         self.assertIn("range", probe)
-        # Suggested port must be above the range end, not just port + 1.
+        # Suggested port must be above the range end, not just port + 1 --
+        # unless the reserved space runs to the end of the port range, in
+        # which case there is nothing above it and None is the honest answer.
+        from lcc_core.server_manager import MAX_PORT, _windows_dynamic_port_range
         above = _next_free_port("127.0.0.1", port)
-        self.assertIsNotNone(above)
-        self.assertGreater(above, rng["end"])
+        dyn = _windows_dynamic_port_range()
+        no_room = rng["end"] >= MAX_PORT or (dyn and dyn["end"] >= MAX_PORT
+                                             and dyn["start"] <= rng["end"] + 1 <= dyn["end"])
+        if no_room:
+            self.assertIsNone(above)
+        else:
+            self.assertIsNotNone(above)
+            self.assertGreater(above, rng["end"])
+
+
+import gguf as _gguf_pkg
+
+# gguf_fixtures lives in this directory; a bare import is required because a
+# gitignored vendored checkout (graphify/) ships its own tests package, which
+# shadows a `tests.` prefixed import when the whole repo is collected.
+from gguf_fixtures import write_minimal_gguf
+from lcc_core import estimates as E
+
+
+def test_attn_layer_count_prefers_tensor_scan_over_interval(tmp_path):
+    """Ornith shape: 41 blocks, interval 4, but 11 layers really carry attn_k.
+
+    41 // 4 == 10, which misses the MTP layer at index 40. The tensor scan is
+    ground truth and must win.
+    """
+    attn = [3, 7, 11, 15, 19, 23, 27, 31, 35, 39, 40]
+    path = write_minimal_gguf(
+        tmp_path / "hybrid.gguf",
+        arch="qwen35moe",
+        n_layer=41,
+        attn_layers=attn,
+        n_kv_heads=2,
+        k_len=256,
+        v_len=256,
+        extra_kv={"full_attention_interval": 4},
+    )
+    reader = _gguf_pkg.GGUFReader(str(path))
+    assert E._extract_n_attn_layers(reader, "qwen35moe", 41) == 11
+
+
+def test_attn_layer_count_falls_back_to_interval_when_no_tensors_match(tmp_path):
+    """A file whose tensor names follow no known pattern still gets an answer."""
+    path = write_minimal_gguf(
+        tmp_path / "opaque.gguf",
+        arch="mystery",
+        n_layer=41,
+        attn_layers=[],
+        n_kv_heads=2,
+        k_len=256,
+        v_len=256,
+        extra_kv={"full_attention_interval": 4},
+    )
+    reader = _gguf_pkg.GGUFReader(str(path))
+    assert E._extract_n_attn_layers(reader, "mystery", 41) == 10
 
 
 if __name__ == "__main__":

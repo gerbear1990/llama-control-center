@@ -1,0 +1,41 @@
+# ─── Identity ────────────────────────────────────────────────
+name = "llama-control-center"
+version = "0.17.0"
+status = "active"
+path = "llama.cpp-cuda/tools/llama-control-center-repo"
+tags = ["llm", "local-inference", "dashboard"]
+
+# ─── Framework Provenance ────────────────────────────────────
+[paul]
+version = "1.4.0"
+source = "https://chrisai.cv/skool"
+
+# ─── Milestone ───────────────────────────────────────────────
+[milestone]
+name = "v0.17.0 — Close the Open Loops"
+version = "0.17.0"
+status = "in_progress"
+phases = 6
+
+# ─── Phase ───────────────────────────────────────────────────
+[phase]
+number = 2
+name = "Embedded-MTP Support"
+status = "in_progress"
+plans_completed = 0
+
+# ─── Loop ────────────────────────────────────────────────────
+[loop]
+position = "APPLY"
+plan = "02-01"
+plan_path = "phases/02-embedded-mtp/02-01-PLAN.md"
+
+# ─── Satellite ───────────────────────────────────────────────
+[satellite]
+groom = true
+
+# ─── Stats ───────────────────────────────────────────────────
+[stats]
+total_plans = 0
+total_phases = 6
+last_activity = "2026-08-21T18:00:00Z"

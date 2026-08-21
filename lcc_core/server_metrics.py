@@ -125,22 +125,50 @@ _compute_apps_cache_ts: float = 0.0
 # driver, no GPU, no NVIDIA), stop trying on every poll.
 _compute_apps_unavailable = False
 
+# cpu_percent(interval=None) measures against the *same* Process object's
+# previous call, so the handle has to survive across polls. Building a fresh
+# psutil.Process each poll always returns the meaningless first-call 0.0.
+_process_handles_lock = threading.Lock()
+_process_handles: dict[int, Any] = {}
+
+
+def _process_handle(pid: int) -> tuple[Any, bool]:
+    """Return (Process, has_cpu_baseline) reusing one handle per live PID."""
+    with _process_handles_lock:
+        proc = _process_handles.get(pid)
+        # is_running() also compares create_time, so a recycled PID gets a fresh
+        # handle rather than a CPU delta against the previous process.
+        if proc is not None and proc.is_running():
+            return proc, True
+        for dead in [known for known, handle in _process_handles.items() if not handle.is_running()]:
+            del _process_handles[dead]
+        proc = psutil.Process(pid)
+        _process_handles[pid] = proc
+        return proc, False
+
+
+def _forget_process(pid: int) -> None:
+    with _process_handles_lock:
+        _process_handles.pop(pid, None)
+
 
 def _process_memory(pid: int | None) -> dict[str, int | float | None]:
     """RSS / CPU% for the tracked PID via psutil, or all-None when unavailable."""
     if not pid or psutil is None:
         return {"rss_bytes": None, "cpu_percent": None}
+    key = int(pid)
     try:
-        proc = psutil.Process(int(pid))
+        proc, has_baseline = _process_handle(key)
         with proc.oneshot():
             mem = proc.memory_info()
             rss = int(getattr(mem, "rss", 0)) or None
-            # cpu_percent requires a baseline; interval=None uses the previous
-            # call's baseline (zero on the first poll, which is correct — we
-            # don't fabricate a percentage).
+            # Always call it, even on the first poll, so psutil's counters get
+            # primed; None means "no baseline yet" while a real reading of 0.0
+            # is reported as 0.0 rather than swallowed.
             cpu = proc.cpu_percent(interval=None)
-        return {"rss_bytes": rss, "cpu_percent": cpu if cpu else None}
+        return {"rss_bytes": rss, "cpu_percent": float(cpu) if has_baseline else None}
     except (psutil.NoSuchProcess, psutil.AccessDenied, ProcessLookupError):
+        _forget_process(key)
         return {"rss_bytes": None, "cpu_percent": None}
 
 

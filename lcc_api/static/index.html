@@ -2,12 +2,13 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <title>Llama Control Center</title>
-    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23098a96'/%3E%3Ctext x='16' y='22' font-family='Inter,Arial,sans-serif' font-size='16' font-weight='700' text-anchor='middle' fill='white'%3ELC%3C/text%3E%3C/svg%3E" />
-    <link rel="stylesheet" href="/static/styles.css?v=0.16.0" />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23098a96'/%3E%3Ctext x='16' y='22' font-family='Segoe UI,Arial,sans-serif' font-size='16' font-weight='700' text-anchor='middle' fill='white'%3ELC%3C/text%3E%3C/svg%3E" />
+    <link rel="stylesheet" href="/static/styles.css?v=0.16.17" />
   </head>
   <body>
+    <a class="skip-link" href="#session-stage">Skip to launch</a>
     <div class="app-shell">
       <aside class="sidebar" aria-label="Primary navigation">
         <button class="sidebar-toggle" id="sidebar-toggle" type="button" aria-label="Collapse sidebar" title="Collapse sidebar">
@@ -22,44 +23,20 @@
             <p>Portable local LLM ops</p>
           </div>
         </div>
-        <nav class="nav-list">
-          <a class="nav-item active" href="#runtimes" data-section="runtimes">
+        <nav class="nav-list" aria-label="Destinations">
+          <a class="nav-item active" href="#console" data-destination="console" aria-current="page">
             <span class="nav-icon icon-runtime" aria-hidden="true"></span>
-            <span>Runtimes</span>
+            <span>Console</span>
           </a>
-          <a class="nav-item" href="#profiles" data-section="profiles">
+          <a class="nav-item" href="#inventory" data-destination="inventory">
             <span class="nav-icon icon-profiles" aria-hidden="true"></span>
-            <span>Profiles</span>
+            <span>Inventory</span>
           </a>
-          <a class="nav-item" href="#models" data-section="models">
-            <span class="nav-icon icon-models" aria-hidden="true"></span>
-            <span>Models</span>
-          </a>
-          <a class="nav-item" href="#active-servers" data-section="servers">
-            <span class="nav-icon icon-servers" aria-hidden="true"></span>
-            <span>Servers</span>
-          </a>
-          <a class="nav-item" href="#chat" data-section="chat">
-            <span class="nav-icon icon-logs" aria-hidden="true"></span>
-            <span>Chat</span>
-          </a>
-          <a class="nav-item" href="#logs" data-section="logs">
-            <span class="nav-icon icon-logs" aria-hidden="true"></span>
-            <span>Logs</span>
-          </a>
-          <a class="nav-item" href="#portability" data-section="portability">
-            <span class="nav-icon icon-portability" aria-hidden="true"></span>
-            <span>Portability</span>
-          </a>
-          <a class="nav-item" href="#hf-tools" data-section="hf-tools">
-            <span class="nav-icon icon-hf" aria-hidden="true"></span>
-            <span>HF Tools</span>
-          </a>
-          <button class="nav-item nav-button" id="settings-nav-button" type="button">
+          <a class="nav-item" href="#tools" data-destination="tools">
             <span class="nav-icon icon-settings-nav" aria-hidden="true"></span>
-            <span>Settings</span>
-          </button>
-         </nav>
+            <span>Tools</span>
+          </a>
+        </nav>
         <section class="sidebar-live-hardware" id="sidebar-live-hardware" aria-label="Live hardware stats">
           <header class="sidebar-live-head">
             <span class="sidebar-live-title">Live Hardware</span>
@@ -74,52 +51,37 @@
         <div class="sidebar-footer">
           <span class="status-dot" id="api-dot" aria-hidden="true"></span>
           <span id="api-status">Connecting</span>
+          <button type="button" class="api-copy-btn" id="api-copy" hidden aria-label="Copy API status details" title="Copy API status details">
+            <svg viewBox="0 0 16 16" width="10" height="10" aria-hidden="true" focusable="false"><rect x="5" y="5" width="9" height="9" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.5"/><rect x="2" y="2" width="9" height="9" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>
+          </button>
           <span class="sidebar-footer-version" id="app-version" aria-label="Application version"></span>
         </div>
       </aside>
 
-      <main class="main">
+      <main class="main" data-destination="console" data-session="stage">
         <header class="topbar">
           <div class="topbar-title">
-            <h2>Llama Control Center</h2>
-            <p id="summary-line">Loading local runtimes, profiles, and models.</p>
-          </div>
-          <div class="hardware-widget" id="hardware-widget" aria-label="Detected hardware">
-            <div class="hardware-chip" title="CPU model and core count detected on this machine. The thread fields use this as a sensible starting point.">
-              <span>CPU</span>
-              <strong id="hardware-cpu">-</strong>
-            </div>
-            <div class="hardware-chip" title="Primary graphics card detected for local inference.">
-              <span>GPU</span>
-              <strong id="hardware-gpu">-</strong>
-            </div>
-            <div class="hardware-chip" title="Video memory detected on the primary GPU. Fit tests use this to pick a safer memory margin.">
-              <span>VRAM</span>
-              <strong id="hardware-vram">-</strong>
-            </div>
-            <div class="hardware-chip" title="System memory available for CPU-side model spill and other apps.">
-              <span>RAM</span>
-              <strong id="hardware-ram">-</strong>
-            </div>
+            <h2 id="topbar-heading">Console</h2>
+            <p id="summary-line">Selected profile, memory fit, and Start.</p>
           </div>
           <div class="topbar-actions">
             <label class="search-field">
               <span class="sr-only">Search models and profiles</span>
               <span class="toolbar-icon search-icon" aria-hidden="true"></span>
               <input id="search-input" type="search" placeholder="Search..." autocomplete="off" aria-label="Search models and profiles" />
-              <kbd>Ctrl K</kbd>
+              <kbd>Ctrl+K</kbd>
             </label>
             <button class="button secondary" id="settings-button" type="button" title="Open general settings">
               <span class="toolbar-icon settings-icon" aria-hidden="true"></span>
               Settings
             </button>
             <button class="button secondary" id="refresh-button" type="button" title="Refresh inventory">
-              <span class="toolbar-icon refresh-icon" aria-hidden="true"></span>
+              <svg class="toolbar-icon" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><path d="M13.65 2.35A7.95 7.95 0 0 0 8 0a8 8 0 1 0 7.75 10h-2.08A6 6 0 1 1 8 2c1.66 0 3.14.69 4.22 1.78L9 7h7V0l-2.35 2.35z" fill="currentColor"/></svg>
               Refresh
             </button>
-            <button class="button secondary" id="theme-button" type="button" title="Toggle dark mode">
+            <button class="button secondary" id="theme-button" type="button" title="Theme: system. Switch to light.">
               <span class="theme-glyph" aria-hidden="true"></span>
-              Theme
+              System
             </button>
           </div>
         </header>
@@ -146,7 +108,7 @@
               <span class="metric-label">Models</span>
             </span>
           </div>
-          <div class="metric warning" id="metric-setup-wrapper" title="Profiles that are not launchable (model file missing, runtime not found, invalid params, etc.) plus any legacy portability issues found in scripts/JSONs. Click the label or use Profiles filter 'Needs setup' to investigate. Fix by ensuring models are in your scan roots, runtimes are installed/visible, or edit profiles.">
+          <div class="metric warning" id="metric-setup-wrapper" role="button" tabindex="0" title="Profiles that are not launchable (model file missing, runtime not found, invalid params, etc.) plus any legacy portability issues found in scripts/JSONs. Select this to filter the Profiles table down to them. Fix by ensuring models are in your scan roots, runtimes are installed/visible, or edit profiles.">
             <span class="metric-icon metric-icon-setup" aria-hidden="true"></span>
             <span class="metric-copy">
               <span class="metric-value" id="metric-setup">-</span>
@@ -157,124 +119,19 @@
         </section>
 
         <div class="workspace">
-          <section class="content-column">
-            <section class="panel" id="runtimes">
-              <div class="panel-heading">
-                <div>
-                  <h3>Runtimes</h3>
-                  <p>Detected environments and API endpoints.</p>
-                </div>
-                <div class="panel-heading-actions">
-                  <span class="sr-only" role="status" aria-live="polite" id="runtime-status"></span>
-                  <label class="mini-toggle" title="Hide runtimes that are not installed or not found on disk.">
-                    <input id="hide-not-installed-runtimes" type="checkbox" />
-                    <span>Hide not installed</span>
-                  </label>
-                  <button class="mini-button" type="button" id="check-updates-button" title="Refresh update availability from upstream release sources">Check for updates</button>
-                </div>
-              </div>
-              <div class="runtime-grid" id="runtime-grid"></div>
-            </section>
-
-            <section class="panel" id="profiles">
-              <div class="panel-heading">
-                <div>
-                  <h3>Profiles</h3>
-                  <p>Manage and launch model configurations.</p>
-                </div>
-                <div class="profiles-toolbar" aria-label="Profile tools">
-                  <label class="profile-filter-field">
-                    <span class="toolbar-icon filter-icon" aria-hidden="true"></span>
-                    <input id="profile-filter-input" type="search" placeholder="Filter profiles..." autocomplete="off" aria-label="Filter profiles" />
-                  </label>
-                  <select id="profile-model-filter" aria-label="Filter by model">
-                    <option value="all">All models</option>
-                  </select>
-                  <label class="profile-availability-toggle" title="Hide profiles that are not launchable or do not resolve to an installed local model.">
-                    <input id="hide-unavailable-profiles" type="checkbox" />
-                    <span>Hide unavailable</span>
-                  </label>
-                  <button class="button primary profile-new-button" id="new-profile-button" type="button">
-                    <span aria-hidden="true">+</span>
-                    New profile
-                  </button>
-                  <button class="button primary icon-only" type="button" id="profile-menu-button" title="More profile actions" aria-label="More profile actions">⌄</button>
-                </div>
-              </div>
-              <div class="table-wrap">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Model</th>
-                      <th>Profile</th>
-                      <th>Runtime</th>
-                      <th>Context</th>
-                      <th>Threads</th>
-                      <th>GPU Layers</th>
-                      <th>Updated</th>
-                      <th>Status</th>
-                      <th>Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody id="profiles-table"></tbody>
-                </table>
-              </div>
-              <div class="table-footer">
-                <span id="profiles-count">Showing profiles</span>
-                <a href="#profiles" id="view-all-profiles">View all profiles <span aria-hidden="true">→</span></a>
-              </div>
-            </section>
-
-            <section class="panel" id="models">
-              <div class="panel-heading">
-                <div>
-                  <h3>Models</h3>
-                  <p>Local GGUF files from portable scan roots.</p>
-                </div>
-              </div>
-              <div class="model-list" id="model-list"></div>
-            </section>
-
-            <section class="panel" id="active-servers">
-              <div class="panel-heading">
-                <div>
-                  <h3>Active Servers</h3>
-                  <p>Tracked running and recent servers (live updates from the side pane too).</p>
-                </div>
-                <div class="panel-heading-actions">
-                  <button class="mini-button" type="button" id="active-servers-purge-stopped" title="Remove stopped and crashed entries from history">Purge stopped</button>
-                  <button class="mini-button danger" type="button" id="active-servers-purge-all" title="Clear all tracked server history">Clear history</button>
-                </div>
-              </div>
-              <div class="active-servers-list" id="active-servers-list"></div>
-            </section>
-
-            <section class="panel" id="chat">
-              <div class="panel-heading">
-                <div>
-                  <h3>Chat</h3>
-                  <p>Multi-turn chat with the selected running server.</p>
-                </div>
-                <div>
-                  <button class="mini-button" type="button" id="chat-clear">Clear</button>
-                  <button class="mini-button primary" type="button" id="test-prompt-send">Send</button>
-                </div>
-              </div>
-              <div class="chat-log" id="chat-log"></div>
-              <div class="chat-input-row">
-                <textarea id="test-prompt-input" rows="2" placeholder="Type a message… (Shift+Enter for newline)" autocomplete="off"></textarea>
-                <button class="mini-button" type="button" id="test-prompt-send-bottom" title="Send message">▷</button>
-              </div>
-              <div class="test-prompt-meta" id="test-prompt-meta" hidden></div>
-            </section>
-          </section>
-
-          <aside class="inspector">
-            <section class="panel" id="parameters">
+          <section class="destination" id="destination-console" data-destination="console">
+            <div class="session-tabs" role="tablist" aria-label="Console views">
+              <button type="button" class="session-tab active" role="tab" id="session-tab-stage" data-session="stage" aria-selected="true" aria-controls="session-stage">Stage</button>
+              <button type="button" class="session-tab" role="tab" id="session-tab-chat" data-session="chat" aria-selected="false" aria-controls="session-chat">Chat</button>
+              <button type="button" class="session-tab" role="tab" id="session-tab-logs" data-session="logs" aria-selected="false" aria-controls="session-logs">Logs</button>
+              <button type="button" class="session-tab" role="tab" id="session-tab-server" data-session="server" aria-selected="false" aria-controls="session-server">Server</button>
+            </div>
+            <div class="session-view stage-instrument" id="session-stage" data-session="stage" role="tabpanel" aria-labelledby="session-tab-stage">
+              <div id="stage-first-run" hidden></div>
+              <section class="panel" id="parameters">
               <div class="panel-heading compact">
                 <div>
-                  <h3>Parameters</h3>
-                  <p>Edit launch settings without touching CLI.</p>
+                  <h3>Launch</h3>
                 </div>
               </div>
               <form class="param-form" id="param-form">
@@ -297,7 +154,7 @@
                   <label class="field" title="The local web port used by llama.cpp. Change it if another app already uses the port.">
                     <span>Port</span>
                     <input id="param-port" name="port" type="number" min="1" max="65535" />
-                    <span class="port-status" id="param-port-status" aria-live="polite" title="Click to check now"></span>
+                    <span class="port-status" id="param-port-status" role="button" tabindex="0" aria-label="Port not checked yet. Check port again." title="Port not checked yet — click to check now"></span>
                   </label>
                   <label class="field" title="Choose how the model should be accelerated. Auto follows the detected runtime; CPU disables GPU layers.">
                     <span>Acceleration</span>
@@ -306,17 +163,9 @@
                       <option value="cpu">CPU</option>
                     </select>
                   </label>
-                  <label class="field" title="Optional llama.cpp device selector. Leave Auto unless you need a specific GPU or Metal device.">
-                    <span>Device</span>
-                    <input id="param-device" name="device" type="text" autocomplete="off" placeholder="auto" />
-                  </label>
                   <label class="field" title="How many CPU cores llama.cpp may use while generating. Start near your physical core count.">
                     <span>Threads</span>
                     <input id="param-threads" name="threads" type="number" min="1" max="256" />
-                  </label>
-                  <label class="field" title="CPU cores used when reading prompts. Keep it close to Threads unless you are tuning.">
-                    <span>Batch threads</span>
-                    <input id="param-threads-batch" name="threads_batch" type="number" min="1" max="256" />
                   </label>
                 </div>
 
@@ -343,115 +192,6 @@
                     <span>GPU layers</span>
                     <input id="param-gpu-layers" name="gpu_layers" type="number" min="0" max="999" />
                   </label>
-                  <label class="field" title="How many prompt tokens llama.cpp can work on at once. Higher can be faster but uses more memory.">
-                    <span>Batch</span>
-                    <input id="param-batch" name="batch_size" type="number" min="1" step="64" />
-                  </label>
-                  <label class="field" title="The smaller chunks used inside Batch. Lower this when you are close to the memory limit.">
-                    <span>UBatch</span>
-                    <input id="param-ubatch" name="ubatch_size" type="number" min="1" step="64" />
-                  </label>
-                  <label class="field" title="How much VRAM to leave unused after loading the model. More margin is safer.">
-                    <span>Target headroom</span>
-                    <input id="param-fit-target" name="fit_target_mib" type="number" min="256" step="256" value="1024" />
-                  </label>
-                  <label class="field" title="The VRAM margin reported by the most recent fit test.">
-                    <span>Fit headroom</span>
-                    <input id="param-fit-headroom" name="fit_headroom_mib" type="number" readonly />
-                  </label>
-                  <label class="field" title="Memory format for one half of the long-context cache. Smaller values save VRAM.">
-                    <span>Cache K</span>
-                    <select id="param-cache-k" name="cache_type_k">
-                      <option>f32</option>
-                      <option>f16</option>
-                      <option>bf16</option>
-                      <option>q8_0</option>
-                      <option>q4_0</option>
-                      <option>q4_1</option>
-                      <option>iq4_nl</option>
-                      <option>q5_0</option>
-                      <option>q5_1</option>
-                    </select>
-                  </label>
-                  <label class="field" title="Memory format for the other half of the long-context cache. Use the fit test when unsure.">
-                    <span>Cache V</span>
-                    <select id="param-cache-v" name="cache_type_v">
-                      <option>f32</option>
-                      <option>f16</option>
-                      <option>bf16</option>
-                      <option>q8_0</option>
-                      <option>q4_0</option>
-                      <option>q4_1</option>
-                      <option>iq4_nl</option>
-                      <option>q5_0</option>
-                      <option>q5_1</option>
-                    </select>
-                  </label>
-                </div>
-
-                <div class="param-section-title">Sampling</div>
-                <div class="sampling-suggest" title="Fill the sampling fields below from a task-tuned preset. These are starting points you can adjust.">
-                  <select id="sampling-intent" aria-label="Sampling preset"></select>
-                  <button class="mini-button" type="button" id="sampling-suggest-button">Edit sampling</button>
-                </div>
-                <div class="field-grid">
-                  <label class="field" title="Controls how adventurous responses feel. Lower is steadier; higher is more varied.">
-                    <span>Temperature</span>
-                    <input id="param-temperature" name="temperature" type="number" min="0" max="2" step="0.05" />
-                  </label>
-                  <label class="field" title="Default response length limit. -1 means llama.cpp will not set a limit here.">
-                    <span>Max tokens</span>
-                    <input id="param-predict" name="n_predict" type="number" min="-1" step="1" />
-                  </label>
-                  <label class="field" title="Keeps each next-word choice within the most likely options. 0 turns this filter off.">
-                    <span>Top K</span>
-                    <input id="param-top-k" name="top_k" type="number" min="0" step="1" />
-                  </label>
-                  <label class="field" title="Keeps enough likely choices to reach this probability. 1.0 turns this filter off.">
-                    <span>Top P</span>
-                    <input id="param-top-p" name="top_p" type="number" min="0" max="1" step="0.01" />
-                  </label>
-                  <label class="field" title="Drops choices that are far less likely than the best choice. 0 turns this filter off.">
-                    <span>Min P</span>
-                    <input id="param-min-p" name="min_p" type="number" min="0" max="1" step="0.01" />
-                  </label>
-                  <label class="field" title="How far back the repeat checker looks. -1 means the whole available context.">
-                    <span>Repeat N</span>
-                    <input id="param-repeat-last-n" name="repeat_last_n" type="number" min="-1" step="1" />
-                  </label>
-                  <label class="field" title="Discourages repeated wording. 1.0 leaves repeats alone.">
-                    <span>Repeat penalty</span>
-                    <input id="param-repeat-penalty" name="repeat_penalty" type="number" min="0" step="0.01" />
-                  </label>
-                  <label class="field" title="Discourages reusing words that already appeared. 0 turns it off.">
-                    <span>Presence penalty</span>
-                    <input id="param-presence-penalty" name="presence_penalty" type="number" step="0.05" />
-                  </label>
-                  <label class="field" title="Pushes harder against words that keep repeating. 0 turns it off.">
-                    <span>Frequency penalty</span>
-                    <input id="param-frequency-penalty" name="frequency_penalty" type="number" step="0.05" />
-                  </label>
-                  <label class="field" title="Use the same number to reproduce similar outputs. -1 lets llama.cpp choose.">
-                    <span>Seed</span>
-                    <input id="param-seed" name="seed" type="number" min="-1" step="1" />
-                  </label>
-                </div>
-
-                <label class="field wide" title="Optional smaller draft model for speculative decoding. Leave empty unless you have a matching draft GGUF.">
-                  <span>Draft model</span>
-                  <input id="param-draft-model" name="draft_model" type="text" autocomplete="off" />
-                </label>
-                <div class="draft-model-actions" id="draft-model-actions">
-                  <button class="mini-button" type="button" id="suggest-draft-button">Suggest draft models</button>
-                  <div id="draft-suggestions" class="draft-suggestions" hidden></div>
-                </div>
-                <div class="check-row">
-                  <label title="Usually faster and lighter on memory when your llama.cpp build supports it."><input id="param-flash" name="flash_attn" type="checkbox" /> Flash attention</label>
-                  <label title="Turns on the model's thinking mode when the model and template support it."><input id="param-reasoning" name="reasoning" type="checkbox" /> Reasoning</label>
-                  <label title="Loads the model file on demand instead of copying the whole file into process memory."><input id="param-mmap" name="mmap" type="checkbox" /> mmap</label>
-                  <label title="Lets llama.cpp move helper work from CPU to GPU when it can improve speed."><input id="param-op-offload" name="op_offload" type="checkbox" /> CPU helper offload</label>
-                  <label title="Keeps the conversation memory cache on the GPU when possible. Turn off only for troubleshooting or tight VRAM."><input id="param-kv-offload" name="kv_offload" type="checkbox" /> KV cache offload</label>
-                  <label title="Use the model's own chat template (--jinja). Required for correct tool calling — without it, tool-capable models can loop the same tool call forever."><input id="param-jinja" name="jinja" type="checkbox" /> Jinja template (tool calling) <span id="param-jinja-hint" class="param-hint" hidden>recommended</span></label>
                 </div>
                 <div class="estimate-card" id="fit-estimate-card" title="A live memory estimate for the selected model and parameters. Green is comfortable; orange is tight; red is close to the limit.">
                   <div>
@@ -467,29 +207,160 @@
                   </div>
                   <small id="tps-detail">Waiting for model and hardware details.</small>
                 </div>
+                <div class="launch-lock" id="launch-lock" hidden role="status"></div>
                 <div class="row-actions launch-actions">
                   <button class="mini-button primary launch-primary" type="button" id="start-selected-button">
-                    <span aria-hidden="true">▷</span>
-                    Start server
+                    <svg class="launch-glyph" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">
+                      <path d="M5 3.2v9.6L13 8z" fill="currentColor" />
+                    </svg>
+                    <span class="launch-label" id="start-selected-label">Start server</span>
                   </button>
-                  <div class="launch-secondary">
-                    <button class="mini-button" type="button" id="prepare-selected-button">Prepare</button>
-                    <button class="mini-button danger launch-stop-button" type="button" id="stop-selected-button">Stop</button>
+                  <button class="mini-button danger launch-stop-button" type="button" id="stop-selected-button">Stop</button>
+                  <div class="save-actions">
+                    <span class="param-hint param-dirty-chip" id="param-dirty-chip" role="status" title="These parameter edits are kept in this browser only. Save parameters writes them to this profile." hidden>Unsaved edits</span>
+                    <button class="mini-button" type="button" id="save-profile-button" title="Replace this profile's saved launch config in models.json">Save parameters</button>
+                    <button class="mini-button tools-menu-button" type="button" id="tools-menu-button" aria-haspopup="menu" aria-expanded="false" aria-controls="tools-menu" title="Occasional tools for this profile">
+                      Tools
+                      <span class="tools-menu-caret" aria-hidden="true"></span>
+                    </button>
                   </div>
-                  <div class="advanced-actions">
-                    <button class="mini-button" type="button" id="save-profile-button">Save Profile</button>
-                    <button class="mini-button" type="button" id="reset-params-button">Reset</button>
-                    <button class="mini-button" type="button" id="hf-info-button">HF info</button>
-                    <button class="mini-button" type="button" id="hf-update-button">HF update</button>
+                  <div class="tools-menu" id="tools-menu" role="menu" aria-label="Profile tools" hidden>
+                    <button class="mini-button" type="button" id="prepare-selected-button" title="Build the launch command and show it in Logs">Show command</button>
                     <button class="mini-button" type="button" id="smart-fit-button" title="Auto-tune GPU layers, context, and KV cache to the best fit for your hardware.">Smart fit</button>
-                    <button class="mini-button" type="button" id="fit-button">Fit test</button>
-                    <button class="mini-button" type="button" id="benchmark-button">Benchmark</button>
+                    <button class="mini-button" type="button" id="fit-button" title="Measure how this profile fits the detected VRAM">Fit test</button>
+                    <button class="mini-button" type="button" id="benchmark-button" title="Run a short throughput benchmark for this profile">Benchmark</button>
+                    <button class="mini-button" type="button" id="hf-info-button" title="Fetch the Hugging Face summary for this model">HF info</button>
+                    <button class="mini-button" type="button" id="hf-update-button" title="Check Hugging Face for a newer file of this model">HF update</button>
+                    <button class="mini-button" type="button" id="reset-params-button" title="Discard unsaved edits and reload the saved profile">Reset</button>
                   </div>
                 </div>
+
+                <details class="param-disclosure" id="param-sampling-disclosure">
+                  <summary>Sampling</summary>
+                  <div class="sampling-suggest" title="Fill the sampling fields below from a task-tuned preset. These are starting points you can adjust.">
+                    <select id="sampling-intent" aria-label="Sampling preset"></select>
+                    <button class="mini-button" type="button" id="sampling-suggest-button" title="Overwrite the sampling fields below with the selected preset's values.">Apply preset</button>
+                  </div>
+                  <div class="field-grid">
+                    <label class="field" title="Controls how adventurous responses feel. Lower is steadier; higher is more varied.">
+                      <span>Temperature</span>
+                      <input id="param-temperature" name="temperature" type="number" min="0" max="2" step="0.05" />
+                    </label>
+                    <label class="field" title="Default response length limit. -1 means llama.cpp will not set a limit here.">
+                      <span>Max tokens</span>
+                      <input id="param-predict" name="n_predict" type="number" min="-1" step="1" />
+                    </label>
+                    <label class="field" title="Keeps each next-word choice within the most likely options. 0 turns this filter off.">
+                      <span>Top K</span>
+                      <input id="param-top-k" name="top_k" type="number" min="0" step="1" />
+                    </label>
+                    <label class="field" title="Keeps enough likely choices to reach this probability. 1.0 turns this filter off.">
+                      <span>Top P</span>
+                      <input id="param-top-p" name="top_p" type="number" min="0" max="1" step="0.01" />
+                    </label>
+                    <label class="field" title="Drops choices that are far less likely than the best choice. 0 turns this filter off.">
+                      <span>Min P</span>
+                      <input id="param-min-p" name="min_p" type="number" min="0" max="1" step="0.01" />
+                    </label>
+                    <label class="field" title="How far back the repeat checker looks. -1 means the whole available context.">
+                      <span>Repeat N</span>
+                      <input id="param-repeat-last-n" name="repeat_last_n" type="number" min="-1" step="1" />
+                    </label>
+                    <label class="field" title="Discourages repeated wording. 1.0 leaves repeats alone.">
+                      <span>Repeat penalty</span>
+                      <input id="param-repeat-penalty" name="repeat_penalty" type="number" min="0" step="0.01" />
+                    </label>
+                    <label class="field" title="Discourages reusing words that already appeared. 0 turns it off.">
+                      <span>Presence penalty</span>
+                      <input id="param-presence-penalty" name="presence_penalty" type="number" step="0.05" />
+                    </label>
+                    <label class="field" title="Pushes harder against words that keep repeating. 0 turns it off.">
+                      <span>Frequency penalty</span>
+                      <input id="param-frequency-penalty" name="frequency_penalty" type="number" step="0.05" />
+                    </label>
+                    <label class="field" title="Use the same number to reproduce similar outputs. -1 lets llama.cpp choose.">
+                      <span>Seed</span>
+                      <input id="param-seed" name="seed" type="number" min="-1" step="1" />
+                    </label>
+                  </div>
+                </details>
+
+                <details class="param-disclosure" id="param-advanced-disclosure">
+                  <summary>Advanced</summary>
+                  <div class="field-grid">
+                    <label class="field" title="Optional llama.cpp device selector. Leave Auto unless you need a specific GPU or Metal device.">
+                      <span>Device</span>
+                      <input id="param-device" name="device" type="text" autocomplete="off" placeholder="auto" />
+                    </label>
+                    <label class="field" title="CPU cores used when reading prompts. Keep it close to Threads unless you are tuning.">
+                      <span>Batch threads</span>
+                      <input id="param-threads-batch" name="threads_batch" type="number" min="1" max="256" />
+                    </label>
+                    <label class="field" title="How many prompt tokens llama.cpp can work on at once. Higher can be faster but uses more memory.">
+                      <span>Batch</span>
+                      <input id="param-batch" name="batch_size" type="number" min="1" step="64" />
+                    </label>
+                    <label class="field" title="The smaller chunks used inside Batch. Lower this when you are close to the memory limit.">
+                      <span>UBatch</span>
+                      <input id="param-ubatch" name="ubatch_size" type="number" min="1" step="64" />
+                    </label>
+                    <label class="field" title="How much VRAM to leave unused after loading the model. More margin is safer.">
+                      <span>Target headroom</span>
+                      <input id="param-fit-target" name="fit_target_mib" type="number" min="256" step="256" value="1024" />
+                    </label>
+                    <label class="field" title="The VRAM margin reported by the most recent fit test.">
+                      <span>Fit headroom</span>
+                      <input id="param-fit-headroom" name="fit_headroom_mib" type="number" readonly />
+                    </label>
+                    <label class="field" title="Memory format for one half of the long-context cache. Smaller values save VRAM.">
+                      <span>Cache K</span>
+                      <select id="param-cache-k" name="cache_type_k">
+                        <option>f32</option>
+                        <option>f16</option>
+                        <option>bf16</option>
+                        <option>q8_0</option>
+                        <option>q4_0</option>
+                        <option>q4_1</option>
+                        <option>iq4_nl</option>
+                        <option>q5_0</option>
+                        <option>q5_1</option>
+                      </select>
+                    </label>
+                    <label class="field" title="Memory format for the other half of the long-context cache. Use the fit test when unsure.">
+                      <span>Cache V</span>
+                      <select id="param-cache-v" name="cache_type_v">
+                        <option>f32</option>
+                        <option>f16</option>
+                        <option>bf16</option>
+                        <option>q8_0</option>
+                        <option>q4_0</option>
+                        <option>q4_1</option>
+                        <option>iq4_nl</option>
+                        <option>q5_0</option>
+                        <option>q5_1</option>
+                      </select>
+                    </label>
+                  </div>
+                  <label class="field wide" title="Optional smaller draft model for speculative decoding. Leave empty unless you have a matching draft GGUF.">
+                    <span>Draft model</span>
+                    <input id="param-draft-model" name="draft_model" type="text" autocomplete="off" />
+                  </label>
+                  <div class="draft-model-actions" id="draft-model-actions">
+                    <button class="mini-button" type="button" id="suggest-draft-button">Suggest draft models</button>
+                    <div id="draft-suggestions" class="draft-suggestions" hidden></div>
+                  </div>
+                  <div class="check-row">
+                    <label title="Usually faster and lighter on memory when your llama.cpp build supports it."><input id="param-flash" name="flash_attn" type="checkbox" /> Flash attention</label>
+                    <label title="Turns on the model's thinking mode when the model and template support it."><input id="param-reasoning" name="reasoning" type="checkbox" /> Reasoning</label>
+                    <label title="Loads the model file on demand instead of copying the whole file into process memory."><input id="param-mmap" name="mmap" type="checkbox" /> mmap</label>
+                    <label title="Lets llama.cpp move helper work from CPU to GPU when it can improve speed."><input id="param-op-offload" name="op_offload" type="checkbox" /> CPU helper offload</label>
+                    <label title="Keeps the conversation memory cache on the GPU when possible. Turn off only for troubleshooting or tight VRAM."><input id="param-kv-offload" name="kv_offload" type="checkbox" /> KV cache offload</label>
+                    <label title="Use the model's own chat template (--jinja). Required for correct tool calling — without it, tool-capable models can loop the same tool call forever."><input id="param-jinja" name="jinja" type="checkbox" /> Jinja template (tool calling) <span id="param-jinja-hint" class="param-hint" hidden>recommended</span></label>
+                  </div>
+                </details>
               </form>
             </section>
-
-            <section class="panel" id="model-info">
+              <section class="panel" id="model-info">
               <div class="panel-heading compact">
                 <div>
                   <h3>Model Notes</h3>
@@ -498,8 +369,7 @@
               </div>
               <div class="model-info-box" id="model-info-box">Select a profile, then run HF info or Fit test.</div>
             </section>
-
-            <section class="panel" id="benchmark-history" style="display:none">
+              <section class="panel" id="benchmark-history" style="display:none">
               <div class="panel-heading compact">
                 <div>
                   <h3>Benchmark History</h3>
@@ -508,24 +378,28 @@
               </div>
               <div id="benchmark-history-list" class="benchmark-history-list"></div>
             </section>
-
-            <section class="panel" id="servers">
-              <div class="panel-heading compact">
+            </div>
+            <div class="session-view" id="session-chat" data-session="chat" role="tabpanel" aria-labelledby="session-tab-chat" hidden>
+              <section class="panel" id="chat">
+              <div class="panel-heading">
                 <div>
-                  <h3>Servers</h3>
-                  <p>Tracked launches only.</p>
+                  <h3>Chat</h3>
+                  <p>Multi-turn chat with the selected running server.</p>
                 </div>
                 <div class="panel-heading-actions">
-                  <button class="mini-button" type="button" id="servers-purge-stopped" title="Remove stopped/crashed from history">Purge stopped</button>
-                  <button class="mini-button" type="button" id="servers-clear-history" title="Clear entire server history">Clear all</button>
+                  <button class="mini-button" type="button" id="chat-clear">Clear</button>
                 </div>
               </div>
-              <div class="server-box" id="server-box"></div>
+              <div class="chat-log" id="chat-log" role="log" aria-live="polite" aria-label="Chat transcript"></div>
+              <div class="chat-input-row">
+                <textarea id="test-prompt-input" rows="2" placeholder="Type a message… (Shift+Enter for newline)" autocomplete="off" aria-label="Message to the running server"></textarea>
+                <button class="mini-button primary" type="button" id="test-prompt-send" title="Send message" aria-label="Send message">Send</button>
+              </div>
+              <div class="test-prompt-meta" id="test-prompt-meta" hidden></div>
             </section>
-
-
-
-            <section class="panel" id="logs">
+            </div>
+            <div class="session-view" id="session-logs" data-session="logs" role="tabpanel" aria-labelledby="session-tab-logs" hidden>
+              <section class="panel" id="logs">
               <div class="panel-heading compact">
                 <div>
                   <h3>Logs</h3>
@@ -533,33 +407,94 @@
                 </div>
                 <button class="button ghost" id="open-logs-button" type="button">Open logs</button>
               </div>
+              <div id="log-empty" class="empty-state" hidden></div>
               <pre class="log-preview" id="log-preview">No tracked server selected.</pre>
             </section>
-
-            <section class="panel" id="portability">
-              <div class="panel-heading">
+            </div>
+            <div class="session-view" id="session-server" data-session="server" role="tabpanel" aria-labelledby="session-tab-server" hidden>
+              <section class="panel" id="servers">
+              <div class="panel-heading compact">
                 <div>
-                  <h3>Portability &amp; Paths</h3>
-                  <p>Make your setup reproducible across machines.</p>
+                  <h3>Servers</h3>
+                  <p>Tracked launches. Selection drives Logs.</p>
                 </div>
                 <div class="panel-heading-actions">
-                  <button class="mini-button" type="button" id="portability-open-settings">Edit roots</button>
-                  <button class="mini-button" type="button" id="portability-rescan" title="Rebuild inventory and re-scan for issues">Rescan</button>
-                  <button class="mini-button" type="button" id="portability-export" title="Export portable snapshot of current roots and settings">Export config</button>
+                  <button class="mini-button" type="button" id="servers-purge-stopped" title="Remove stopped and crashed entries from history">Purge stopped</button>
+                  <button class="mini-button danger" type="button" id="servers-clear-history" title="Clear all tracked server history">Clear history</button>
                 </div>
               </div>
-              <div class="portability-summary" id="portability-summary">
-                <p class="portability-hint">Scan roots and runtime roots control what is discovered without hard-coded absolute user paths.</p>
+              <div class="server-box" id="server-box"></div>
+            </section>
+            </div>
+          </section>
+          <section class="destination" id="destination-inventory" data-destination="inventory" hidden>
+            <section class="panel" id="runtimes">
+              <div class="panel-heading">
+                <div>
+                  <h3>Runtimes</h3>
+                </div>
+                <div class="panel-heading-actions">
+                  <span class="sr-only" role="status" aria-live="polite" id="runtime-status"></span>
+                  <label class="mini-toggle" title="Hide runtimes that are not installed or not found on disk.">
+                    <input id="hide-not-installed-runtimes" type="checkbox" />
+                    <span>Hide not installed</span>
+                  </label>
+                  <button class="mini-button" type="button" id="check-updates-button" title="Refresh update availability from upstream release sources">Check for updates</button>
+                </div>
               </div>
-              <div class="issue-list" id="issue-list"></div>
-              <div class="portability-checklist">
-                <div class="check-item"><span class="ok-dot"></span> Models live under configured scan roots (no user-specific paths in manifests)</div>
-                <div class="check-item"><span class="ok-dot"></span> Runtimes found via PATH, runtime_dirs, or explicit llama-server path</div>
-                <div class="check-item"><span class="ok-dot"></span> No absolute home paths in .ps1 / .json launch scripts (legacy scanner)</div>
+              <div class="runtime-grid" id="runtime-grid"></div>
+            </section>
+            <section class="panel" id="profiles">
+              <div class="panel-heading">
+                <div>
+                  <h3>Profiles</h3>
+                </div>
+                <div class="profiles-toolbar" aria-label="Profile tools">
+                  <select id="profile-model-filter" aria-label="Filter by model">
+                    <option value="all">All models</option>
+                  </select>
+                  <label class="profile-availability-toggle" title="Hide profiles that are not launchable or do not resolve to an installed local model.">
+                    <input id="hide-unavailable-profiles" type="checkbox" />
+                    <span>Hide unavailable</span>
+                  </label>
+                  <button class="button primary profile-new-button" id="new-profile-button" type="button" title="Create a new launch profile. Does not change existing profiles.">
+                    <span aria-hidden="true">+</span>
+                    New profile
+                  </button>
+                  <button class="button secondary icon-only" type="button" id="profile-menu-button" title="Save profile as copy…" aria-label="Save profile as copy…" aria-haspopup="dialog">⌄</button>
+                </div>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Model</th>
+                      <th>Profile</th>
+                      <th>Fit</th>
+                      <th>Port</th>
+                      <th>Status</th>
+                      <th>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody id="profiles-table"></tbody>
+                </table>
+              </div>
+              <div class="table-footer">
+                <span id="profiles-count">Showing profiles</span>
+                <a href="#profiles" id="view-all-profiles" title="Clear the search box, model filter, and availability toggle" hidden>Show all profiles</a>
               </div>
             </section>
-
-             <section class="panel" id="hf-tools">
+            <section class="panel" id="models">
+              <div class="panel-heading">
+                <div>
+                  <h3>Models</h3>
+                </div>
+              </div>
+              <div class="model-list" id="model-list"></div>
+            </section>
+          </section>
+          <section class="destination" id="destination-tools" data-destination="tools" hidden>
+            <section class="panel" id="hf-tools">
                <div class="panel-heading">
                  <div>
                    <h3>Hugging Face Tools</h3>
@@ -582,7 +517,6 @@
                    </div>
                    <div class="hf-actions">
                      <button class="mini-button" id="hf-check-updates-button">Check for Updates</button>
-                     <button class="mini-button primary" id="hf-install-button">Install CLI</button>
                    </div>
                  </div>
 
@@ -594,10 +528,30 @@
                    <div id="hf-browser-results" class="hf-browser-results"></div>
                  </div>
                </div>
-             </section>
-           </section>
-
-          </aside>
+            </section>
+            <section class="panel" id="portability">
+              <div class="panel-heading">
+                <div>
+                  <h3>Portability &amp; Paths</h3>
+                  <p>Make your setup reproducible across machines.</p>
+                </div>
+                <div class="panel-heading-actions">
+                  <button class="mini-button" type="button" id="portability-open-settings">Edit roots</button>
+                  <button class="mini-button" type="button" id="portability-rescan" title="Rebuild inventory and re-scan for issues">Rescan</button>
+                  <button class="mini-button" type="button" id="portability-export" title="Export portable snapshot of current roots and settings">Export config</button>
+                </div>
+              </div>
+              <div class="portability-summary" id="portability-summary">
+                <p class="portability-hint">Scan roots and runtime roots control what is discovered without hard-coded absolute user paths.</p>
+              </div>
+              <div class="issue-list" id="issue-list"></div>
+              <div class="portability-checklist">
+                <div class="check-item"><span class="ok-dot"></span> Models live under configured scan roots (no user-specific paths in manifests)</div>
+                <div class="check-item"><span class="ok-dot"></span> Runtimes found via PATH, runtime_dirs, or explicit llama-server path</div>
+                <div class="check-item"><span class="ok-dot"></span> No absolute home paths in .ps1 / .json launch scripts (legacy scanner)</div>
+              </div>
+            </section>
+          </section>
         </div>
       </main>
     </div>
@@ -687,9 +641,9 @@
                 </select>
               </label>
             </div>
-            <label class="check-row">
+            <div class="check-row">
               <label><input id="settings-auto-scan" type="checkbox" /> Auto-register new models on startup</label>
-            </label>
+            </div>
             <div class="row-actions">
               <button class="mini-button" type="button" id="settings-export-button" title="Export current model/runtime roots + key portable settings as JSON for use on another machine. No secrets included.">Export portable config</button>
             </div>
@@ -741,9 +695,10 @@
       <section class="rename-dialog" role="dialog" aria-modal="true" aria-labelledby="save-profile-title">
         <div class="modal-heading">
           <div>
-            <h3 id="save-profile-title">Save Profile</h3>
+            <h3 id="save-profile-title">Save parameters</h3>
           </div>
         </div>
+        <p class="modal-note" id="save-profile-note" hidden></p>
         <label class="field wide" title="Enter a name for this profile.">
           <span>Profile name</span>
           <input id="save-profile-name" type="text" autocomplete="off" />
@@ -765,14 +720,14 @@
     <div class="modal-backdrop command-palette-backdrop" id="command-palette" hidden>
       <div class="command-palette" role="dialog" aria-modal="true" aria-label="Command palette">
         <div class="palette-head">
-          <span>Commands</span>
-          <input id="palette-filter" type="text" placeholder="Type to filter..." autocomplete="off" />
+          <span id="palette-label">Commands</span>
+          <input id="palette-filter" type="text" placeholder="Type to filter..." autocomplete="off" role="combobox" aria-expanded="true" aria-controls="palette-list" aria-autocomplete="list" aria-label="Filter commands" />
         </div>
-        <ul class="palette-list" id="palette-list"></ul>
+        <ul class="palette-list" id="palette-list" role="listbox" aria-labelledby="palette-label"></ul>
         <div class="palette-hint">Esc to close · Enter to run · Ctrl+Shift+K to open</div>
       </div>
     </div>
 
-    <script src="/static/app.js?v=0.16.0" defer></script>
+    <script src="/static/app.js?v=0.16.17" defer></script>
   </body>
 </html>

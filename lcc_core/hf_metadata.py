@@ -33,16 +33,29 @@ def _get_text(url: str, timeout: float = 10.0) -> str:
         return resp.read().decode("utf-8", errors="replace")
 
 
+_MODEL_FILE_SUFFIXES = {".gguf", ".safetensors", ".bin", ".pt", ".pth"}
+_GENERIC_PATH_TOKENS = {"models", "model", "hf", "gguf", "checkpoints", "weights", "downloads"}
+
+
 def infer_query(name: str | None = None, path: str | None = None) -> str:
     parts = [name or ""]
     if path:
         path_obj = Path(path)
-        parts.extend([path_obj.stem, path_obj.parent.name])
+        # Only strip a suffix when it's a known model-file extension —
+        # Path.stem on a dotted directory name ("Qwen3.6-27B-NVFP4") would
+        # otherwise mangle it into "Qwen3".
+        base = path_obj.stem if path_obj.suffix.lower() in _MODEL_FILE_SUFFIXES else path_obj.name
+        for candidate in (base, path_obj.parent.name):
+            if not candidate or candidate.lower() in _GENERIC_PATH_TOKENS:
+                continue
+            if candidate.lower() in (name or "").lower():
+                continue  # already covered by the name
+            parts.append(candidate)
     query = " ".join(parts)
     query = re.sub(r"(?i)\b(gguf|unsloth|thebloke|q\d(?:_[a-z0-9]+)+|ud|it)\b", " ", query)
     query = re.sub(r"[-_]+", " ", query)
     query = re.sub(r"\s+", " ", query).strip()
-    return query or (name or Path(path or "").stem)
+    return query or (name or Path(path or "").name)
 
 
 def _strip_markdown(markdown: str) -> str:
@@ -117,12 +130,21 @@ def check_model_update(repo_id: str | None = None, name: str | None = None, path
 
     model_id = info["model_id"]
     filename = local_size = local_mtime = None
+    is_dir = False
     if path:
         local = Path(path)
-        filename = local.name
-        if local.exists():
-            stat = local.stat()
-            local_size, local_mtime = stat.st_size, stat.st_mtime
+        if local.is_dir():
+            # Sharded checkpoint: no single file to compare. Use the newest
+            # model-shard mtime as the local freshness signal.
+            is_dir = True
+            shards = sorted(local.glob("*.safetensors")) or sorted(local.iterdir())
+            mtimes = [f.stat().st_mtime for f in shards if f.is_file()]
+            local_mtime = max(mtimes) if mtimes else None
+        else:
+            filename = local.name
+            if local.exists():
+                stat = local.stat()
+                local_size, local_mtime = stat.st_size, stat.st_mtime
 
     try:
         meta = _get_json(f"{HF_API}/models/{urllib.parse.quote(model_id, safe='/')}")
@@ -141,7 +163,12 @@ def check_model_update(repo_id: str | None = None, name: str | None = None, path
         reason = "remote file size differs from local copy" if file_differs else "remote file matches your local copy"
     else:
         update_available = _modified_after(last_modified, local_mtime)
-        reason = "repo changed after your local file (may be a card/metadata edit)" if update_available else "no newer changes detected"
+        suffix = " (directory checkpoint: compared repo activity to your newest shard)" if is_dir else ""
+        reason = (
+            f"repo changed after your local file (may be a card/metadata edit){suffix}"
+            if update_available
+            else f"no newer changes detected{suffix}"
+        )
 
     return {
         "success": True,
@@ -157,6 +184,24 @@ def check_model_update(repo_id: str | None = None, name: str | None = None, path
         "update_available": update_available,
         "reason": reason,
     }
+
+
+def listed_repo_files(model: dict[str, Any] | None) -> list[str]:
+    """Filenames the HF model card actually lists. Never invents quants."""
+    names: list[str] = []
+    seen: set[str] = set()
+    siblings = (model or {}).get("siblings") or (model or {}).get("files") or []
+    for item in siblings:
+        if isinstance(item, dict):
+            name = item.get("rfilename") or item.get("filename") or item.get("name")
+        else:
+            name = str(item or "")
+        name = str(name or "").strip().replace("\\", "/")
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        names.append(name)
+    return names
 
 
 def fetch_model_info(repo_id: str | None = None, name: str | None = None, path: str | None = None) -> dict[str, Any]:
@@ -178,6 +223,7 @@ def fetch_model_info(repo_id: str | None = None, name: str | None = None, path: 
     summary = _readme_summary(model_id) if model_id else None
     card_data = model.get("cardData") or {}
     tags = model.get("tags") or []
+    files = listed_repo_files(model)
 
     return {
         "success": True,
@@ -190,6 +236,7 @@ def fetch_model_info(repo_id: str | None = None, name: str | None = None, path: 
         "pipeline_tag": model.get("pipeline_tag"),
         "library_name": model.get("library_name"),
         "tags": tags[:20],
+        "files": files,
         "card_data": card_data,
         "matches": [
             {

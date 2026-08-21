@@ -27,6 +27,9 @@ class AppConfig:
     extra_llama_args: list[str] = field(default_factory=list)
     update_channel: str = "stable"
     profile_names: dict[str, str] = field(default_factory=dict)
+    # Tombstones for profiles the user deleted: the GGUF stays on disk, so
+    # without this the next autoscan re-registers it.
+    ignored_model_paths: list[str] = field(default_factory=list)
     server_history_limit: int = 5
     auto_scan_on_startup: bool = True
 

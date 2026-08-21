@@ -1,3 +1,7 @@
+> **ARCHIVED 2026-08-21 — superseded by `.paul/ROADMAP.md`.**
+> Kept for history. Do not add new work here; open items were migrated into PAUL
+> phases and the ROADMAP backlog. See `.paul/STATE.md` for the migration table.
+
 # LCC Code Review — Milestones & Tracking
 
 **Review Date**: 2026-07-09  

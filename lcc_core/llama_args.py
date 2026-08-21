@@ -22,6 +22,27 @@ class LaunchCommand:
         return data
 
 
+# Accepted values of llama.cpp's --spec-type. Anything else makes llama-server
+# exit before it listens, so this set is validated against, not guessed at.
+#
+# Verified against llama-server build 10472, upstream commit 60eeeb608
+# (2026-08-17), common/arg.cpp: common_speculative_types_from_names().
+# Re-check on a llama.cpp upgrade -- the previous six-value set here was
+# correct for the April source clone in tools/llama.cpp-source and silently
+# fell behind when the binary gained the draft-* family.
+#
+# The draft-* types pair with a draft model (--model-draft / --spec-draft-model
+# or a sidecar the draft repo ships); the ngram-* types need no draft model.
+# Upstream does NOT treat the two flags as mutually exclusive: given a draft
+# model and no --spec-type it infers the type from the sidecar or the draft
+# GGUF's metadata, and an explicit --spec-type overrides that inference.
+SPEC_TYPES = {
+    "none",
+    "draft-simple", "draft-eagle3", "draft-mtp", "draft-dflash", "draft-dspark",
+    "ngram-simple", "ngram-map-k", "ngram-map-k4v", "ngram-mod", "ngram-cache",
+}
+
+
 def _bool_on(value: Any) -> str:
     return "on" if bool(value) else "off"
 
@@ -105,6 +126,15 @@ def build_llama_server_args(
     if gpu_layers is not None:
         args.extend(["--gpu-layers", "all" if gpu_layers >= 999 else str(gpu_layers)])
 
+    # llama.cpp's threadpool busy-waits for work (--poll defaults to 50), so the
+    # worker threads keep spinning at 100% between batches and an *idle* server
+    # pegs `--threads` cores forever. With the model offloaded there's nothing for
+    # them to do, so default polling off; callers can still set `poll` explicitly.
+    poll = params.get("poll")
+    if poll is None:
+        poll = 50 if gpu_layers in (None, 0) else 0
+    args.extend(["--poll", str(int(poll))])
+
     args.extend(["--flash-attn", _bool_on(params.get("flash_attn", True))])
     args.extend(["--reasoning", _bool_on(params.get("reasoning", False))])
     # --jinja is a presence flag (no on/off value). It makes llama.cpp use the
@@ -129,18 +159,28 @@ def build_llama_server_args(
     spec_type = str(params.get("spec_type", "")).strip()
     if draft_model:
         args.extend(["--model-draft", draft_model])
-        if spec_type:
-            args.extend(["--spec-type", spec_type])
-        if "spec_draft_n_max" in params:
-            args.extend(["--spec-draft-n-max", str(params["spec_draft_n_max"])])
-        elif "draft_max" in params:
-            args.extend(["--draft-max", str(params["draft_max"])])
+        # spec_draft_n_max is a legacy manifest key; upstream only knows
+        # --draft-max (aliases --draft/--draft-n).
+        draft_max = params.get("spec_draft_n_max", params.get("draft_max"))
+        if draft_max is not None:
+            args.extend(["--draft-max", str(draft_max)])
         if "draft_min" in params:
             args.extend(["--draft-min", str(params["draft_min"])])
         if "draft_p_min" in params:
             args.extend(["--draft-p-min", str(params["draft_p_min"])])
-    elif spec_type:
-        warnings.append("spec_type was set but draft_model was missing; speculative flags were not emitted.")
+    if spec_type:
+        # Upstream takes a comma-separated list and appends each name to
+        # params.speculative.types, so emit the whole valid list rather than a
+        # single value. Emitted alongside --model-draft too: the two are
+        # independent upstream, and an explicit type overrides the inference
+        # llama.cpp would otherwise make from the draft sidecar/GGUF metadata.
+        requested = [part.strip() for part in spec_type.split(",")]
+        accepted = [part for part in requested if part and part in SPEC_TYPES]
+        rejected = [part for part in requested if part and part not in SPEC_TYPES]
+        if accepted:
+            args.extend(["--spec-type", ",".join(accepted)])
+        for part in rejected:
+            warnings.append(f"spec_type '{part}' is not a supported value; it was not emitted.")
 
     tensor_overrides = params.get("tensor_overrides") or params.get("override_tensors") or params.get("ot")
     if tensor_overrides:

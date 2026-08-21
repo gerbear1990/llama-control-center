@@ -191,18 +191,14 @@ def _extract_n_attn_layers(reader, arch: str | None, n_layer: int | None) -> int
     not the total block count.
 
     Detection priority:
-    1. Architecture-specific interval metadata (``full_attention_interval``).
-    2. Tensor scan: count layers with explicit ``attn_k.weight`` / ``attn_v.weight``
-       tensors. SSM-only layers lack these.
+    1. Tensor scan: count layers with explicit ``attn_k.weight`` / ``attn_v.weight``
+       tensors. SSM-only layers lack these. This is ground truth.
+    2. Architecture-specific interval metadata (``full_attention_interval``), for
+       files whose tensor names match no known pattern. Note this is a derived
+       shortcut: ``n_layer // interval`` cannot see an MTP/nextn layer that also
+       carries attention, which is why it is not tried first.
     3. Fall back to ``n_layer`` (standard all-attention architecture).
     """
-    if arch:
-        val = _gguf_field_value(reader.get_field(f"{arch}.full_attention_interval"))
-        if isinstance(val, int) and val > 1 and isinstance(n_layer, int) and n_layer > 0:
-            result = n_layer // val
-            if result > 0:
-                return result
-
     attn_layers: set[int] = set()
     for tensor in reader.tensors:
         name = tensor.name
@@ -226,6 +222,13 @@ def _extract_n_attn_layers(reader, arch: str | None, n_layer: int | None) -> int
             attn_layers.add(idx)
     if attn_layers:
         return len(attn_layers)
+
+    if arch:
+        val = _gguf_field_value(reader.get_field(f"{arch}.full_attention_interval"))
+        if isinstance(val, int) and val > 1 and isinstance(n_layer, int) and n_layer > 0:
+            result = n_layer // val
+            if result > 0:
+                return result
 
     return n_layer
 
@@ -274,7 +277,7 @@ def _extract_kv_dims(reader, arch: str | None, n_layer: int | None) -> tuple[int
 # the tiny result. ``_gguf_meta_mem`` caches within a process; the on-disk cache
 # (keyed by size+mtime) survives restarts, so a profiles refresh never re-parses.
 _GGUF_META_CACHE_FILENAME = "gguf_meta_cache.json"
-_KV_META_CACHE_VERSION = 3  # bump when kv_dims computation changes to invalidate stale entries
+_KV_META_CACHE_VERSION = 4  # bump when kv_dims computation changes to invalidate stale entries
 _gguf_meta_mem: dict[str, tuple[tuple[int, int], int | None, tuple | None, bool | None, int | None]] = {}
 
 # Substrings that, in a GGUF chat template, indicate the model was trained to emit
@@ -572,8 +575,12 @@ def _model_size_mib(model: dict[str, Any] | None) -> float | None:
     return params_b * 1_000_000_000 * bits / 8 / 1024 / 1024
 
 
-def _get_total_layers(model: dict[str, Any] | None) -> int | None:
-    """Get the total number of layers from a model's GGUF file."""
+def _get_total_layers(model: dict[str, Any] | None, probe: bool = True) -> int | None:
+    """Get the total number of layers from a model's GGUF file.
+
+    With ``probe`` False, only cached metadata is consulted — the GGUF header is
+    never opened, so batch callers (the profiles-list fit badge) can't block.
+    """
     if not model:
         return None
     model_path = model.get("path") or model.get("model_path")
@@ -582,7 +589,7 @@ def _get_total_layers(model: dict[str, Any] | None) -> int | None:
     # Check if we already have layer info cached
     if "n_layer" in model:
         return model.get("n_layer")
-    return _read_gguf_n_layer(str(model_path))
+    return _gguf_meta(str(model_path), parse=probe)[0]
 
 
 def _quant_factor(model: dict[str, Any] | None, params: dict[str, Any]) -> float:
@@ -617,7 +624,7 @@ def _gpu_factor(gpu_name: str) -> float:
     return 0.32
 
 
-def _layer_fraction(params: dict[str, Any], model: dict[str, Any] | None = None) -> float:
+def _layer_fraction(params: dict[str, Any], model: dict[str, Any] | None = None, probe: bool = True) -> float:
     layers = params.get("gpu_layers", 999)
     if str(layers).lower() in {"all", "auto"}:
         return 1.0
@@ -628,7 +635,7 @@ def _layer_fraction(params: dict[str, Any], model: dict[str, Any] | None = None)
     if count >= 999:
         return 1.0
     # Get actual layer count from GGUF file if available
-    total_layers = _get_total_layers(model)
+    total_layers = _get_total_layers(model, probe=probe)
     if total_layers is not None and total_layers > 0:
         return max(0.0, min(1.0, count / total_layers))
     return max(0.0, min(1.0, count / 80))
@@ -708,10 +715,10 @@ def estimate_memory_fit(
 ) -> dict[str, Any]:
     """Estimate accelerator and RAM pressure for fit badges and live settings.
 
-    ``probe_model`` controls whether exact KV dimensions may be read from the
-    GGUF header on a cache miss. The default (False) keeps batch callers like the
-    profiles-list refresh fast by using cached dims or a heuristic; explicit
-    single-model paths (Smart Fit, live settings) pass True for exact sizing.
+    ``probe_model`` controls whether exact KV dimensions and layer counts may be
+    read from the GGUF header on a cache miss. The default (False) keeps batch
+    callers like the profiles-list refresh fast by using cached values or a
+    heuristic; explicit single-model paths (Smart Fit, live settings) pass True.
     """
 
     hardware = hardware or {}
@@ -720,7 +727,7 @@ def estimate_memory_fit(
     ctx = _float_or_none(params.get("ctx_size")) or 4096.0
     batch = _float_or_none(params.get("batch_size")) or 512.0
     ubatch = _float_or_none(params.get("ubatch_size")) or min(batch, 512.0)
-    layer_fraction = _layer_fraction(params, model)
+    layer_fraction = _layer_fraction(params, model, probe=probe_model)
     kv_offload = bool(params.get("kv_offload", True))
     op_offload = bool(params.get("op_offload", True))
     mmap = bool(params.get("mmap", True))
@@ -737,6 +744,20 @@ def estimate_memory_fit(
     else:
         avg_cache = (cache_k + cache_v) / 2.0
         kv_cache_mib = ctx * params_b * avg_cache * KV_FALLBACK_FACTOR
+
+    # Shadow mode: observe how the truth layer would have answered. Logs only;
+    # the displayed figure is unchanged. See docs/superpowers/specs/
+    # 2026-08-21-ground-truth-layer-design.md
+    if probe_model:
+        try:
+            from .truth import shadow as _shadow
+            _m = model or {}
+            _shadow.record_divergence(
+                _m.get("path") or _m.get("model_path"), params, kv_cache_mib
+            )
+        except Exception:
+            pass
+
     compute_mib = 420.0 + min(batch, 4096.0) * 0.28 + min(ubatch, 2048.0) * 0.18
     if params.get("flash_attn", True):
         compute_mib *= 0.86

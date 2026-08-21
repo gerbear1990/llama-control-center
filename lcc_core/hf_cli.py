@@ -4,7 +4,6 @@ import json
 import re
 import shutil
 import subprocess
-import sys
 from typing import Any, Dict
 
 
@@ -16,7 +15,7 @@ def detect_hf_cli() -> Dict[str, Any]:
             "installed": False,
             "version": None,
             "binary_path": None,
-            "install_guidance": "Run 'pip install huggingface_hub' or click Install CLI below.",
+            "install_guidance": "Run 'pip install huggingface_hub' to install the Hugging Face CLI.",
         }
 
     result = subprocess.run(
@@ -77,38 +76,6 @@ def check_for_updates() -> Dict[str, Any]:
             "message": f"Update available: {current_version} → {latest}",
         }
     return {"needs_update": False, "message": "Up to date."}
-
-
-def install_hf_cli() -> Dict[str, Any]:
-    """Attempts to install or upgrade huggingface_hub via pip."""
-    try:
-        pip_cmd = [sys.executable, "-m", "pip", "install", "--upgrade", "huggingface_hub"]
-        result = subprocess.run(
-            pip_cmd,
-            capture_output=True,
-            text=True,
-            timeout=120,
-            check=False,
-        )
-
-        if result.returncode == 0:
-            cli = detect_hf_cli()
-            if cli.get("installed"):
-                return {
-                    "success": True,
-                    "message": f"Installed huggingface_hub {cli['version']}.",
-                }
-            return {
-                "success": False,
-                "message": "Installation appeared to succeed but huggingface-cli not found. It may need to be added to PATH.",
-            }
-        else:
-            stderr = result.stderr.strip() if result.stderr else "Unknown error."
-            return {"success": False, "message": f"pip failed: {stderr}"}
-    except subprocess.TimeoutExpired:
-        return {"success": False, "message": "Installation timed out (120s). Check output manually."}
-    except Exception as e:
-        return {"success": False, "message": f"Installation failed: {e}"}
 
 
 def _extract_version(version_str: str) -> str | None:

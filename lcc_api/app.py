@@ -7,6 +7,7 @@ from typing import Any
 
 try:
     from fastapi import FastAPI, HTTPException
+    from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import FileResponse
     from fastapi.staticfiles import StaticFiles
     from pydantic import BaseModel, Field
@@ -20,10 +21,11 @@ from lcc_core.config import AppConfig
 from lcc_core.estimates import enrich_profiles_with_fit_status, estimate_memory_fit, estimate_tokens_per_second
 from lcc_core.fit import run_fit_test
 from lcc_core.hardware import detect_system_hardware
-from lcc_core.hf_cli import detect_hf_cli as hf_cli_detect, check_for_updates, install_hf_cli
+from lcc_core.hf_cli import detect_hf_cli as hf_cli_detect, check_for_updates
 from lcc_core.draft_models import suggest_draft_models, pull_draft_model, download_model_file
 from lcc_core.inventory import build_inventory
 from lcc_core.profile_registry import (
+    normalize_model_path,
     register_discovered_models,
     startup_autoscan_if_enabled,
 )
@@ -50,6 +52,19 @@ async def _lifespan(app: FastAPI):
 from lcc_api import __version__
 
 app = FastAPI(title="Llama Control Center API", version=__version__, lifespan=_lifespan)
+
+# CORS so browser apps (e.g. Auto-Editor Vite on :5173 / Electron) can call /api/servers.
+# The regex covers every local port plus Electron's app:// origins. Opaque origins
+# ("null", i.e. file:// and sandboxed iframes) are deliberately NOT allowed: this API
+# is unauthenticated, so any website could otherwise drive it from a sandboxed frame.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?|app://.*",
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -138,8 +153,17 @@ def get_config() -> dict[str, Any]:
 
 @app.post("/api/config")
 def save_config(config: ConfigRequest) -> dict[str, Any]:
-    data = config.model_dump() if hasattr(config, "model_dump") else config.dict()
-    app_config = AppConfig(**data)
+    # Merge onto the stored config instead of replacing it: fields the UI never
+    # submits (profile_names, ignored_model_paths, the WSL paths) would otherwise
+    # be reset to defaults on every Settings save.
+    if hasattr(config, "model_dump"):
+        submitted = config.model_dump(exclude_unset=True)
+    else:  # pragma: no cover - pydantic v1 fallback
+        submitted = config.dict(exclude_unset=True)
+    app_config = AppConfig.load()
+    for key, value in submitted.items():
+        if key in AppConfig.__dataclass_fields__:
+            setattr(app_config, key, value)
     path = app_config.save()
     return {"success": True, "path": str(path), "config": app_config.to_dict()}
 
@@ -287,6 +311,16 @@ def get_servers() -> dict[str, Any]:
     config = AppConfig.load()
     trim_server_history(config.server_history_limit)
     return {"servers": list_servers()}
+
+
+@app.post("/api/servers/purge")
+def purge_servers(only_non_running: bool = True, all: bool = False) -> dict[str, Any]:
+    """Remove tracked server history entries (all of them, or only non-running)."""
+    from lcc_core.server_manager import purge_server_history
+    result = purge_server_history(only_non_running=only_non_running, all=all)
+    if not result.get("success"):
+        raise HTTPException(status_code=400, detail=result)
+    return result
 
 
 @app.get("/api/servers/{server_id}/metrics")
@@ -531,11 +565,6 @@ def check_hf_updates() -> dict[str, Any]:
     return check_for_updates()
 
 
-@app.post("/api/hf-cli/install")
-def install_hf_cli_endpoint() -> dict[str, Any]:
-    return install_hf_cli()
-
-
 class ProfileNameRequest(BaseModel):
     mode: str
     name: str
@@ -591,12 +620,17 @@ def save_profile(request: SaveProfileRequest) -> dict[str, Any]:
         existing["recommended_params"] = request.params
         message = f"Updated profile '{request.name}'."
     else:
-        models.append({
+        entry = {
             "mode": request.mode,
             "name": request.name,
             "description": request.description,
             "recommended_params": request.params,
-        })
+        }
+        # Pin the model path when the client supplies one, so new entries
+        # (e.g. save-as-copy) resolve by path instead of fuzzy name matching.
+        if request.model_path:
+            entry["model_path"] = str(request.model_path)
+        models.append(entry)
         message = f"Saved profile '{request.name}'."
 
     manifest["models"] = models
@@ -604,6 +638,17 @@ def save_profile(request: SaveProfileRequest) -> dict[str, Any]:
         write_manifest_atomic(manifest_path, manifest)
     except OSError as exc:
         return {"success": False, "message": f"Failed to write models.json: {exc}"}
+
+    # An explicit save is an intentional re-add: lift the delete tombstone so
+    # scans can see this model again.
+    model_path = str(request.model_path or (existing or {}).get("model_path") or "").strip()
+    if model_path:
+        config = AppConfig.load()
+        key = normalize_model_path(model_path)
+        remaining = [path for path in config.ignored_model_paths if normalize_model_path(path) != key]
+        if len(remaining) != len(config.ignored_model_paths):
+            config.ignored_model_paths = remaining
+            config.save()
     return {"success": True, "message": message}
 
 
@@ -651,8 +696,9 @@ def delete_profile(request: DeleteProfileRequest) -> dict[str, Any]:
         return {"success": False, "message": str(exc)}
 
     models = manifest.get("models", [])
+    removed = next((m for m in models if m.get("mode") == request.mode), None)
     kept = [m for m in models if m.get("mode") != request.mode]
-    if len(kept) == len(models):
+    if removed is None:
         return {"success": False, "message": f"Unknown profile mode: {request.mode}"}
 
     manifest["models"] = kept
@@ -663,18 +709,37 @@ def delete_profile(request: DeleteProfileRequest) -> dict[str, Any]:
 
     # Also drop any custom name the user assigned for this mode.
     config = AppConfig.load()
+    config_dirty = False
     if request.mode in config.profile_names:
         config.profile_names.pop(request.mode, None)
+        config_dirty = True
+    # Tombstone the model file. The GGUF stays on disk, so without this the next
+    # autoscan (or manual scan) registers a fresh profile for the same model.
+    model_path = str(removed.get("model_path") or "").strip()
+    if model_path:
+        known = {normalize_model_path(path) for path in config.ignored_model_paths}
+        if normalize_model_path(model_path) not in known:
+            config.ignored_model_paths.append(model_path)
+            config_dirty = True
+    if config_dirty:
         config.save()
 
     return {"success": True, "message": f"Deleted profile '{request.mode}'.", "mode": request.mode}
 
 
-@app.post("/api/profiles/scan")
-def scan_profiles() -> dict[str, Any]:
-    """Register any newly discovered models as launchable profiles."""
+class ScanRequest(BaseModel):
+    model_path: str | None = None
 
-    result = register_discovered_models()
+
+@app.post("/api/profiles/scan")
+def scan_profiles(request: ScanRequest = ScanRequest()) -> dict[str, Any]:
+    """Register newly discovered models as launchable profiles.
+
+    When ``model_path`` is set, only that file is considered — a row Register
+    must not enroll every new model on disk.
+    """
+    only = [request.model_path] if request.model_path else None
+    result = register_discovered_models(only_paths=only)
     payload = result.to_dict()
     payload["success"] = True
     return payload

@@ -78,9 +78,19 @@ def _strip_leading_v(value: str | None) -> str | None:
     cleaned = str(value).strip()
     if not cleaned:
         return None
-    if cleaned[:1].lower() == "v":
+    # Only a `v` glued to a digit is a version prefix. Stripping it blindly turns
+    # a raw `--version` line into "ersion: b4488 ...", which parses as nothing.
+    if cleaned[:1].lower() == "v" and cleaned[1:2].isdigit():
         cleaned = cleaned[1:]
     return cleaned
+
+
+# Version tokens are searched for anywhere in the string, because callers hand us
+# whole `--version` lines ("ollama version is 0.5.7") as often as bare tags.
+_SEMVER_RE = re.compile(r"(?<![\w.])[vV]?(\d+(?:\.\d+)+)")
+# `b4488`, `4500`, `20240101` — but not a build hash like `c8a8a9d5`, whose digits
+# are followed by more word characters.
+_BUILD_RE = re.compile(r"(?<![\w.])[a-zA-Z]*(\d+)(?![\w.])")
 
 
 def parse_version(value: str | None) -> tuple[int, ...] | None:
@@ -90,7 +100,7 @@ def parse_version(value: str | None) -> tuple[int, ...] | None:
 
     - semver: ``1.2.3`` or ``1.2.3-rc1`` (pre-release suffix is ignored)
     - llama.cpp build number: ``b4500`` or ``4500``
-    - any leading or trailing bare integer: ``20240101``
+    - any bare integer: ``20240101``
 
     Returns None when no numeric component can be extracted. Pre-release
     suffixes are ignored for the comparison itself; the caller decides
@@ -100,15 +110,12 @@ def parse_version(value: str | None) -> tuple[int, ...] | None:
     cleaned = _strip_leading_v(value)
     if cleaned is None:
         return None
-    semver = re.match(r"^(\d+(?:\.\d+)*)", cleaned)
+    semver = _SEMVER_RE.search(cleaned)
     if semver:
         return tuple(int(part) for part in semver.group(1).split(".") if part)
-    build = re.match(r"^[a-z]+(\d+)$", cleaned.lower())
+    build = _BUILD_RE.search(cleaned)
     if build:
         return (int(build.group(1)),)
-    bare = re.search(r"(\d+)$", cleaned)
-    if bare:
-        return (int(bare.group(1)),)
     return None
 
 

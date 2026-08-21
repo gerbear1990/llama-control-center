@@ -266,11 +266,23 @@ def start_server(host: str, port: int, reload: bool) -> int:
         if reload:
             cmd.append("--reload")
 
+        # Detach so the daemon outlives the launching terminal: a console control
+        # event (Ctrl-C, closing the PowerShell window) otherwise hits the whole
+        # process group and kills the API, leaving a stale pid file behind.
+        # New process group + no console on Windows, setsid on POSIX.
+        creationflags = 0
+        if sys.platform == "win32":
+            creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(
+                subprocess, "CREATE_NO_WINDOW", 0
+            )
+
         proc = subprocess.Popen(
             cmd,
             stdin=subprocess.DEVNULL,
             stdout=stdout_f,
             stderr=stderr_f,
+            start_new_session=True,
+            creationflags=creationflags,
         )
 
         if sys.platform == "win32":

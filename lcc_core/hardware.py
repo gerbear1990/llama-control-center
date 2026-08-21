@@ -77,8 +77,13 @@ def _windows_memory_type(mem_type_code: Any) -> str | None:
         return None
     try:
         code = int(mem_type_code)
+        # SMBIOS Memory Device type codes (0x1E is LPDDR4, DDR5 is 0x22) - the
+        # values Win32_PhysicalMemory.MemoryType reports. Getting 30 wrong meant
+        # DDR5 fell through to the generic bandwidth formula and read ~2x low.
         type_map = {
-            20: "DDR", 21: "DDR2", 24: "DDR3", 26: "DDR4", 30: "DDR5",
+            20: "DDR", 21: "DDR2", 24: "DDR3", 26: "DDR4",
+            27: "LPDDR", 28: "LPDDR2", 29: "LPDDR3", 30: "LPDDR4",
+            34: "DDR5", 35: "LPDDR5",
         }
         return type_map.get(code, f"RAM-{code}")
     except (ValueError, TypeError):
@@ -407,7 +412,7 @@ def _nvidia_live_snapshot() -> list[dict[str, Any]] | None:
     gpus: list[dict[str, Any]] = []
     for raw_line in result.stdout.splitlines():
         parts = [part.strip() for part in raw_line.split(",")]
-        if len(parts) < 7:
+        if len(parts) < 8:
             continue
         total_mib = _int_or_none(parts[5])
         free_mib = _int_or_none(parts[6])

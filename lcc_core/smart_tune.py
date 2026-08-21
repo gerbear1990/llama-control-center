@@ -12,18 +12,23 @@ from .estimates import estimate_memory_fit, estimate_tokens_per_second, _get_tot
 # ladder at the model's trained window so we never recommend a context the model
 # can't actually use (see model_max_context / <arch>.context_length in the GGUF).
 CTX_LADDER = [2048, 4096, 8192, 16384, 32768, 49152, 65536, 98304, 131072, 196608, 262144]
-# KV-cache rungs, highest quality -> most compact. The mid-tier quants (q5_0,
-# q4_1) give the asymmetric K/V search finer memory/quality landing spots; iq4_nl
-# matches q4_0 in size but uses a non-linear codebook. The 4-bit float formats
-# (nvfp4, mxfp4) are NVIDIA/Blackwell-hardware-accelerated and are appended to
-# the ladder only on CUDA GPUs where they're fast (see _cache_ladder); elsewhere
-# they'd just slow the search with no speed benefit.
-CACHE_LADDER = ["f16", "q8_0", "q5_1", "q5_0", "q4_1", "q4_0", "iq4_nl"]
+# KV-cache rungs, highest quality -> most compact.
+#
+# This ladder is deliberately short: llama.cpp only ships CUDA flash-attention
+# kernels for a few KV types, and a type it has no kernel for does NOT error --
+# it silently falls back to the CPU attention path, which drops prompt
+# processing by ~20x while the GPU sits idle. Measured on RTX 5090 / b10472 with
+# a 3.1k-token prompt (tok/s, prompt processing):
+#
+#     f16/f16 3123 | bf16/bf16 3091 | q8_0/q8_0 3054 | q4_0/q4_0 3141   <- GPU
+#     q5_1 151 | q5_0 153 | q4_1 160 | iq4_nl 132                       <- CPU
+#
+# so q5_1/q5_0/q4_1/iq4_nl are excluded even though they'd "fit" better -- a
+# cache that halves memory and then runs attention on the CPU is never the right
+# trade. nvfp4/mxfp4 are excluded outright: llama.cpp rejects them as cache
+# types and the server refuses to launch (they're weight quants, not KV quants).
+CACHE_LADDER = ["f16", "q8_0", "q4_0"]
 _BF16_CACHE_LADDER = ["bf16", *CACHE_LADDER]
-# NVIDIA 4-bit float KV cache: NVFP4 first (matches q4_0 byte rate but float),
-# then MXFP4 (slightly more compact). Prepended on CUDA GPUs known to accelerate
-# them so the tuner prefers hardware-accelerated 4-bit over integer q4_0.
-_NVIDIA_FP4_LADDER = ["nvfp4", "mxfp4"]
 # higher rank == better KV quality, used to weight/break ties toward fidelity.
 # Float formats rank at or above their integer siblings at the same byte rate:
 # nvfp4 (float E2M1, 0.5625) ranks just above q4_0/iq4_nl (int, 0.5625), and
@@ -34,11 +39,16 @@ _CACHE_RANK = {
 }
 _MAX_CACHE_RANK = max(_CACHE_RANK.values())
 
-# K and V are tuned independently. The K cache is more sensitive to quantization
-# than V (keys drive attention scores; values are just averaged), so we (a) never
-# spend more bits on V than K and (b) weight K fidelity well above V when scoring.
-# The search therefore sheds V bits first when memory is short, keeping asymmetric
-# picks like q8_0 K / q4_0 V that preserve the precision that matters most.
+# K and V must use the SAME type. Mixing them is tempting -- K is more sensitive
+# to quantization than V (keys drive attention scores; values are just averaged),
+# so shedding V bits first looks like free memory -- but llama.cpp has no CUDA
+# flash-attention kernel for a mismatched pair and silently drops to the CPU
+# attention path. Every asymmetric pair measured on RTX 5090 / b10472 fell back,
+# including the highest-quality one: f16 K / q8_0 V ran at 177 tok/s vs 3123 for
+# f16/f16, with 8 CPU threads pegged and the GPU at ~5%. See _grid_candidates.
+#
+# The weights below survive only to score K/V fidelity in the ranking; with
+# K == V they contribute equally and are kept so the scoring math stays stable.
 _CACHE_K_WEIGHT = 0.7
 _CACHE_V_WEIGHT = 0.3
 
@@ -49,18 +59,6 @@ _BF16_GPU_MARKERS = (
     "ada", "rtx 40", "rtx 4070", "rtx 4080", "rtx 4090",
     "h100", "h200", "h800", "h20",
     "b100", "b200", "gb200",
-    "a100", "a800",
-    "l4", "l40", "l40s",
-)
-# GPUs whose KV-cache kernels hardware-accelerate the 4-bit float formats.
-# Blackwell (RTX 50, B100/200) and Hopper (H100) have native FP4 support; Ada
-# (RTX 40, L4/L40) runs nvfp4/mxfp4 paths but without the same tensor-core
-# throughput, so they're still preferred over integer q4_0 for quality.
-_FP4_GPU_MARKERS = (
-    "blackwell", "rtx 50", "rtx 5070", "rtx 5080", "rtx 5090",
-    "h100", "h200", "h800", "h20",
-    "b100", "b200", "gb200",
-    "ada", "rtx 40", "rtx 4070", "rtx 4080", "rtx 4090",
     "a100", "a800",
     "l4", "l40", "l40s",
 )
@@ -88,24 +86,11 @@ def _prefers_bf16_kv(hardware: dict[str, Any] | None) -> bool:
     return any(marker in descriptor for marker in _BF16_GPU_MARKERS)
 
 
-def _prefers_fp4_kv(hardware: dict[str, Any] | None) -> bool:
-    """Return true when the GPU hardware-accelerates NVFP4/MXFP4 KV cache."""
-    descriptor = _gpu_descriptor(hardware)
-    if not descriptor:
-        return False
-    if not any(marker in descriptor for marker in _BF16_BACKEND_MARKERS):
-        return False
-    return any(marker in descriptor for marker in _FP4_GPU_MARKERS)
-
-
 def _cache_ladder(hardware: dict[str, Any] | None) -> list[str]:
-    base = list(_BF16_CACHE_LADDER if _prefers_bf16_kv(hardware) else CACHE_LADDER)
-    # On FP4-capable NVIDIA GPUs, offer the hardware-accelerated 4-bit float
-    # formats as compact-tier rungs (placed after iq4_nl so they're considered
-    # once the integer 4-bit options are exhausted, matching their byte rates).
-    if _prefers_fp4_kv(hardware):
-        base = [*base, *_NVIDIA_FP4_LADDER]
-    return base
+    # Every rung here must have a working CUDA flash-attention kernel -- see the
+    # CACHE_LADDER comment. BF16 is added only on GPUs that run it natively;
+    # elsewhere it would fall back the same way an unsupported quant does.
+    return list(_BF16_CACHE_LADDER if _prefers_bf16_kv(hardware) else CACHE_LADDER)
 
 
 def _is_16bit_cache(cache: Any) -> bool:
@@ -131,7 +116,7 @@ _REASONS = {
     "gpu_layers": "offload as many layers to the accelerator as memory allows (biggest speed lever)",
     "ctx_size": "grow the context window into the remaining memory headroom",
     "cache_type_k": "pick the KV-cache quant that best balances fidelity and memory",
-    "cache_type_v": "pick the KV-cache quant that best balances fidelity and memory (V sheds bits before K)",
+    "cache_type_v": "pick the KV-cache quant that best balances fidelity and memory (same type as K)",
     "batch_size": "grow the logical batch into leftover memory headroom for faster prompt processing",
     "ubatch_size": "grow the physical batch into leftover memory headroom for faster prompt processing",
     "threads": "match generation threads to the CPU (decode is memory-bound; extra threads add contention)",
@@ -204,13 +189,16 @@ def _tune_batch(
     params: dict[str, Any],
     model: dict[str, Any] | None,
     hardware: dict[str, Any] | None,
+    keep_status: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
     """Grow batch/ubatch into the headroom left over by the main grid pick.
 
     Tries (batch, ubatch) pairs largest-first and keeps the first that still
     fits; the caller's pair is included so the result is never smaller than
-    what already fit. Returns the (possibly updated) params and the fit for
-    the chosen pair (None when nothing beat the caller's own pair).
+    what already fit. When ``keep_status`` is ``good``, a pair that would
+    turn the pick tight is skipped so batch growth cannot spend the safety
+    margin the ranker just chose. Returns the (possibly updated) params and
+    the fit for the chosen pair (None when nothing beat the caller's pair).
     """
     base_b = _int_or_none(params.get("batch_size")) or 512
     base_ub = _int_or_none(params.get("ubatch_size")) or min(base_b, 512)
@@ -221,6 +209,8 @@ def _tune_batch(
         cand = {**params, "batch_size": batch, "ubatch_size": ubatch}
         fit = estimate_memory_fit(cand, model, hardware)
         if fit["status"] in ("near_limit", "unknown"):
+            continue
+        if keep_status == "good" and fit["status"] != "good":
             continue
         return cand, fit
     return dict(params), None
@@ -276,10 +266,10 @@ def _collect_candidates(
     for layers in _layer_options(model):
         for ctx in ctx_ladder:
             for cache_k in cache_ladder:
-                for cache_v in cache_ladder:
-                    # Never spend more bits on V than K — K carries more signal.
-                    if _CACHE_RANK[cache_v] > _CACHE_RANK[cache_k]:
-                        continue
+                # K and V are always the same type: llama.cpp has no CUDA
+                # flash-attention kernel for a mismatched pair and silently runs
+                # attention on the CPU instead (~20x slower prompt processing).
+                for cache_v in (cache_k,):
                     cand = _candidate_params(base, layers, ctx, cache_k, cache_v)
                     fit = estimate_memory_fit(cand, model, hardware)
                     if fit["status"] in ("near_limit", "unknown"):
@@ -300,24 +290,48 @@ def _collect_candidates(
     return candidates
 
 
-# Each key maximizes GPU layers first (the dominant fit/speed lever), then the
-# intent-specific trade-off between context and KV quant, then prefers the
-# roomier (non-tight) fit as a final safety tiebreak.
+# Layers first (the dominant speed lever). Balanced then prefers a roomy
+# (good) fit over a tight one so estimator error is less likely to OOM on
+# Start; quality/context only rank inside that safety band. Max-quality and
+# max-context still chase their axis first, and use roomy to break ties
+# before growing the other axis into a tighter fit.
 _INTENT_KEYS: dict[str, Callable[[dict[str, Any]], tuple]] = {
     "balanced": lambda c: (
         c["lf"],
-        _BALANCED_CACHE_WEIGHT * c["cache_norm"] + _BALANCED_CTX_WEIGHT * c["ctx_norm"],
-        c["cache_norm"],  # tie toward fidelity
         c["roomy"],
+        _BALANCED_CACHE_WEIGHT * c["cache_norm"] + _BALANCED_CTX_WEIGHT * c["ctx_norm"],
+        c["cache_norm"],
     ),
-    "max_quality": lambda c: (c["lf"], c["cache_norm"], c["ctx_norm"], c["roomy"]),
-    "max_context": lambda c: (c["lf"], c["ctx_norm"], c["cache_norm"], c["roomy"]),
+    "max_quality": lambda c: (c["lf"], c["cache_norm"], c["roomy"], c["ctx_norm"]),
+    "max_context": lambda c: (c["lf"], c["ctx_norm"], c["roomy"], c["cache_norm"]),
 }
 
 
 def _signature(cand: dict[str, Any]) -> tuple:
     p = cand["params"]
     return (str(p.get("gpu_layers")), p.get("ctx_size"), p.get("cache_type_k"), p.get("cache_type_v"))
+
+
+def _hardware_for_tune(hardware: dict[str, Any] | None) -> dict[str, Any]:
+    """Size the card, not leftover VRAM from a process that still holds it."""
+    hw = dict(hardware or {})
+    gpu = dict(hw.get("primary_gpu") or {})
+    total = gpu.get("vram_total_bytes")
+    if total:
+        gpu["vram_free_bytes"] = total
+    hw["primary_gpu"] = gpu
+    return hw
+
+
+def _gpu_occupied(hardware: dict[str, Any] | None, fit: dict[str, Any] | None) -> bool:
+    """True when live free VRAM cannot hold the recommended GPU-offload pick."""
+    gpu = (hardware or {}).get("primary_gpu") or {}
+    free = gpu.get("vram_free_bytes")
+    total = gpu.get("vram_total_bytes")
+    used = ((fit or {}).get("estimated") or {}).get("accelerator_used_mib")
+    if not total or free is None or used is None or used <= 0:
+        return False
+    return (free / 1024 / 1024) < float(used)
 
 
 def auto_tune_fit(
@@ -328,15 +342,21 @@ def auto_tune_fit(
 ) -> dict[str, Any]:
     """Search launch params for the best memory fit, by named intent.
 
-    Maximizes GPU offload first (the biggest speed lever), then trades context
-    against KV-cache fidelity. The default ("balanced") pick leans toward quant
-    quality so it never drops to a worse KV quant just to enlarge the cache.
+    Maximizes GPU offload first (the biggest speed lever), then prefers a
+    good fit over a tight one, then trades context against KV-cache fidelity.
+    The default ("balanced") pick will not spend a good margin just to grow
+    the window.
     Returns the balanced pick as ``tuned_params`` plus a ``suggestions`` list
     (balanced / max quality / max context) so a caller can choose by need.
     Rejects any candidate the estimator flags as near_limit or can't verify.
     """
     base = dict(params or {})
     base.setdefault("fit_target_mib", target_mib)
+    # Size the card (total VRAM), not whatever happens to be free this second.
+    # A running server would otherwise shrink or CPU-fallback a tune that the
+    # GPU can hold once that process is gone.
+    observed_hardware = hardware
+    hardware = _hardware_for_tune(hardware)
     # Parse the GGUF once up front so every grid eval below reads exact KV dims
     # from cache instead of re-opening the (slow) header.
     prime_model_meta(model)
@@ -369,7 +389,10 @@ def auto_tune_fit(
             continue
         # Refine the winner: grow batch sizes into the leftover headroom, then
         # match threads to the CPU and how much of the model stays on it.
-        tuned, refined_fit = _tune_batch(best["params"], model, hardware)
+        pick_status = (best.get("fit") or {}).get("status")
+        tuned, refined_fit = _tune_batch(
+            best["params"], model, hardware, keep_status=pick_status,
+        )
         fit = refined_fit or best["fit"]
         threads_rec = _recommend_threads(hardware, fit["inputs"]["gpu_layer_fraction"])
         if threads_rec:
@@ -394,32 +417,32 @@ def auto_tune_fit(
 
     notes = [
         "Suggestions come from the memory estimator, not a live run — verify with a fit test or benchmark.",
-        "Priority: max GPU layers, then a balance of KV-cache fidelity and context (quality-leaning).",
-        "K and V caches are tuned independently; V sheds bits before K and is never more precise than K.",
+        "Priority: max GPU layers, then a good (not tight) fit, then KV-cache fidelity and context.",
+        "K and V use the same cache type (mismatched pairs have no CUDA flash-attn kernel).",
         "Batch/ubatch grow into leftover headroom after context and KV quality are settled.",
         "Threads follow the CPU: physical cores for decode, logical cores for prompt batches.",
         "Pick 'Max quality' or 'Max context' from the suggestions when your need leans one way.",
         f"Jinja {'on' if jinja_rec['recommended'] else 'off'}: {jinja_rec['reason']}.",
     ]
 
-    # Guard against the silent CPU fallback: when a GPU is present but every
-    # GPU-offload candidate was rejected for lack of *free* VRAM, the only
-    # survivors are pure-CPU (gpu_layers=0) configs. Returning that as a happy
-    # "success" is how a tuned launch ends up running on the CPU. Surface it
-    # loudly so the user knows to free VRAM (usually: stop the server that's
-    # still holding it) and re-tune rather than launching a CPU-bound config.
+    # CPU fallback means the *card* cannot hold a GPU-offload config. Occupied
+    # VRAM from a running server is a separate warning: the tune still sizes
+    # the card, but Start will compete with whatever is holding memory now.
     gpu_present = bool(_gpu_descriptor(hardware).strip())
     tuned_lf = after_fit.get("inputs", {}).get("gpu_layer_fraction", 0)
     cpu_fallback = gpu_present and (tuned_lf or 0) <= 0
     if cpu_fallback:
-        cap = before_fit.get("estimated", {}).get("accelerator_capacity_mib")
-        cap_note = f" (only ~{int(cap)} MiB VRAM free)" if cap else ""
         notes.insert(
             0,
-            "⚠ A GPU was detected but no GPU-offload config fit in the free VRAM"
-            f"{cap_note}, so this recommendation runs on the CPU. Free VRAM "
-            "(stop any server still holding it) and re-run Smart Fit to offload "
-            "to the GPU.",
+            "This GPU cannot hold a GPU-offload config for this model, so this "
+            "recommendation runs on the CPU.",
+        )
+    elif _gpu_occupied(observed_hardware, after_fit):
+        notes.insert(
+            0,
+            "A process is already using this GPU. Smart Fit sized the full card, "
+            "not leftover VRAM. Stop the other server before Start, or the launch "
+            "will compete for memory.",
         )
 
     return {

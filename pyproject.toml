@@ -19,3 +19,8 @@ dependencies = [
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["lcc_api*", "lcc_core*"]
+
+[tool.pytest.ini_options]
+markers = [
+    "slow: exercises every real GGUF found on disk; deselect with -m \"not slow\"",
+]
