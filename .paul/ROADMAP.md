@@ -18,16 +18,16 @@ in the milestone because it must not collide with the restyle.
 
 **v0.17.0 — Close the Open Loops**
 Status: In progress
-Phases: 1 of 6 complete
+Phases: 2 of 6 complete (Phase 2 code-complete, parked on its human-verify)
 
 ## Phases
 
 | Phase | Name | Plans | Status | Completed |
 |-------|------|-------|--------|-----------|
 | 1 | Terminal-Instrument Design Pass | 1 | ✅ Complete | 2026-08-21 |
-| 2 | Embedded-MTP Support | 1 | 🚧 Planning | - |
-| 3 | vLLM-WSL Fit Estimator + Auto-Tuner | TBD | Not started | - |
-| 4 | Running-Server Observability UI | TBD | Not started | - |
+| 2 | Embedded-MTP Support | 1 | ⏸ Awaiting human-verify | - |
+| 3 | vLLM-WSL Fit Estimator + Auto-Tuner | TBD | Deferred (after 4) | - |
+| 4 | Running-Server Observability UI | 1 | ✅ Complete | 2026-08-21 |
 | 5 | Frontend Module Split | TBD | Not started | - |
 | 6 | Release v0.17.0 | TBD | Not started | - |
 
@@ -87,18 +87,28 @@ profiles *launchable* and adds the regression cover that fix never got.
 
 ### Phase 4: Running-Server Observability UI
 
-**Goal:** Surface the three observability backends that shipped in v0.13.1 with no UI.
-Cheapest high-value work in the audit.
-**Depends on:** Phase 1 (styles land first, so panels are built in the new idiom)
+**Goal:** Surface the observability data the backend already returns.
+**Depends on:** Phase 1 ✅ (landed `83f957b`)
 **Research:** Unlikely (endpoints exist and are tested)
+**Plan:** `.paul/phases/04-observability-ui/04-01-PLAN.md`
+
+⚠️ **Smaller than the audit says** — the terminal-instrument pass already built part of
+this. Verified 2026-08-21: crash surfacing is **done**, metrics polling is **done**, the
+metrics panel and log tail are **partial** (rendered as one line / a static preview), and
+only the global rescan is genuinely **missing**.
 
 **Scope:**
-- **[M2.2]** Crash-watchdog surfacing: badge crashed servers + `oom_likely`, last stderr lines, restart
+- ~~**[M2.2]** Crash-watchdog surfacing~~ ✅ **Already shipped** — `buildServerItemHtml` renders the crashed badge, `oom_likely` badge, a 300-char `last_stderr` snippet and a Restart button
 - **[M2.1 + M2.3]** Live server metrics panel: `GET /api/servers/{id}/metrics` (KV usage, slots, decode t/s, RSS, GPU bytes) — currently rendered as a single line. M2.3 is the per-process memory half of the same payload
 - **[M2.4]** Log tail panel: `GET /api/servers/{id}/logs`
 - "Rescan models" button for `POST /api/profiles/scan` — registration otherwise runs only at startup
 
 **Source:** `docs/2026-07-14-audit.md` §3
+
+**Status:** ✅ Complete 2026-08-21 — landed as `03975cc`, verified in a browser by the
+operator ("looks and performs much better"). Summary:
+`.paul/phases/04-observability-ui/04-01-SUMMARY.md`. Suite: 258 passed, 2 skipped,
+16 node subtests (up from 9 — the four orphaned `.js` files now run).
 
 ---
 

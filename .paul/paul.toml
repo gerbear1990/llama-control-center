@@ -19,16 +19,16 @@ phases = 6
 
 # ─── Phase ───────────────────────────────────────────────────
 [phase]
-number = 2
-name = "Embedded-MTP Support"
+number = 4
+name = "Running-Server Observability UI"
 status = "in_progress"
 plans_completed = 0
 
 # ─── Loop ────────────────────────────────────────────────────
 [loop]
 position = "APPLY"
-plan = "02-01"
-plan_path = "phases/02-embedded-mtp/02-01-PLAN.md"
+plan = "04-01"
+plan_path = "phases/04-observability-ui/04-01-PLAN.md"
 
 # ─── Satellite ───────────────────────────────────────────────
 [satellite]

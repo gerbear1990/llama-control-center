@@ -822,13 +822,29 @@ function renderStageFirstRun() {
   if (formPanel) formPanel.hidden = !(state.profiles || []).length;
 }
 
-function showLogPreview(text) {
+function showLogPreview(text, stdoutText) {
   const empty = $('#log-empty');
   const preview = $('#log-preview');
   if (empty) empty.hidden = true;
   if (preview) {
+    // Only stay pinned if the reader is already at the bottom. Yanking the
+    // scroll while they read back through a stack trace is how a "follow"
+    // mode becomes unusable.
+    const pinned = preview.scrollHeight - preview.scrollTop - preview.clientHeight < 24;
     preview.hidden = false;
     preview.textContent = text;
+    if (pinned) preview.scrollTop = preview.scrollHeight;
+  }
+  const stdoutPane = $('#log-stdout');
+  const stdoutWrap = $('#log-stream-stdout');
+  if (stdoutPane && stdoutWrap) {
+    const has = !!(stdoutText && stdoutText.trim());
+    stdoutWrap.hidden = !has;
+    if (has) {
+      const pinned = stdoutPane.scrollHeight - stdoutPane.scrollTop - stdoutPane.clientHeight < 24;
+      stdoutPane.textContent = stdoutText;
+      if (pinned) stdoutPane.scrollTop = stdoutPane.scrollHeight;
+    }
   }
 }
 
@@ -1947,6 +1963,43 @@ function formatServerMetricsLine(m) {
   return parts.filter(Boolean).join(' · ');
 }
 
+// Pure companion to formatServerMetricsLine: the card gets one dense line, this
+// gets the rest of the payload. Returns [{label, value, ratio?}] so the render
+// step owns the DOM and this stays testable under node.
+//
+// A field the payload omits is DROPPED, never rendered. server_metrics returns
+// null for llama.cpp-only fields when the server is vLLM, and "NaN%" on screen
+// reads as a broken app rather than an absent reading.
+function buildServerMetricsRows(m) {
+  if (!m) return [];
+  const sum = m.summary || {};
+  const proc = m.process || {};
+  const props = m.props || {};
+  const rows = [];
+  const push = (label, value, ratio) => {
+    if (value === null || value === undefined || value === '') return;
+    rows.push(ratio === undefined ? { label, value } : { label, value, ratio });
+  };
+
+  if (sum.kv_cache_usage_ratio != null) {
+    push('KV cache', `${(sum.kv_cache_usage_ratio * 100).toFixed(0)}%`, sum.kv_cache_usage_ratio);
+  }
+  if (sum.kv_cache_tokens != null) push('KV tokens', String(sum.kv_cache_tokens));
+  if (sum.slots_active != null || sum.slots_processing != null) {
+    push('Slots', `${sum.slots_active || 0} active / ${sum.slots_processing || 0} processing`);
+  }
+  if (sum.predicted_tokens_per_second != null) push('Decode', `${sum.predicted_tokens_per_second.toFixed(1)} t/s`);
+  if (sum.prompt_tokens_per_second != null) push('Prompt', `${sum.prompt_tokens_per_second.toFixed(1)} t/s`);
+  if (props.n_ctx != null) push('Context', String(props.n_ctx));
+  if (proc.rss_bytes) push('Process RSS', formatBytes(proc.rss_bytes));
+  if (proc.gpu_used_bytes) push('GPU memory', formatBytes(proc.gpu_used_bytes));
+  if (proc.cpu_percent != null) push('CPU', `${Number(proc.cpu_percent).toFixed(0)}%`);
+  push('Model', props.model_name);
+  push('Build', props.build_info);
+  if (m.health && m.health !== 'unknown') push('Health', String(m.health));
+  return rows;
+}
+
 // Selecting a card here is what the Logs panel reads.
 function renderServers() {
   const servers = state.servers || [];
@@ -1956,6 +2009,40 @@ function renderServers() {
     return;
   }
   $('#server-box').innerHTML = servers.map((server) => buildServerItemHtml(server)).join('');
+  renderServerMetricsPanel();
+}
+
+// The Servers poll already carries each server's metrics payload, so the panel
+// is a pure re-render off state -- no extra request, no second polling loop.
+function renderServerMetricsPanel() {
+  const body = $('#server-metrics-body');
+  const empty = $('#server-metrics-empty');
+  if (!body || !empty) return;
+  const servers = state.servers || [];
+  const server = servers.find((item) => item.id === state.selectedServerId)
+    || servers.find((item) => item.running)
+    || servers[0];
+  const rows = buildServerMetricsRows(server && server.metrics);
+  if (!rows.length) {
+    body.hidden = true;
+    empty.hidden = false;
+    empty.textContent = server
+      ? 'No readings yet for this server.'
+      : 'No tracked server selected.';
+    return;
+  }
+  empty.hidden = true;
+  body.hidden = false;
+  body.innerHTML = `
+    <div class="metrics-head">${escapeHtml(server.mode || server.id)}</div>
+    <dl class="metrics-grid">
+      ${rows.map((row) => `
+        <div class="metrics-row">
+          <dt>${escapeHtml(row.label)}</dt>
+          <dd>${escapeHtml(row.value)}${row.ratio === undefined ? '' : `
+            <span class="live-bar"><span class="live-bar-fill ${liveBarClass(row.ratio * 100)}" style="width:${Math.min(100, Math.max(0, row.ratio * 100)).toFixed(0)}%"></span></span>`}</dd>
+        </div>`).join('')}
+    </dl>`;
 }
 
 function buildServerItemHtml(server) {
@@ -3773,7 +3860,7 @@ async function loadLogs(serverId, trigger, options = {}) {
     try {
       const result = await api(`/api/servers/${encodeURIComponent(serverId)}/logs?lines=160`);
       state.selectedServerId = serverId;
-      showLogPreview([result.stderr, result.stdout].filter(Boolean).join('\n\n') || 'No log output yet.');
+      showLogPreview(result.stderr || 'No log output yet.', result.stdout || '');
       if (!options.silent) toast('Logs loaded');
     } catch (error) {
       toast(`Logs failed: ${error.message}`);
@@ -5058,3 +5145,78 @@ loadSamplingPresets();
 refresh();
 startServerPolling();
 startLiveHardwarePolling();
+
+
+// ----- Log follow -----------------------------------------------------------
+// Re-fetches the tail on an interval while the toggle is on. Mirrors the live
+// hardware widget: one interval, and the poll body bails while the tab is
+// hidden rather than tearing the timer down and rebuilding it.
+const LOG_FOLLOW_INTERVAL_MS = 2500;
+let logFollowTimer = null;
+
+async function pollLogTail() {
+  if (document.hidden) return;
+  const serverId = state.selectedServerId;
+  if (!serverId) return;
+  const view = document.getElementById('session-logs');
+  if (view && view.hidden) return; // Logs tab is not on screen
+  try {
+    const result = await api(`/api/servers/${encodeURIComponent(serverId)}/logs?lines=160`);
+    showLogPreview(result.stderr || 'No log output yet.', result.stdout || '');
+  } catch {
+    // Transient failures are expected while a server starts or stops; the next
+    // tick retries. Toasting here would spam once a server dies.
+  }
+}
+
+function startLogFollow() {
+  if (logFollowTimer) return;
+  pollLogTail();
+  logFollowTimer = setInterval(pollLogTail, LOG_FOLLOW_INTERVAL_MS);
+}
+
+function stopLogFollow() {
+  if (!logFollowTimer) return;
+  clearInterval(logFollowTimer);
+  logFollowTimer = null;
+}
+
+function initLogFollow() {
+  const toggle = document.getElementById('log-follow');
+  if (!toggle) return;
+  toggle.addEventListener('change', () => {
+    if (toggle.checked) startLogFollow();
+    else stopLogFollow();
+  });
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && toggle.checked) pollLogTail();
+  });
+}
+
+// ----- Global model rescan --------------------------------------------------
+// Registration otherwise runs only at app startup, so a model dropped into a
+// scan root mid-session stays invisible until a restart. Distinct from
+// #portability-rescan, which rebuilds the inventory and its warnings.
+async function rescanModels(trigger) {
+  await withBusy(trigger, async () => {
+    try {
+      const result = await api('/api/profiles/scan', { method: 'POST', body: JSON.stringify({}) });
+      const count = result.registered_count || 0;
+      toast(count
+        ? `Registered ${count} new profile${count === 1 ? '' : 's'}`
+        : 'Rescanned - no new models found');
+      await refresh();
+    } catch (error) {
+      toast(`Rescan failed: ${error.message}`);
+    }
+  });
+}
+
+function initModelsRescan() {
+  const button = document.getElementById('models-rescan');
+  if (!button) return;
+  button.addEventListener('click', (event) => rescanModels(event.currentTarget));
+}
+
+initLogFollow();
+initModelsRescan();
