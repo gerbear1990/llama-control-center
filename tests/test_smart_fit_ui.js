@@ -1,77 +1,77 @@
 // Smart Fit UI: notes must be visible, and a CPU-fallback pick must not
 // be written into the form until the user applies it.
+//
+// The tune helpers are imported from tune.js. The summary checks now assert on
+// *rendered output* rather than on the source text of renderTuneSummary --
+// same intent, but it fails when the markup breaks instead of when the source
+// happens to be reworded. runAutoTune has not moved out of app.js yet, so its
+// wiring is still checked as text.
 const fs = require('fs');
 const path = require('path');
-const vm = require('vm');
 
 const appJs = fs.readFileSync(path.join(__dirname, '..', 'lcc_api', 'static', 'app.js'), 'utf8');
 
-function extractFunctionSource(src, name) {
-  const start = src.indexOf('function ' + name);
-  if (start === -1) return null;
-  let i = src.indexOf('{', start);
-  if (i === -1) return null;
-  let depth = 1;
-  i += 1;
-  while (i < src.length && depth > 0) {
-    if (src[i] === '{') depth += 1;
-    else if (src[i] === '}') depth -= 1;
-    i += 1;
+(async () => {
+  const {
+    renderTuneNotes, shouldAutoApplyTune, renderTuneSummary,
+  } = await import('../lcc_api/static/js/tune.js');
+
+  const gpuOk = { success: true, cpu_fallback: false };
+  const cpuHold = { success: true, cpu_fallback: true };
+  const notesHtml = renderTuneNotes([
+    'A process is already using this GPU. Smart Fit sized the full card.',
+  ]);
+
+  const autoGpu = shouldAutoApplyTune(gpuOk);
+  const autoCpu = shouldAutoApplyTune(cpuHold);
+  const autoFail = shouldAutoApplyTune({ success: false });
+
+  // Render the summary in both states rather than grepping its source.
+  const result = {
+    cpu_fallback: false,
+    notes: ['A process is already using this GPU. Smart Fit sized the full card.'],
+    changes: [{ field: 'ctx_size', from: 4096, to: 8192, why: 'more headroom' }],
+    before: { fit_status: { status: 'tight' }, speed_estimate: { estimate_tps: 20 } },
+    after: { fit_status: { status: 'good' }, speed_estimate: { estimate_tps: 28 } },
+  };
+  const proposed = renderTuneSummary(result, { applied: false });
+  const applied = renderTuneSummary(result, { applied: true });
+  const cpuSummary = renderTuneSummary({ ...result, cpu_fallback: true }, { applied: false });
+
+  const summaryOk = (
+    proposed.includes('Proposed changes')
+    && applied.includes('Changes applied')
+    && proposed.includes('tune-notes')
+    && proposed.includes('already using this GPU')
+    && cpuSummary.includes('data-tune-index="0"')
+    && cpuSummary.includes('cannot hold')
+  );
+
+  const runAt = appJs.indexOf('async function runAutoTune');
+  if (runAt === -1) {
+    console.log(JSON.stringify({ ok: false, error: 'runAutoTune not found in app.js' }));
+    process.exit(1);
   }
-  return depth === 0 ? src.substring(start, i) : null;
-}
+  const runSrc = appJs.slice(runAt, runAt + 2000);
 
-const needed = ['escapeHtml', 'renderTuneNotes', 'shouldAutoApplyTune'];
-const missing = needed.filter((name) => !extractFunctionSource(appJs, name));
-if (missing.length) {
-  console.log(JSON.stringify({ ok: false, error: 'missing ' + missing.join(', ') }));
-  process.exit(1);
-}
+  const ok = (
+    autoGpu === true
+    && autoCpu === false
+    && autoFail === false
+    && /already using this GPU/.test(notesHtml)
+    && summaryOk
+    && runSrc.includes('shouldAutoApplyTune')
+    && /cpu_fallback/.test(runSrc)
+  );
 
-const ctx = {};
-vm.createContext(ctx);
-vm.runInContext(
-  needed.map((name) => extractFunctionSource(appJs, name)).join('\n')
-    + '; this.shouldAutoApplyTune = shouldAutoApplyTune;'
-    + ' this.renderTuneNotes = renderTuneNotes;',
-  ctx,
-);
-
-const gpuOk = { success: true, cpu_fallback: false };
-const cpuHold = { success: true, cpu_fallback: true };
-const notesHtml = ctx.renderTuneNotes([
-  'A process is already using this GPU. Smart Fit sized the full card.',
-]);
-const summaryAt = appJs.indexOf('function renderTuneSummary');
-const summarySrc = summaryAt === -1 ? '' : appJs.slice(summaryAt, summaryAt + 3500);
-const runAt = appJs.indexOf('async function runAutoTune');
-const runSrc = runAt === -1 ? '' : appJs.slice(runAt, runAt + 2000);
-
-const autoGpu = ctx.shouldAutoApplyTune(gpuOk);
-const autoCpu = ctx.shouldAutoApplyTune(cpuHold);
-const autoFail = ctx.shouldAutoApplyTune({ success: false });
-
-const ok = (
-  autoGpu === true
-  && autoCpu === false
-  && autoFail === false
-  && /already using this GPU/.test(notesHtml)
-  && summarySrc.includes('renderTuneNotes')
-  && summarySrc.includes('Proposed changes')
-  && summarySrc.includes('Changes applied')
-  && summarySrc.includes('data-tune-index="0"')
-  && summarySrc.includes('cannot hold')
-  && runSrc.includes('shouldAutoApplyTune')
-  && /cpu_fallback/.test(runSrc)
-);
-
-console.log(JSON.stringify({
-  ok,
-  autoGpu,
-  autoCpu,
-  autoFail,
-  notesVisible: /already using this GPU/.test(notesHtml),
-  summaryWired: summarySrc.includes('renderTuneNotes'),
-  runWired: runSrc.includes('shouldAutoApplyTune'),
-}));
-process.exit(ok ? 0 : 1);
+  console.log(JSON.stringify({
+    ok,
+    autoGpu,
+    autoCpu,
+    autoFail,
+    notesVisible: /already using this GPU/.test(notesHtml),
+    summaryOk,
+    runWired: runSrc.includes('shouldAutoApplyTune'),
+  }));
+  process.exit(ok ? 0 : 1);
+})();

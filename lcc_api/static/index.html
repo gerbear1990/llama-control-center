@@ -753,6 +753,8 @@
       </div>
     </div>
 
-    <script src="/static/app.js?v=0.16.17" defer></script>
+    <!-- ES modules: deferred by definition, and StaticFiles already sends
+         etag/last-modified, so no hand-bumped cache-buster is needed. -->
+    <script type="module" src="/static/app.js"></script>
   </body>
 </html>

@@ -1,38 +1,15 @@
-const state = {
-  inventory: null,
-  config: null,
-  hardware: null,
-  profiles: [],
-  servers: [],
-  meta: null,
-  runtimeUpdates: null,
-  selectedProfileMode: null,
-  selectedServerId: null,
-  paramOverrides: {},
-  lastEstimateKey: '',
-  lastBenchmarkKey: '',
-  measuredTps: null,
-  measuredElapsed: null,
-  paramPreviewHost: '127.0.0.1',
-  paramPreviewPort: 8080,
-  modelNotes: { hf: '', fit: '', benchmark: '' },
-  profileFilter: 'all',
-  profileModelFilter: 'all',
-  hideUnavailableProfiles: localStorage.getItem('lcc-hide-unavailable-profiles') === '1',
-  hideNotInstalledRuntimes: localStorage.getItem('lcc-hide-not-installed-runtimes') === '1',
-  showAllRuntimes: false,
-  query: '',
-  chatHistory: {},  // { [mode]: Array<{role: 'user'|'assistant', content: string}> }
-  jinjaRecommended: false,
-  // Three-state: 'light', 'dark', or 'system'. 'system' is the default until
-  // someone picks a side, so the app opens in dark on a dark desktop instead
-  // of flashing the light palette — and it stays a state you can return to.
-  theme: localStorage.getItem('lcc-theme') || 'system',
-};
+// Llama Control Center -- entry point.
+// Shared code lives in ./js/; this file wires it together and boots.
 
-const $ = (selector) => document.querySelector(selector);
-const $$ = (selector) => Array.from(document.querySelectorAll(selector));
-const hasOwn = (object, key) => Object.prototype.hasOwnProperty.call(object || {}, key);
+import { state } from './js/state.js';
+import { $, $$, hasOwn, formatBytes, formatMib, formatNumber, escapeHtml, listToLines, linesToList, dirname } from './js/util.js';
+import { api, setApiStatus, renderVersion, loadDashboardResource } from './js/api.js';
+import { profilesEmptyCopy, modelsEmptyCopy, runtimesEmptyCopy, stageFirstRunCopy, chatEmptyCopy, logsEmptyCopy, serversEmptyCopy, emptyStateInner, emptyStateHtml } from './js/copy.js';
+import { serverEndpoint, serverUrl, launchLockCopy, launchLockHtml, listeningToast, releasedToast, launchControlState } from './js/launch.js';
+import { profileMatches, modelMatches, profileForModelPath } from './js/matching.js';
+import { fitStatusClass, fitStatusLabel, fitItem, formatServerMetricsLine, buildServerMetricsRows } from './js/format.js';
+import { shouldAutoApplyTune, renderTuneSummary } from './js/tune.js';
+
 const PARAM_DEFAULTS = {
   runtime: 'llama.cpp',
   host: '127.0.0.1',
@@ -95,57 +72,12 @@ const FIT_APPLIED_FIELDS = [
   ['jinja', '#param-jinja'],
 ];
 
-function formatBytes(bytes) {
-  if (!bytes) return '-';
-  const gb = bytes / 1024 ** 3;
-  if (gb >= 1) return `${gb.toFixed(1)} GB`;
-  const mb = bytes / 1024 ** 2;
-  return `${mb.toFixed(0)} MB`;
-}
 
-function formatMib(mib) {
-  if (mib === undefined || mib === null || Number.isNaN(Number(mib))) return '-';
-  const value = Number(mib);
-  if (Math.abs(value) >= 1024) return `${(value / 1024).toFixed(1)} GB`;
-  return `${Math.round(value)} MiB`;
-}
 
-// Compact relative-time formatter for the profile Updated column. Unix
-function fitStatusClass(status) {
-  if (status === 'good') return 'ok';
-  if (status === 'tight') return 'warn';
-  if (status === 'near_limit') return 'error';
-  return '';
-}
 
-function fitStatusLabel(status) {
-  return {
-    good: 'Good',
-    tight: 'Tight',
-    near_limit: 'Near Limit',
-    unknown: 'Unknown',
-  }[status] || 'Unknown';
-}
 
-function listToLines(values) {
-  return (values || []).filter(Boolean).join('\n');
-}
 
-function linesToList(value) {
-  return String(value || '')
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
-}
 
-function escapeHtml(value) {
-  return String(value ?? '')
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&#039;');
-}
 
 // Toasts are short text snippets shown in the bottom-right. They may carry
 // a single optional action button (e.g. 'Use port 18100') that the user can
@@ -539,267 +471,24 @@ function enhanceTooltips() {
   });
 }
 
-async function api(path, options = {}) {
-  const response = await fetch(path, {
-    headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
-    ...options,
-  });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    const detail = data.detail || data.error || response.statusText;
-    const err = new Error(typeof detail === 'string' ? detail : JSON.stringify(detail));
-    // Preserve the original structured detail (FastAPI wraps non-2xx bodies
-    // as {detail: ...}; keep it accessible so callers can branch on richer
-    // fields like ``port_in_use`` or ``suggested_port``).
-    err.detail = detail;
-    err.status = response.status;
-    throw err;
-  }
-  return data;
-}
 
-function setApiStatus(ok, text, details) {
-  const dot = $('#api-dot');
-  const status = $('#api-status');
-  const copyBtn = $('#api-copy');
-  if (dot) {
-    dot.classList.toggle('ok', ok);
-    dot.classList.toggle('error', !ok);
-  }
-  if (status) {
-    status.textContent = text;
-    if (details) status.title = details;
-    else status.removeAttribute('title');
-  }
-  if (copyBtn) {
-    copyBtn.hidden = !details;
-    copyBtn.dataset.details = details || '';
-  }
-}
 
-function renderVersion() {
-  const el = $('#app-version');
-  if (!el) return;
-  el.textContent = state.meta?.version ? `v${state.meta.version}` : '';
-}
 
-async function loadDashboardResource(label, path, apply) {
-  try {
-    const data = await api(path);
-    apply(data);
-    return null;
-  } catch (error) {
-    return `${label}: ${error.message}`;
-  }
-}
 
-function profilesEmptyCopy(total, filtering, modelCount = 0) {
-  if (!total && !modelCount) {
-    return {
-      title: 'No profiles yet',
-      body: 'Add the folders where your GGUF files live. LCC discovers them, you register a profile, then Start from Console.',
-      action: 'add-folders',
-      actionLabel: 'Add model folders',
-    };
-  }
-  if (!total && modelCount) {
-    return {
-      title: 'Models found, no profiles',
-      body: 'Register a discovered model to create a launch config. Then Start it from Console.',
-      action: 'goto-models',
-      actionLabel: 'Register a model',
-    };
-  }
-  if (filtering) {
-    return {
-      title: 'No profiles match this filter',
-      body: 'Clear the search, model filter, or “Hide unavailable” to see the full list.',
-      action: 'clear-filters',
-      actionLabel: 'Show all profiles',
-    };
-  }
-  return null;
-}
 
-function modelsEmptyCopy(total, query) {
-  const q = String(query || '').trim();
-  if (!total) {
-    return {
-      title: 'No model files found',
-      body: 'LCC only lists GGUF files inside your scan folders. Add a folder, then refresh.',
-      action: 'add-folders',
-      actionLabel: 'Add model folders',
-    };
-  }
-  if (q) {
-    return {
-      title: `No models match “${q}”`,
-      body: 'Try another name, or clear search to see every discovered file.',
-      action: 'clear-filters',
-      actionLabel: 'Clear search',
-    };
-  }
-  return {
-    title: 'No models match the current search',
-    body: 'Clear search to see every discovered file.',
-    action: 'clear-filters',
-    actionLabel: 'Clear search',
-  };
-}
 
-function runtimesEmptyCopy(total, hidingMissing) {
-  if (!total) {
-    return {
-      title: 'No runtimes detected',
-      body: 'LCC looks on PATH and in your runtime folders for llama.cpp and friends. Add a folder if the binary is not on PATH.',
-      action: 'add-runtime-folders',
-      actionLabel: 'Add runtime folders',
-    };
-  }
-  if (hidingMissing) {
-    return {
-      title: 'No installed runtimes to show',
-      body: 'Hidden because “Hide not installed” is on.',
-      action: 'show-all-runtimes',
-      actionLabel: 'Show all runtimes',
-    };
-  }
-  return null;
-}
 
-function stageFirstRunCopy({ profileCount, modelCount, launchable }) {
-  if (!profileCount && !modelCount) {
-    return {
-      title: 'Add your model folders',
-      body: 'Nothing is scanned until you name a folder. Then register a profile and Start from this stage.',
-      action: 'add-folders',
-      actionLabel: 'Add model folders',
-    };
-  }
-  if (!profileCount && modelCount) {
-    return {
-      title: 'Register a model to launch',
-      body: `${modelCount} model file${modelCount === 1 ? '' : 's'} found. Register one as a profile, then Start here.`,
-      action: 'goto-models',
-      actionLabel: 'Register a model',
-    };
-  }
-  if (profileCount && !launchable) {
-    return {
-      title: 'No launchable profiles',
-      body: 'A profile is here but its model file or runtime is missing. Add folders or open Inventory to see what needs setup.',
-      action: 'add-folders',
-      actionLabel: 'Add model folders',
-      secondaryAction: 'goto-inventory',
-      secondaryLabel: 'Open Inventory',
-    };
-  }
-  return null;
-}
 
-function serverEndpoint(server) {
-  if (!server) return '';
-  const host = String(server.host || '127.0.0.1').trim() || '127.0.0.1';
-  const port = server.port;
-  return port ? `${host}:${port}` : host;
-}
 
-function serverUrl(server) {
-  const endpoint = serverEndpoint(server);
-  return endpoint ? `http://${endpoint}` : '';
-}
 
-function launchLockCopy(server) {
-  if (!server || !server.running) return null;
-  const endpoint = serverEndpoint(server);
-  if (!endpoint) return null;
-  return {
-    status: 'Listening',
-    endpoint,
-    detail: server.pid ? `PID ${server.pid}` : '',
-  };
-}
 
-function launchLockHtml(copy) {
-  if (!copy) return '';
-  const detail = copy.detail ? `<p class="launch-lock-detail">${escapeHtml(copy.detail)}</p>` : '';
-  return `
-    <div class="launch-lock-main">
-      <span class="badge ok">${escapeHtml(copy.status)}</span>
-      <strong class="launch-lock-endpoint">${escapeHtml(copy.endpoint)}</strong>
-    </div>
-    ${detail}
-    <div class="launch-lock-actions">
-      <button type="button" class="mini-button" data-launch-action="copy">Copy URL</button>
-      <button type="button" class="mini-button" data-launch-action="chat">Open Chat</button>
-    </div>`;
-}
 
-function listeningToast(server, name) {
-  const endpoint = serverEndpoint(server);
-  return endpoint ? `Listening on ${endpoint}` : `Listening — ${name}`;
-}
 
-function releasedToast(server, name) {
-  const endpoint = serverEndpoint(server);
-  return endpoint ? `Released ${endpoint}` : `"${name}" stopped`;
-}
 
-function chatEmptyCopy(running, server) {
-  if (!running) {
-    return {
-      title: 'No running server',
-      body: 'Start the selected profile from the Stage. Chat talks to that server.',
-      action: 'goto-stage',
-      actionLabel: 'Go to Stage',
-    };
-  }
-  const endpoint = serverEndpoint(server);
-  return {
-    title: 'No messages yet',
-    body: endpoint
-      ? `Send a prompt to ${endpoint}. Enter sends. Shift+Enter is a new line.`
-      : 'Send a prompt to the running server. Enter sends. Shift+Enter is a new line.',
-  };
-}
 
-function logsEmptyCopy() {
-  return {
-    title: 'No server selected',
-    body: 'Start a profile from the Stage. Its output lands here.',
-    action: 'goto-stage',
-    actionLabel: 'Go to Stage',
-  };
-}
 
-function serversEmptyCopy() {
-  return {
-    title: 'No tracked servers',
-    body: 'Start a launchable profile. Tracked servers show up here so you can stop them and read logs.',
-    action: 'goto-stage',
-    actionLabel: 'Go to Stage',
-  };
-}
 
-function emptyStateInner(copy) {
-  const title = copy.title ? `<strong>${escapeHtml(copy.title)}</strong>` : '';
-  const body = copy.body ? `<p>${escapeHtml(copy.body)}</p>` : '';
-  const primary = ['add-folders', 'goto-models', 'goto-stage'].includes(copy.action);
-  const action = copy.action
-    ? `<button class="mini-button${primary ? ' primary' : ''}" type="button" data-empty-action="${escapeHtml(copy.action)}">${escapeHtml(copy.actionLabel)}</button>`
-    : '';
-  const secondary = copy.secondaryAction
-    ? `<button class="mini-button" type="button" data-empty-action="${escapeHtml(copy.secondaryAction)}">${escapeHtml(copy.secondaryLabel)}</button>`
-    : '';
-  const actions = (action || secondary) ? `<div class="empty-state-actions">${action}${secondary}</div>` : '';
-  return `${title}${body}${actions}`;
-}
 
-function emptyStateHtml(copy, { tableCell = false } = {}) {
-  if (!copy) return '';
-  const inner = `<div class="empty-state">${emptyStateInner(copy)}</div>`;
-  return tableCell ? `<tr><td colspan="6">${inner}</td></tr>` : inner;
-}
 
 function renderStageFirstRun() {
   const card = $('#stage-first-run');
@@ -859,24 +548,7 @@ function showLogEmpty() {
   if (preview) preview.hidden = true;
 }
 
-function profileMatches(profile) {
-  const query = state.query.trim().toLowerCase();
-  if (!query) return true;
-  const haystack = [
-    profile.mode,
-    profile.name,
-    profile.description,
-    profile.model?.name,
-    profile.model?.path,
-  ].join(' ').toLowerCase();
-  return haystack.includes(query);
-}
 
-function modelMatches(model) {
-  const query = state.query.trim().toLowerCase();
-  if (!query) return true;
-  return [model.name, model.path, model.quant, model.source].join(' ').toLowerCase().includes(query);
-}
 
 function runtimeUrl(env) {
   return env.api_url || env.details?.probe_url || '';
@@ -1274,20 +946,6 @@ function saveCurrentOverrides() {
   return setParamOverrides(mode, collectOverrides());
 }
 
-function launchControlState(profile, server, waiting) {
-  const live = server && server.running ? server : null;
-  const endpoint = serverEndpoint(live);
-  return {
-    startDisabled: !profile || !profile.launchable || !!live || !!waiting,
-    stopDisabled: !live,
-    startTitle: live
-      ? `Already listening on ${endpoint}`
-      : (!profile
-        ? 'Select a profile first'
-        : (!profile.launchable ? 'This profile is not launchable' : 'Start server')),
-    stopTitle: live ? `Stop ${endpoint}` : 'No running server for this profile',
-  };
-}
 
 function setLaunchWaiting(waiting) {
   const button = $('#start-selected-button');
@@ -1929,76 +1587,8 @@ function renderModels() {
   renderStageFirstRun();
 }
 
-// Pure matcher: resolve a model file/dir path to its profile. Case- and
-// slash-agnostic (Windows paths); prefers launchable exact matches when
-// several profiles share one model file (e.g. an MTP variant).
-function profileForModelPath(profiles, path) {
-  if (!path) return null;
-  const norm = (p) => String(p || '').replace(/\//g, '\\').toLowerCase();
-  const target = norm(path);
-  const matches = (profiles || []).filter((p) => p.model && norm(p.model.path) === target);
-  if (!matches.length) return null;
-  const ranked = [...matches].sort((a, b) => (
-    (b.launchable === true) - (a.launchable === true)
-    || (b.confidence === 1.0) - (a.confidence === 1.0)
-  ));
-  return ranked[0];
-}
 
-function formatServerMetricsLine(m) {
-  // Pure formatter for AC3: always join non-empty parts with ' · ' (single rule, no ad-hoc concat).
-  // Drives the shipped UI display of KV/tps/slots/context/memory.
-  if (!m) return '';
-  const sum = m.summary || m.metrics || {};
-  const proc = m.process || {};
-  const parts = [];
-  if (sum.kv_cache_usage_ratio != null) parts.push(`${(sum.kv_cache_usage_ratio * 100).toFixed(0)}% KV`);
-  if (sum.predicted_tokens_per_second != null) parts.push(`${sum.predicted_tokens_per_second.toFixed(1)} t/s`);
-  else if (sum.prompt_tokens_per_second != null) parts.push(`${sum.prompt_tokens_per_second.toFixed(1)} prompt t/s`);
-  if (sum.slots_active != null || sum.slots_processing != null) parts.push(`slots ${sum.slots_active || 0}/${sum.slots_processing || 0}`);
-  if (m.props && m.props.n_ctx != null) parts.push(`ctx ${m.props.n_ctx}`);
-  else if (sum.kv_cache_tokens != null) parts.push(`kv ${sum.kv_cache_tokens}`);
-  if (proc.rss_bytes) parts.push(`RSS ${formatBytes(proc.rss_bytes)}`);
-  if (proc.gpu_used_bytes) parts.push(`VRAM ${formatBytes(proc.gpu_used_bytes)}`);
-  return parts.filter(Boolean).join(' · ');
-}
 
-// Pure companion to formatServerMetricsLine: the card gets one dense line, this
-// gets the rest of the payload. Returns [{label, value, ratio?}] so the render
-// step owns the DOM and this stays testable under node.
-//
-// A field the payload omits is DROPPED, never rendered. server_metrics returns
-// null for llama.cpp-only fields when the server is vLLM, and "NaN%" on screen
-// reads as a broken app rather than an absent reading.
-function buildServerMetricsRows(m) {
-  if (!m) return [];
-  const sum = m.summary || {};
-  const proc = m.process || {};
-  const props = m.props || {};
-  const rows = [];
-  const push = (label, value, ratio) => {
-    if (value === null || value === undefined || value === '') return;
-    rows.push(ratio === undefined ? { label, value } : { label, value, ratio });
-  };
-
-  if (sum.kv_cache_usage_ratio != null) {
-    push('KV cache', `${(sum.kv_cache_usage_ratio * 100).toFixed(0)}%`, sum.kv_cache_usage_ratio);
-  }
-  if (sum.kv_cache_tokens != null) push('KV tokens', String(sum.kv_cache_tokens));
-  if (sum.slots_active != null || sum.slots_processing != null) {
-    push('Slots', `${sum.slots_active || 0} active / ${sum.slots_processing || 0} processing`);
-  }
-  if (sum.predicted_tokens_per_second != null) push('Decode', `${sum.predicted_tokens_per_second.toFixed(1)} t/s`);
-  if (sum.prompt_tokens_per_second != null) push('Prompt', `${sum.prompt_tokens_per_second.toFixed(1)} t/s`);
-  if (props.n_ctx != null) push('Context', String(props.n_ctx));
-  if (proc.rss_bytes) push('Process RSS', formatBytes(proc.rss_bytes));
-  if (proc.gpu_used_bytes) push('GPU memory', formatBytes(proc.gpu_used_bytes));
-  if (proc.cpu_percent != null) push('CPU', `${Number(proc.cpu_percent).toFixed(0)}%`);
-  push('Model', props.model_name);
-  push('Build', props.build_info);
-  if (m.health && m.health !== 'unknown') push('Health', String(m.health));
-  return rows;
-}
 
 // Selecting a card here is what the Logs panel reads.
 function renderServers() {
@@ -2253,17 +1843,7 @@ async function updateTpsEstimate() {
   }
 }
 
-function formatNumber(value, digits = 2) {
-  if (value === undefined || value === null || value === '') return '-';
-  if (typeof value === 'boolean') return value ? 'on' : 'off';
-  if (typeof value !== 'number') return String(value);
-  return Number.isInteger(value) ? String(value) : String(Number(value.toFixed(digits)));
-}
 
-function fitItem(label, value, unit = '') {
-  if (value === undefined || value === null || value === '') return '';
-  return `<li><span>${escapeHtml(label)}</span><strong>${escapeHtml(formatNumber(value))}${unit}</strong></li>`;
-}
 
 function parsedFitAccepted(suggestions) {
   return Object.keys(suggestions || {}).some((key) => key !== 'fitted_args');
@@ -3065,100 +2645,11 @@ async function startProfile(mode, trigger) {
   }
 }
 
-function tuneFieldLabel(field) {
-  return {
-    gpu_layers: 'GPU layers',
-    ctx_size: 'Context',
-    cache_type_k: 'KV cache K',
-    cache_type_v: 'KV cache V',
-  }[field] || field;
-}
 
-function tuneValueLabel(field, value) {
-  if (field === 'gpu_layers') return Number(value) >= 999 || value === 'all' ? 'all' : formatNumber(value);
-  return value ?? '-';
-}
 
-function shouldAutoApplyTune(result) {
-  return !!(result && result.success && !result.cpu_fallback);
-}
 
-function renderTuneNotes(notes) {
-  if (!Array.isArray(notes) || !notes.length) return '';
-  return `<ul class="tune-notes">${notes.map((note) => `<li>${escapeHtml(note)}</li>`).join('')}</ul>`;
-}
 
-function renderTuneSummary(result, options = {}) {
-  const applied = options.applied === true;
-  const before = result.before?.fit_status || {};
-  const after = result.after?.fit_status || {};
-  const beforeSpeed = result.before?.speed_estimate || {};
-  const afterSpeed = result.after?.speed_estimate || {};
-  const changeItems = (result.changes || []).map((c) => (
-    `<li><span>${escapeHtml(tuneFieldLabel(c.field))}</span><strong>${escapeHtml(String(tuneValueLabel(c.field, c.from)))} → ${escapeHtml(String(tuneValueLabel(c.field, c.to)))}</strong></li>`
-  )).join('') || '<li><span>No changes</span><strong>already optimal</strong></li>';
-  const reasons = (result.changes || []).map((c) => `<li>${escapeHtml(c.why)}</li>`).join('');
-  const title = result.cpu_fallback
-    ? 'GPU cannot hold this model'
-    : (applied ? 'Auto-tuned for best fit' : 'Smart fit ready');
-  const badgeStatus = result.cpu_fallback ? 'tight' : after.status;
-  const applyButton = applied
-    ? ''
-    : '<button class="mini-button" type="button" data-tune-index="0">Apply CPU recommendation</button>';
-  return `
-    <div class="fit-summary">
-      <div class="fit-status">
-        <span class="badge ${fitStatusClass(badgeStatus)}">${escapeHtml(result.cpu_fallback ? 'CPU' : fitStatusLabel(after.status))}</span>
-        <strong>${escapeHtml(title)}</strong>
-        ${applyButton}
-      </div>
-      ${renderTuneNotes(result.notes)}
-      <div class="fit-groups">
-        <section>
-          <h4>${applied ? 'Changes applied' : 'Proposed changes'}</h4>
-          <ul>${changeItems}</ul>
-        </section>
-        <section>
-          <h4>Fit &amp; speed</h4>
-          <ul>
-            ${fitItem('Fit', `${fitStatusLabel(before.status)} → ${fitStatusLabel(after.status)}`)}
-            ${fitItem('Est. speed', `${beforeSpeed.estimate_tps ?? '-'} → ${afterSpeed.estimate_tps ?? '-'}`, ' tok/s')}
-          </ul>
-        </section>
-      </div>
-      ${renderTuneSuggestions(result.suggestions)}
-      ${reasons ? `<details class="fit-details"><summary>Why these changes</summary><ul>${reasons}</ul></details>` : ''}
-    </div>
-  `;
-}
 
-function renderTuneSuggestions(suggestions) {
-  if (!Array.isArray(suggestions) || suggestions.length <= 1) return '';
-  const cards = suggestions.map((s, index) => {
-    const p = s.params || {};
-    const fit = s.fit_status || {};
-    const speed = s.speed_estimate || {};
-    const cache = p.cache_type_k === p.cache_type_v
-      ? (p.cache_type_k ?? '-')
-      : `${p.cache_type_k ?? '-'}/${p.cache_type_v ?? '-'}`;
-    const specs = [
-      `Ctx ${formatNumber(p.ctx_size)}`,
-      `KV ${escapeHtml(String(cache))}`,
-      `${fitStatusLabel(fit.status)} fit`,
-      `~${speed.estimate_tps ?? '-'} tok/s`,
-    ].map((t) => `<span>${escapeHtml(t)}</span>`).join('');
-    return `
-      <div class="tune-suggestion">
-        <div class="tune-suggestion-head">
-          <strong>${escapeHtml(s.label || s.intent || 'Option')}</strong>
-          <button class="mini-button" type="button" data-tune-index="${index}">Apply</button>
-        </div>
-        <p>${escapeHtml(s.description || '')}</p>
-        <div class="tune-suggestion-specs">${specs}</div>
-      </div>`;
-  }).join('');
-  return `<section class="tune-suggestions"><h4>Suggestions for your need</h4>${cards}</section>`;
-}
 
 function applyTuneSuggestion(index) {
   const suggestion = (state.tuneSuggestions || [])[index];
@@ -3630,10 +3121,6 @@ async function fetchHFInfo() {
   });
 }
 
-function dirname(path) {
-  const idx = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
-  return idx > 0 ? path.slice(0, idx) : '';
-}
 
 async function checkModelUpdate() {
   const profile = getSelectedProfile();
