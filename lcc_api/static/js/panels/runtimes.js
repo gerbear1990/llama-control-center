@@ -165,4 +165,12 @@ export async function recheckRuntime(runtimeId, trigger) {
 export function initRuntimesPanel() {
   $('#check-updates-button').addEventListener('click', (event) => refreshRuntimeUpdates(event.currentTarget));
   const hideNotInstalled = $('#hide-not-installed-runtimes');
+  if (hideNotInstalled) {
+    hideNotInstalled.checked = !!state.hideNotInstalledRuntimes;
+    hideNotInstalled.addEventListener('change', (event) => {
+      state.hideNotInstalledRuntimes = event.target.checked;
+      localStorage.setItem('lcc-hide-not-installed-runtimes', state.hideNotInstalledRuntimes ? '1' : '0');
+      renderRuntimes();
+    });
+  }
 }

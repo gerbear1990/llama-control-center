@@ -265,8 +265,6 @@ function wireEvents() {
   // so panels and the sidebar don't animate from open→closed on first load.
   requestAnimationFrame(() => $('.app-shell').classList.add('anim-ready'));
   $('#refresh-button').addEventListener('click', refresh);
-  // Palette backdrop close
-  if (palBack) palBack.addEventListener('click', (e) => { if (e.target.id === 'command-palette') hideCommandPalette(); });
   // While following the system, an OS-level switch has to land immediately.
   $('#search-input').addEventListener('input', (event) => {
     state.query = event.target.value;
@@ -274,14 +272,6 @@ function wireEvents() {
     renderProfiles();
     renderModels();
   });
-  if (hideNotInstalled) {
-    hideNotInstalled.checked = !!state.hideNotInstalledRuntimes;
-    hideNotInstalled.addEventListener('change', (event) => {
-      state.hideNotInstalledRuntimes = event.target.checked;
-      localStorage.setItem('lcc-hide-not-installed-runtimes', state.hideNotInstalledRuntimes ? '1' : '0');
-      renderRuntimes();
-    });
-  }
   document.body.addEventListener('click', (event) => {
     const launchAction = event.target.closest('[data-launch-action]');
     if (launchAction) {

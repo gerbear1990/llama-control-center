@@ -139,5 +139,7 @@ export function renderPaletteList(filterText) {
 
 // Event wiring for this panel, moved out of app.js's wireEvents().
 export function initPalette() {
+  // Backdrop close: a click on the palette's own backdrop dismisses it.
   const palBack = $('#command-palette');
+  if (palBack) palBack.addEventListener('click', (e) => { if (e.target.id === 'command-palette') hideCommandPalette(); });
 }
