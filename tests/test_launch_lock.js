@@ -1,29 +1,15 @@
 // Launch lock: the Stage names the live endpoint, and start/stop toasts speak
 // in that same language.
 //
-// The pure helpers are imported from the modules that ship them. The wiring
-// checks below still read app.js as text, because startProfile/stopProfileByMode/
-// announceServerTransitions have not moved out of it yet -- they convert when
-// their panel modules land.
+// The pure helpers are imported. The wiring checks still read source text,
+// because they assert that one function *calls* another -- which importing a
+// function cannot show. They now read the panel modules that own that code.
 const fs = require('fs');
 const path = require('path');
 
-const src = fs.readFileSync(path.join(__dirname, '..', 'lcc_api/static/app.js'), 'utf8');
-
-function extractFunctionSource(name) {
-  const start = src.indexOf('function ' + name);
-  if (start === -1) return null;
-  let i = src.indexOf('{', start);
-  if (i === -1) return null;
-  let depth = 1;
-  i += 1;
-  while (i < src.length && depth > 0) {
-    if (src[i] === '{') depth += 1;
-    else if (src[i] === '}') depth -= 1;
-    i += 1;
-  }
-  return depth === 0 ? src.substring(start, i) : null;
-}
+const read = (rel) => fs.readFileSync(path.join(__dirname, '..', 'lcc_api/static', rel), 'utf8');
+const src = read('js/panels/servers.js');
+const paramsSrc = read('js/panels/parameters.js');
 
 (async () => {
   const {
@@ -45,22 +31,18 @@ function extractFunctionSource(name) {
   // Wiring checks against source text. A missing extraction must fail loudly:
   // an empty string would quietly satisfy none of the includes() below, but
   // naming the reason beats a bare false.
-  const sliceOf = (needle, len) => {
-    const at = src.indexOf(needle);
+  const sliceOf = (needle, len, from = src) => {
+    const at = from.indexOf(needle);
     if (at === -1) {
-      console.log(JSON.stringify({ ok: false, error: `not found in app.js: ${needle}` }));
+      console.log(JSON.stringify({ ok: false, error: `not found: ${needle}` }));
       process.exit(1);
     }
-    return src.slice(at, at + len);
+    return from.slice(at, at + len);
   };
-  const startSrc = sliceOf('async function startProfile', 2200);
-  const stopSrc = sliceOf('async function stopProfileByMode', 900);
-  const crashSrc = sliceOf('function announceServerTransitions', 900);
-  const waitingSrc = extractFunctionSource('setLaunchWaiting');
-  if (!waitingSrc) {
-    console.log(JSON.stringify({ ok: false, error: 'setLaunchWaiting not found in app.js' }));
-    process.exit(1);
-  }
+  const startSrc = sliceOf('export async function startProfile', 2200);
+  const stopSrc = sliceOf('export async function stopProfileByMode', 900);
+  const crashSrc = sliceOf('export function announceServerTransitions', 900);
+  const waitingSrc = sliceOf('export function setLaunchWaiting', 400, paramsSrc);
 
   const ok = (
     serverEndpoint(live) === '127.0.0.1:18100'

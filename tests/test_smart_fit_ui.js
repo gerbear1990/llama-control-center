@@ -4,12 +4,12 @@
 // The tune helpers are imported from tune.js. The summary checks now assert on
 // *rendered output* rather than on the source text of renderTuneSummary --
 // same intent, but it fails when the markup breaks instead of when the source
-// happens to be reworded. runAutoTune has not moved out of app.js yet, so its
-// wiring is still checked as text.
+// happens to be reworded. runAutoTune's wiring is still read as text -- an
+// import cannot show that one function calls another.
 const fs = require('fs');
 const path = require('path');
 
-const appJs = fs.readFileSync(path.join(__dirname, '..', 'lcc_api', 'static', 'app.js'), 'utf8');
+const fitJs = fs.readFileSync(path.join(__dirname, '..', 'lcc_api', 'static', 'js', 'panels', 'fit.js'), 'utf8');
 
 (async () => {
   const {
@@ -47,12 +47,12 @@ const appJs = fs.readFileSync(path.join(__dirname, '..', 'lcc_api', 'static', 'a
     && cpuSummary.includes('cannot hold')
   );
 
-  const runAt = appJs.indexOf('async function runAutoTune');
+  const runAt = fitJs.indexOf('export async function runAutoTune');
   if (runAt === -1) {
-    console.log(JSON.stringify({ ok: false, error: 'runAutoTune not found in app.js' }));
+    console.log(JSON.stringify({ ok: false, error: 'runAutoTune not found in panels/fit.js' }));
     process.exit(1);
   }
-  const runSrc = appJs.slice(runAt, runAt + 2000);
+  const runSrc = fitJs.slice(runAt, runAt + 2000);
 
   const ok = (
     autoGpu === true
