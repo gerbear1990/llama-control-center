@@ -17,25 +17,25 @@ See: .paul/PROJECT.md (updated 2026-08-21)
 
 Milestone: v0.17.0 — Close the Open Loops (0.17.0)
 Phase: 5 of 6 (Frontend Module Split) — phases 3 and 4 taken out of order by choice
-Plan: 05-01 created, awaiting approval (05-02 covers the CSS, not yet written)
-Status: PLAN created, ready for APPLY
-Branch: main @ 190fd74 (PR #17 merged) — 05-01 needs a fresh branch
+Plan: 05-01 applied (05-02 covers the CSS, not yet written)
+Status: Applied — T1–T4 done, awaiting the human-verify checkpoint
+Branch: feat/frontend-module-split (from main @ 190fd74)
 
 ⏸ Phase 2 is complete in code but parked on its human-verify checkpoint: the embedded-MTP
 launch path is proven against `--help` and upstream source at the build commit, but not by
 a running server. Issue #14 stays open until it is.
-Last activity: 2026-08-22 — Phase 4 merged (PR #17), PR #15 closed, plan 05-01 created
+Last activity: 2026-08-22 — 05-01 applied: app.js 5,222 → 472 across 25 modules; boot bug found by the operator, fixed, and guarded
 
 Progress:
 - Milestone: [████░░░░░░] 42% (2 complete, 1 of those awaiting its own verify)
-- Phase 5: [░░░░░░░░░░] 0% (05-01 planned, 0 of 5 tasks)
+- Phase 5: [███████░░░] 70% (05-01 code-complete, human-verify open; 05-02 not written)
 
 ## Loop Position
 
 Current loop state:
 ```
 PLAN ──▶ APPLY ──▶ UNIFY
-  ✓        ○        ○     [Plan 05-01 created, awaiting approval]
+  ✓        ✓        ○     [05-01 applied, awaiting human-verify]
 ```
 
 ## Accumulated Context
@@ -92,6 +92,11 @@ that `REVIEW_MILESTONES.md` was already stale. All are now consolidated into
 - ⚠️ **`styles.css` is cascade-ordered.** It ends in two override layers that win by
   being last — dark component overrides (3365) and the terminal-instrument pass (3903).
   Reordering them degrades the Phase 1 restyle silently.
+- ⚠️ **Any module-scope DOM/window read breaks node importability for the whole graph.**
+  It works in the browser (modules run after parsing), so nothing catches it but the tests.
+  Query inside a function instead. Two shipped this way and were fixed in 05-01.
+- ⚠️ **`tests/test_app_boots.js` is the only check that the app actually boots.** Do not
+  delete it when the CSS split or a later refactor makes it inconvenient.
 - ⚠️ **ES module imports are live but read-only.** Cross-module mutable state must move
   behind setters or into `state.js`, or it throws at runtime rather than failing cleanly.
 - The venv is **uv-made and has no pip**: install with
@@ -112,8 +117,16 @@ cache-buster is `?v=0.16.17` against `__version__` 0.16.0 (audit said `?v=0.15.0
 
 ## Session Continuity
 
-**Next action:** review `.paul/phases/05-frontend-module-split/05-01-PLAN.md`, then
-`/paul:apply` it on a fresh branch off `main` @ `190fd74`.
+**Next action:** walk the dashboard against 05-01's human-verify checkpoint, then plan
+05-02 (the CSS split).
+
+⚠️ **05-01 shipped a dead app once.** `wireEvents` was partitioned by selector, which
+separated `const palBack = $('#command-palette')` from the `if (palBack)` that used it; the
+ReferenceError at boot killed every listener. Fixed, and guarded by
+`tests/test_app_boots.js`. **The lesson is that green tests said nothing about whether the
+app ran** — parse checks, import checks, line-survival checks and 258 passing tests were
+all true while the dashboard was inert. Treat "the suite is green" as evidence about
+functions, not about the product.
 
 **Still open:**
 - **Issue #14** stays open until Phase 2's human-verify: launching a real embedded-MTP

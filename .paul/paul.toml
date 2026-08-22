@@ -21,12 +21,12 @@ phases = 6
 [phase]
 number = 5
 name = "Frontend Module Split"
-status = "planning"
+status = "in_progress"
 plans_completed = 0
 
 # ─── Loop ────────────────────────────────────────────────────
 [loop]
-position = "PLAN"
+position = "APPLY"
 plan = "05-01"
 plan_path = "phases/05-frontend-module-split/05-01-PLAN.md"
 
@@ -38,4 +38,4 @@ groom = true
 [stats]
 total_plans = 2
 total_phases = 6
-last_activity = "2026-08-22T00:15:00Z"
+last_activity = "2026-08-22T02:40:00Z"

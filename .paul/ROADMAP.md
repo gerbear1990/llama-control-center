@@ -172,6 +172,32 @@ Carried from the retired planning docs; promote into a phase when a milestone pi
 - `AppConfig.load()` re-reads config.json per endpoint — mtime-checked cached loader
 - Startup autoscan blocks the ASGI lifespan — move to a background task
 
+**Found during Phase 5 (2026-08-22) — operator-reported:**
+- **Portability & Paths surfaces issues with no way to resolve them.** Scope agreed with
+  the operator: guidance + a working checklist + a structured vocabulary. Three separate
+  causes, all confirmed in the tree:
+  1. **The fix text is already on the wire and thrown away.** `scan_portability_issues()`
+     emits a `message` per issue ("User-specific absolute path should become an environment
+     variable, config value, or relative path"); `renderIssues()` builds its text as
+     `` `Line ${issue.line}: ${issue.value}` `` and never reads it. Same shape as the
+     Phase 4 metrics gap.
+  2. **Profile issues render raw machine tokens.** `[...missing, ...warnings].join(' | ')`
+     puts internal identifiers on screen — an operator sees `model | param:ctx_size`.
+  3. **The checklist is decorative.** The three `.check-item` rows in `index.html` are
+     hardcoded with a permanent green `ok-dot`. The third claims "No absolute home paths in
+     .ps1 / .json" while the list directly above it enumerates exactly those.
+- Work: render the scanner's `message`; translate the closed vocabulary into sentences with
+  a fix per kind; give each issue the control that resolves it (Edit roots / Open parameters
+  / Select profile); drive the checklist from real state; **and change the resolver to emit
+  structured issues (`{code, detail, fix}`) rather than strings the UI must pattern-match**
+  — that touches `profile_resolver.py` and its tests, and helps the API too.
+- The vocabulary is closed, which is what makes real guidance achievable:
+  - `missing`: `model`, `draft_model`, `param:<key>`
+  - `warnings`: low-confidence match, ambiguous match, draft model does not exist,
+    could not read MTP support, MTP profile matched a non-MTP path, plus two from
+    `manifest.py` — `recommended_params.<loc> contains an absolute path`, and
+    `profile contains an absolute model path`
+
 **Found during Phase 2 (2026-08-21):**
 - **`_next_free_port` can't suggest anything on a default Windows host.** It only searches
   *upward*, and treats the dynamic range as reserved — but that range is 49152–65535 by
