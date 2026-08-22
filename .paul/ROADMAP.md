@@ -28,7 +28,7 @@ Phases: 2 of 6 complete (Phase 2 code-complete, parked on its human-verify)
 | 2 | Embedded-MTP Support | 1 | ⏸ Awaiting human-verify | - |
 | 3 | vLLM-WSL Fit Estimator + Auto-Tuner | TBD | Deferred (after 4) | - |
 | 4 | Running-Server Observability UI | 1 | ✅ Complete | 2026-08-21 |
-| 5 | Frontend Module Split | TBD | Not started | - |
+| 5 | Frontend Module Split | 2 | 🚧 Planning (05-01 created) | - |
 | 6 | Release v0.17.0 | TBD | Not started | - |
 
 ## Phase Details
@@ -115,16 +115,33 @@ operator ("looks and performs much better"). Summary:
 ### Phase 5: Frontend Module Split
 
 **Goal:** `app.js` and `styles.css` become editable again. Covers **M5.1** (frontend modularization) and the structural half of **M3.2**.
-**Depends on:** **Phase 1 must land first** — splitting a 4.1k-line stylesheet while a
-restyle is uncommitted would be a merge disaster.
+**Depends on:** Phase 1 ✅ (landed `83f957b`) — the restyle had to be in before the
+stylesheet could be cut apart.
 **Research:** Unlikely
+**Split into two plans** (decided 2026-08-22): the two files have different risk profiles
+and sharing a branch between them would make a bad merge unbisectable.
 
-**Scope:**
-- Split `app.js` (3,816 lines) into ES modules: `api.js`, `state.js`, `panels/*`, `modals.js`, `palette.js`, `util.js`; `index.html` loads `type="module"`
-- Split `styles.css` (4,105 lines): tokens/theme, base layout, per-panel sheets
-- Move panel code and panel styles together
+⚠️ **The audit's line counts are stale** — it says 3,816 / 4,105. Actual on 2026-08-22:
+`app.js` **5,222**, `styles.css` **4,227**.
 
-**Source:** `docs/2026-07-14-audit.md` §1 (both marked [High])
+**Plan 05-01 — `app.js` → ES modules.** `.paul/phases/05-frontend-module-split/05-01-PLAN.md`
+- `js/` leaf layer (util, api, state, copy, format), then shared systems, then one module
+  per panel; `index.html` loads `type="module"`; `app.js` becomes a <300-line entry point
+- **Converts the node tests from source-text scraping to real imports.** Six of the seven
+  locate code with `indexOf('function ...')` / regex / brace counting and would break the
+  instant anything moves. Not mentioned in any prior planning doc
+- Favourable finding: **zero** inline `onclick=` handlers and **zero** `window.` globals,
+  so module scoping cannot silently break event wiring
+
+**Plan 05-02 — `styles.css` → per-concern sheets.** Not yet written.
+- ⚠️ **Cascade order is the constraint.** The sheet ends in two override layers that win
+  by being last — "Dark component overrides" (line 3365) and the "Terminal-instrument
+  pass" (line 3903). Naive per-panel sheets reorder them and quietly degrade the restyle
+  that Phase 1 just shipped
+- `test_css_shell.js` reads `styles.css` by path and regexes rules out of it; it survives
+  05-01 untouched but must be handled here
+
+**Source:** `docs/2026-07-14-audit.md` §1 (both marked [High]) — verify before quoting
 
 ---
 
