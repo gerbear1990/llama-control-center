@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-09-03
+
 ### Added
 - **Instant Stop/Purge feedback.** Those actions paint the new server list
   immediately instead of waiting on a full dashboard refresh (model scan,
@@ -50,6 +52,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that path explicitly lifts the tombstone.
 
 ### Changed
+- **Frontend split into 25 native ES modules.** `app.js` 5,222 → 472; panels
+  and shared systems live under `lcc_api/static/js/` with no bundler. Node
+  tests import real exports. A boot-guard test exists because the first split
+  shipped a dashboard that rendered and did nothing.
 - **One CSS token system.** `styles.css` had accumulated three overlapping
   token layers; they are collapsed into a single `:root` plus a single
   `[data-theme="dark"]` block (~200 lines lighter), with a new `--on-solid`

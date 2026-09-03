@@ -4,7 +4,7 @@
 > runtimes, preparing `llama.cpp` launch commands, running fit tests, and managing
 > tracked local inference servers.
 
-**v0.16.0** — vLLM-in-WSL managed runtime with native NVFP4 support on Blackwell GPUs, plus a web-UI-only cleanup: launch-script generation and the portable CLI are retired, `models.json` profiles pin explicit model paths, and profile auto-registration moved to `lcc_core/profile_registry.py` with a new `POST /api/profiles/scan` endpoint. See [CHANGELOG.md](./CHANGELOG.md) for details.
+**v0.17.0** — The dashboard is native ES modules (no bundler). LCC adopts `llama-server` processes it did not start, coerces mismatched CUDA KV-cache types so attention stays on the GPU, and paints Stop/Purge/Refresh without waiting on GitHub. See [CHANGELOG.md](./CHANGELOG.md) for details.
 
 The app is designed to be portable: paths live in user settings or environment
 variables, not in source code.

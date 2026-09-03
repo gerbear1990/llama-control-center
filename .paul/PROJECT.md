@@ -25,7 +25,7 @@ tracebacks.
 | Attribute | Value |
 |-----------|-------|
 | Type | Application (FastAPI + vanilla-JS dashboard) |
-| Version | 0.16.0 |
+| Version | 0.17.0 |
 | Status | Production (single-operator, self-hosted) |
 | Last Updated | 2026-09-03 |
 
