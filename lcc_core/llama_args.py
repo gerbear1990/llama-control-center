@@ -75,6 +75,37 @@ def _add_optional(args: list[str], flag: str, value: Any) -> None:
     args.extend([flag, str(value)])
 
 
+# Default CUDA flash-attention only instantiates matched K/V types
+# (f16/f16, bf16/bf16, q8_0/q8_0, q4_0/q4_0). A mismatched pair returns
+# BEST_FATTN_KERNEL_NONE and llama.cpp silently runs attention on the CPU.
+_KV_COERCE_SKIP_BACKENDS = {"cpu", "metal"}
+
+
+def normalize_kv_cache_pair(params: dict[str, Any]) -> tuple[Any, Any, str | None]:
+    """Return ``(k, v, warning)``. Coerce V to K when a CUDA FA kernel is missing.
+
+    CPU and Metal are left alone: they do not hit the CUDA dispatcher that
+    drops mismatched pairs onto the host.
+    """
+    cache_k = params.get("cache_type_k")
+    cache_v = params.get("cache_type_v")
+    k_text = str(cache_k).strip().lower() if cache_k not in (None, "") else ""
+    v_text = str(cache_v).strip().lower() if cache_v not in (None, "") else ""
+    if not k_text or not v_text or k_text == v_text:
+        return cache_k, cache_v, None
+    backend = str(params.get("acceleration_backend") or "").strip().lower()
+    if backend in _KV_COERCE_SKIP_BACKENDS:
+        return cache_k, cache_v, None
+    gpu_layers = normalize_gpu_layers(params.get("gpu_layers"))
+    if gpu_layers == 0:
+        return cache_k, cache_v, None
+    warning = (
+        f"Mismatched KV cache {k_text}/{v_text} has no CUDA flash-attn kernel; "
+        f"llama.cpp would run prompt eval on the CPU. Launched as {k_text}/{k_text}."
+    )
+    return k_text, k_text, warning
+
+
 def build_llama_server_args(
     llama_server: str,
     model_path: str,
@@ -84,6 +115,10 @@ def build_llama_server_args(
     """Build a modern llama-server argv list from normalized profile params."""
 
     warnings: list[str] = []
+    cache_k, cache_v, kv_warning = normalize_kv_cache_pair(params)
+    if kv_warning:
+        warnings.append(kv_warning)
+        params = {**params, "cache_type_k": cache_k, "cache_type_v": cache_v}
     args = [
         llama_server,
         "-m",

@@ -312,7 +312,7 @@
                       <span>Fit headroom</span>
                       <input id="param-fit-headroom" name="fit_headroom_mib" type="number" readonly />
                     </label>
-                    <label class="field" title="Memory format for one half of the long-context cache. Smaller values save VRAM.">
+                    <label class="field" title="Memory format for the K half of the long-context cache. On CUDA this must match Cache V or llama.cpp silently runs attention on the CPU.">
                       <span>Cache K</span>
                       <select id="param-cache-k" name="cache_type_k">
                         <option>f32</option>
@@ -326,7 +326,7 @@
                         <option>q5_1</option>
                       </select>
                     </label>
-                    <label class="field" title="Memory format for the other half of the long-context cache. Use the fit test when unsure.">
+                    <label class="field" title="Memory format for the V half of the long-context cache. Must match Cache K on CUDA (f16/f16, q8_0/q8_0, q4_0/q4_0, or bf16/bf16).">
                       <span>Cache V</span>
                       <select id="param-cache-v" name="cache_type_v">
                         <option>f32</option>
@@ -340,6 +340,10 @@
                         <option>q5_1</option>
                       </select>
                     </label>
+                    <p id="kv-cache-mismatch" class="kv-cache-mismatch" hidden role="status">
+                      <span class="kv-cache-mismatch-text"></span>
+                      <button type="button" class="mini-button" id="kv-cache-match">Match V to K</button>
+                    </p>
                   </div>
                   <label class="field wide" title="Optional smaller draft model for speculative decoding. Leave empty unless you have a matching draft GGUF.">
                     <span>Draft model</span>
@@ -753,6 +757,8 @@
       </div>
     </div>
 
-    <script src="/static/app.js?v=0.16.17" defer></script>
+    <!-- ES modules: deferred by definition, and StaticFiles already sends
+         etag/last-modified, so no hand-bumped cache-buster is needed. -->
+    <script type="module" src="/static/app.js"></script>
   </body>
 </html>

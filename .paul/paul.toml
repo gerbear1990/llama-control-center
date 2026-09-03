@@ -19,16 +19,16 @@ phases = 6
 
 # ─── Phase ───────────────────────────────────────────────────
 [phase]
-number = 4
-name = "Running-Server Observability UI"
+number = 5
+name = "Frontend Module Split"
 status = "in_progress"
 plans_completed = 0
 
 # ─── Loop ────────────────────────────────────────────────────
 [loop]
 position = "APPLY"
-plan = "04-01"
-plan_path = "phases/04-observability-ui/04-01-PLAN.md"
+plan = "05-01"
+plan_path = "phases/05-frontend-module-split/05-01-PLAN.md"
 
 # ─── Satellite ───────────────────────────────────────────────
 [satellite]
@@ -36,6 +36,6 @@ groom = true
 
 # ─── Stats ───────────────────────────────────────────────────
 [stats]
-total_plans = 0
+total_plans = 2
 total_phases = 6
-last_activity = "2026-08-21T18:00:00Z"
+last_activity = "2026-08-22T02:40:00Z"

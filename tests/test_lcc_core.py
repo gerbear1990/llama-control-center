@@ -488,6 +488,51 @@ class LaunchArgsTests(unittest.TestCase):
         )
         self.assertEqual(explicit.argv[explicit.argv.index("--poll") + 1], "25")
 
+    def test_mismatched_kv_cache_is_launched_as_matching_pair(self) -> None:
+        """Asymmetric -ctk/-ctv has no default CUDA FA kernel; llama.cpp
+        silently runs attention on the CPU (~20x slower prompt eval).
+        Measured: f16/q8_0 at 177 tok/s vs 3123 for f16/f16 on an RTX 5090.
+        """
+        from lcc_core.llama_args import normalize_kv_cache_pair
+
+        k, v, warning = normalize_kv_cache_pair({
+            "cache_type_k": "f16", "cache_type_v": "q8_0", "gpu_layers": 999,
+        })
+        self.assertEqual(k, "f16")
+        self.assertEqual(v, "f16")
+        self.assertIsNotNone(warning)
+        self.assertIn("f16", warning)
+        self.assertIn("q8_0", warning)
+
+        cmd = build_llama_server_args(
+            "llama-server", "Tiny-1B-Q8_0.gguf",
+            {"cache_type_k": "f16", "cache_type_v": "q8_0", "gpu_layers": 999},
+        )
+        self.assertEqual(cmd.argv[cmd.argv.index("--cache-type-k") + 1], "f16")
+        self.assertEqual(cmd.argv[cmd.argv.index("--cache-type-v") + 1], "f16")
+        self.assertTrue(any("q8_0" in w and "f16" in w for w in cmd.warnings))
+
+    def test_matching_kv_cache_is_unchanged(self) -> None:
+        from lcc_core.llama_args import normalize_kv_cache_pair
+
+        k, v, warning = normalize_kv_cache_pair({
+            "cache_type_k": "q8_0", "cache_type_v": "q8_0",
+        })
+        self.assertEqual((k, v, warning), ("q8_0", "q8_0", None))
+
+    def test_cpu_backend_keeps_mismatched_kv(self) -> None:
+        from lcc_core.llama_args import normalize_kv_cache_pair
+
+        k, v, warning = normalize_kv_cache_pair({
+            "cache_type_k": "f16",
+            "cache_type_v": "q8_0",
+            "acceleration_backend": "cpu",
+            "gpu_layers": 0,
+        })
+        self.assertEqual(k, "f16")
+        self.assertEqual(v, "q8_0")
+        self.assertIsNone(warning)
+
     def test_builds_llama_server_args_without_shell_string_rebuild(self) -> None:
         cmd = build_llama_server_args(
             "llama-server",
