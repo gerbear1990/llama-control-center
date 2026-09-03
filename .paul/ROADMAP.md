@@ -10,15 +10,16 @@ about: "llama-control-center"
 
 v0.16.0 shipped the shell-code removal and the ground-truth memory layer. v0.17.0 closes
 the loop that's currently half-open: finish the in-flight UI restyle, make embedded-MTP
-models usable end-to-end, extend fit/auto-tune to vLLM-WSL, then surface the three
-observability backends that already exist but have no UI. The frontend split lands last
-in the milestone because it must not collide with the restyle.
+models usable end-to-end, surface the observability backends that already exist, then
+split the frontend so it is editable again. Fit and auto-tune stay llama.cpp-only for
+this milestone; vLLM-WSL estimator work is parked.
 
 ## Current Milestone
 
 **v0.17.0 — Close the Open Loops**
 Status: In progress
-Phases: 2 of 6 complete (Phase 2 code-complete, parked on its human-verify)
+Phases: 2 of 5 in-milestone complete (Phase 2 code-complete, parked on its human-verify;
+Phase 3 parked out of the milestone)
 
 ## Phases
 
@@ -26,9 +27,9 @@ Phases: 2 of 6 complete (Phase 2 code-complete, parked on its human-verify)
 |-------|------|-------|--------|-----------|
 | 1 | Terminal-Instrument Design Pass | 1 | ✅ Complete | 2026-08-21 |
 | 2 | Embedded-MTP Support | 1 | ⏸ Awaiting human-verify | - |
-| 3 | vLLM-WSL Fit Estimator + Auto-Tuner | TBD | Deferred (after 4) | - |
+| 3 | vLLM-WSL Fit Estimator + Auto-Tuner | TBD | ⏸ Parked (llama.cpp-only) | - |
 | 4 | Running-Server Observability UI | 1 | ✅ Complete | 2026-08-21 |
-| 5 | Frontend Module Split | 2 | 🚧 Planning (05-01 created) | - |
+| 5 | Frontend Module Split | 2 | 🚧 05-01 applied, awaiting browser verify | - |
 | 6 | Release v0.17.0 | TBD | Not started | - |
 
 ## Phase Details
@@ -74,10 +75,12 @@ profiles *launchable* and adds the regression cover that fix never got.
 ### Phase 3: vLLM-WSL Fit Estimator + Auto-Tuner
 
 **Goal:** vLLM-in-WSL profiles get the same fit estimate and auto-tune treatment as llama.cpp.
+**Status:** ⏸ Parked 2026-09-03 — operator decision: v0.17.0 is llama.cpp-only. Does not
+block Phase 6. Unpark only when the operator asks to pick vLLM fit back up.
 **Depends on:** Phase 2 (shares the estimator/resolver surface)
 **Research:** Likely (vLLM memory model differs from llama.cpp's)
 
-**Scope:**
+**Scope (when unparked):**
 - T9–T10 — vLLM estimator + tuner
 - T11 — calibration against real benchmarks
 
@@ -148,7 +151,7 @@ and sharing a branch between them would make a bad merge unbisectable.
 ### Phase 6: Release v0.17.0
 
 **Goal:** Ship it.
-**Depends on:** Phases 1–5
+**Depends on:** Phases 1, 2, 4, 5. Phase 3 is parked and does not block the tag.
 **Research:** Unlikely
 
 **Scope:**

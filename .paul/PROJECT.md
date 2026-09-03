@@ -27,7 +27,7 @@ tracebacks.
 | Type | Application (FastAPI + vanilla-JS dashboard) |
 | Version | 0.16.0 |
 | Status | Production (single-operator, self-hosted) |
-| Last Updated | 2026-08-21 |
+| Last Updated | 2026-09-03 |
 
 **Run:** `python start-lcc.py start` → http://localhost:8716 (`lcc` shim at `~/bin/lcc.cmd`)
 **Repo:** `gerbear1990/llama-control-center`
@@ -56,16 +56,17 @@ tracebacks.
 
 ### Active (In Progress)
 
-- [ ] Terminal-instrument design pass — branch `feat/terminal-instrument-design`, uncommitted
-- [ ] Embedded-MTP model support — paused at T7 of the models-pane plan; see issue #14
+- [ ] Frontend module split — 05-01 applied (`app.js` 5,222 → 472), awaiting browser verify; 05-02 (CSS) not written
+- [ ] Embedded-MTP model support — code landed; parked on a real-launch verify. Issue #14
 
 ### Planned (Next)
 
-- [ ] vLLM-WSL fit estimator + full auto-tuner
-- [ ] Running-server observability UI (crash badge, metrics panel, log tail, rescan button)
-- [ ] Frontend module split — `app.js` 3.8k lines, `styles.css` 4.1k lines
 - [ ] Quant picker, Ollama integration, OpenCode provider auto-sync
 - [ ] Obsidian Rail GUI overhaul (deliberately *after* the instrument-console IA pass)
+
+### Parked
+
+- [ ] vLLM-WSL fit estimator + full auto-tuner — parked 2026-09-03. llama.cpp-only until the operator unparks it. Not a v0.17.0 blocker.
 
 ## Constraints
 

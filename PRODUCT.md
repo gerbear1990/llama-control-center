@@ -71,6 +71,6 @@ Do not fabricate testimonials, customer counts, benchmark leaderboards, pricing,
 
 1. Fit before launch: the operator should know whether this machine can hold the model before Start.
 2. Pin what you mean: a profile is a path and a launch config, not a fuzzy name match.
-3. Track only what you started: Start/Stop/Logs describe this app’s servers, not every process on the box.
+3. Observe llama.cpp servers even if this app did not start them. Stop still applies. Captured logs exist only for processes this app launched.
 4. Portability is configuration, not hardcoded user paths.
 5. Chat verifies a listener; it does not replace the launch instrument.

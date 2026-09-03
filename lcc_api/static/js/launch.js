@@ -3,6 +3,19 @@ import { escapeHtml } from './util.js';
 // The launch lock: where a server is listening, and what the Start/Stop
 // controls may say about it. Pure -- the panel owns the DOM.
 
+export function kvCacheMismatchNote(cacheK, cacheV, options) {
+  const backend = String(options?.acceleration || '').trim().toLowerCase();
+  if (backend === 'cpu' || backend === 'metal') return '';
+  const k = String(cacheK || '').trim().toLowerCase();
+  const v = String(cacheV || '').trim().toLowerCase();
+  if (!k || !v || k === v) return '';
+  return (
+    `Mismatched KV cache ${k}/${v} has no CUDA flash-attn kernel; `
+    + `llama.cpp runs attention on the CPU (~20× slower prompt eval). `
+    + `Start will launch both as ${k}.`
+  );
+}
+
 export function serverEndpoint(server) {
   if (!server) return '';
   const host = String(server.host || '127.0.0.1').trim() || '127.0.0.1';

@@ -305,9 +305,8 @@ def prepare_server(request: StartRequest) -> dict[str, Any]:
 
 @app.get("/api/servers")
 def get_servers() -> dict[str, Any]:
-    from lcc_core.server_manager import refresh_server_states, trim_server_history
+    from lcc_core.server_manager import trim_server_history
     from lcc_core.config import AppConfig
-    refresh_server_states()
     config = AppConfig.load()
     trim_server_history(config.server_history_limit)
     return {"servers": list_servers()}

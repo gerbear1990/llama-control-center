@@ -19,7 +19,7 @@ from .config import AppConfig
 from .hardware import _windows_memory_info, _posix_memory_info
 from .llama_args import LaunchCommand, build_llama_server_args
 from .manifest import ManifestReadError
-from .paths import cache_dir, find_project_root, is_windows
+from .paths import _path_key, cache_dir, find_project_root, is_windows
 from .profile_resolver import ResolvedProfile, resolve_profiles
 from .vllm_args import build_wsl_vllm_args
 
@@ -493,8 +493,257 @@ def _classify_launch_error(stderr: str) -> str | None:
     return None
 
 
-def list_servers() -> list[dict[str, Any]]:
+_LLAMA_SERVER_NAMES = {"llama-server", "llama-server.exe"}
+
+
+def _llama_server_binary_name(value: str | None) -> bool:
+    if not value:
+        return False
+    return Path(str(value)).name.lower() in _LLAMA_SERVER_NAMES
+
+
+def _argv_value(argv: list[str], flags: tuple[str, ...]) -> str | None:
+    """Return the value of the first matching flag in argv, or None."""
+    wanted = set(flags)
+    i = 1
+    while i < len(argv):
+        arg = argv[i]
+        if arg in wanted:
+            if i + 1 < len(argv):
+                return argv[i + 1]
+            return None
+        for flag in flags:
+            prefix = f"{flag}="
+            if arg.startswith(prefix):
+                return arg[len(prefix):] or None
+        i += 1
+    return None
+
+
+def parse_llama_server_argv(argv: list[str] | None) -> dict[str, Any] | None:
+    """Pull model/host/port/alias out of a llama-server argv list.
+
+    Returns None when this is not llama-server or there is no ``-m``/``--model``.
+    """
+    if not argv:
+        return None
+    if not _llama_server_binary_name(argv[0]):
+        return None
+    model_path = _argv_value(argv, ("-m", "--model"))
+    if not model_path:
+        return None
+    port_raw = _argv_value(argv, ("--port",))
+    try:
+        port = int(port_raw) if port_raw else 8080
+    except (TypeError, ValueError):
+        port = 8080
+    return {
+        "model_path": model_path,
+        "host": _argv_value(argv, ("--host",)) or "127.0.0.1",
+        "port": port,
+        "alias": _argv_value(argv, ("-a", "--alias")),
+        "command_line": subprocess.list2cmdline(list(argv)),
+    }
+
+
+def parse_llama_server_command_line(command_line: str | None) -> dict[str, Any] | None:
+    """Parse a Windows-style CommandLine string into the same dict as argv."""
+    if not command_line or not str(command_line).strip():
+        return None
+    try:
+        argv = shlex.split(str(command_line), posix=False)
+    except ValueError:
+        return None
+    # posix=False keeps the wrapping quotes on tokens.
+    argv = [_strip_cmd_quotes(part) for part in argv]
+    return parse_llama_server_argv(argv)
+
+
+def _strip_cmd_quotes(value: str) -> str:
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+        return value[1:-1]
+    return value
+
+
+def _psutil_llama_server_processes() -> list[dict[str, Any]]:
+    found: list[dict[str, Any]] = []
+    if psutil is None:
+        return found
+    try:
+        iterator = psutil.process_iter(["pid", "name", "cmdline"])
+    except Exception:
+        return found
+    for proc in iterator:
+        try:
+            info = proc.info
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            continue
+        except Exception:
+            continue
+        name = info.get("name") or ""
+        argv = info.get("cmdline") or []
+        if not _llama_server_binary_name(name) and not (argv and _llama_server_binary_name(argv[0])):
+            continue
+        parsed = parse_llama_server_argv(argv if argv else None)
+        if not parsed:
+            continue
+        parsed["pid"] = int(info["pid"])
+        found.append(parsed)
+    return found
+
+
+_WINDOWS_LLAMA_CACHE_TTL = 2.0
+_windows_llama_cache: tuple[float, list[dict[str, Any]]] | None = None
+
+
+def _windows_llama_server_processes() -> list[dict[str, Any]]:
+    """Win32_Process fallback: psutil is optional and often has no CommandLine."""
+    global _windows_llama_cache
+    now = time.monotonic()
+    if _windows_llama_cache and (now - _windows_llama_cache[0]) < _WINDOWS_LLAMA_CACHE_TTL:
+        return list(_windows_llama_cache[1])
+    found = _windows_llama_server_processes_uncached()
+    _windows_llama_cache = (now, found)
+    return list(found)
+
+
+def _windows_llama_server_processes_uncached() -> list[dict[str, Any]]:
+    try:
+        result = subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                "Get-CimInstance Win32_Process -Filter \"Name='llama-server.exe'\" "
+                "| Select-Object ProcessId,Name,CommandLine | ConvertTo-Json -Compress",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=8,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    raw = (result.stdout or "").strip()
+    if result.returncode != 0 or not raw:
+        return []
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    rows = payload if isinstance(payload, list) else [payload]
+    found: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        parsed = parse_llama_server_command_line(row.get("CommandLine"))
+        if not parsed:
+            continue
+        try:
+            parsed["pid"] = int(row.get("ProcessId"))
+        except (TypeError, ValueError):
+            continue
+        found.append(parsed)
+    return found
+
+
+def _live_llama_server_processes() -> list[dict[str, Any]]:
+    """OS-level llama-server processes, parsed from their command lines."""
+    by_pid: dict[int, dict[str, Any]] = {}
+    for parsed in _psutil_llama_server_processes():
+        by_pid[int(parsed["pid"])] = parsed
+    if is_windows():
+        for parsed in _windows_llama_server_processes():
+            pid = int(parsed["pid"])
+            existing = by_pid.get(pid)
+            if existing is None or not existing.get("model_path"):
+                by_pid[pid] = parsed
+    return list(by_pid.values())
+
+
+def _adopt_profiles() -> list[Any]:
+    try:
+        from .manifest import load_profiles
+        return load_profiles()
+    except Exception:
+        return []
+
+
+def _mode_for_model_path(model_path: str | None, profiles: list[Any]) -> str | None:
+    if not model_path:
+        return None
+    key = _path_key(Path(model_path))
+    for profile in profiles:
+        pinned = profile.model_path if hasattr(profile, "model_path") else profile.get("model_path")
+        if not pinned:
+            continue
+        if _path_key(Path(pinned)) == key:
+            mode = profile.mode if hasattr(profile, "mode") else profile.get("mode")
+            if mode:
+                return str(mode)
+    return None
+
+
+def adopt_running_llama_servers(
+    *,
+    processes: list[dict[str, Any]] | None = None,
+    profiles: list[Any] | None = None,
+) -> int:
+    """Record live llama-server processes that are not already in servers.json.
+
+    LCC only used to list servers it had spawned. Operators often start
+    llama-server themselves; those processes are still the thing the dashboard
+    is for, so we adopt them by PID and pin a profile when ``-m`` matches.
+    """
+    candidates = processes if processes is not None else _live_llama_server_processes()
+    if not candidates:
+        return 0
+    resolved_profiles = profiles if profiles is not None else _adopt_profiles()
+    state = read_state()
+    servers = state.setdefault("servers", [])
+    tracked_pids = {int(server["pid"]) for server in servers if server.get("pid")}
+    added = 0
+    for candidate in candidates:
+        raw_pid = candidate.get("pid")
+        if not raw_pid:
+            continue
+        pid = int(raw_pid)
+        if pid in tracked_pids:
+            continue
+        model_path = candidate.get("model_path")
+        mode = _mode_for_model_path(model_path, resolved_profiles)
+        if not mode:
+            mode = candidate.get("alias") or (Path(str(model_path)).stem if model_path else f"external-{pid}")
+        server = {
+            "id": f"adopted-{pid}",
+            "mode": str(mode),
+            "pid": pid,
+            "status": "running",
+            "running": True,
+            "host": candidate.get("host") or "127.0.0.1",
+            "port": int(candidate.get("port") or 8080),
+            "model_path": model_path,
+            "model_alias": candidate.get("alias") or str(mode),
+            "command_line": candidate.get("command_line") or "",
+            "stdout_log": None,
+            "stderr_log": None,
+            "started_at": _now(),
+            "warnings": [],
+            "runtime": "llama.cpp",
+            "origin": "adopted",
+        }
+        servers.append(server)
+        tracked_pids.add(pid)
+        added += 1
+    if added:
+        write_state(state)
+    return added
+
+
+def list_servers(*, adopt: bool = True) -> list[dict[str, Any]]:
     refresh_server_states()
+    if adopt:
+        adopt_running_llama_servers()
     state = read_state()
     servers = []
     for server in state.get("servers", []):
@@ -614,21 +863,34 @@ def purge_server_history(only_non_running: bool = True, all: bool = False) -> di
         removed = len(servers)
         state["servers"] = []
         write_state(state)
-        return {"success": True, "removed": removed, "remaining": 0, "message": f"Removed all {removed} tracked server(s)."}
+        return {
+            "success": True,
+            "removed": removed,
+            "remaining": 0,
+            "servers": [],
+            "message": f"Removed all {removed} tracked server(s).",
+        }
 
     if only_non_running:
         kept = [s for s in servers if pid_is_running(s.get("pid"))]
         removed = len(servers) - len(kept)
         state["servers"] = kept
         write_state(state)
-        return {"success": True, "removed": removed, "remaining": len(kept), "message": f"Removed {removed} stopped/crashed entry(ies); {len(kept)} kept."}
+        payload = [{**item, "running": True} for item in kept]
+        return {
+            "success": True,
+            "removed": removed,
+            "remaining": len(kept),
+            "servers": payload,
+            "message": f"Removed {removed} stopped/crashed entry(ies); {len(kept)} kept.",
+        }
 
     # Fallback: no-op keep all
     return {"success": True, "removed": 0, "remaining": len(servers), "message": "Nothing to purge."}
 
 
 def _find_server(server_id: str | None = None, mode: str | None = None) -> dict[str, Any] | None:
-    servers = list_servers()
+    servers = list_servers(adopt=False)
     if server_id:
         for server in servers:
             if server.get("id") == server_id:

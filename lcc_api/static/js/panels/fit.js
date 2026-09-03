@@ -1,13 +1,13 @@
 // Fit panel.
 
 import { getSelectedProfile, profileLabel, renderProfiles, setSelectedProfileMode } from './profiles.js';
-import { applyFitResultParams, collectOverrides, markAppliedFields, primaryGpu, renderParameters, saveCurrentOverrides, selectedMode, setParamOverrides } from './parameters.js';
+import { alignKvCacheParams, applyFitResultParams, collectOverrides, markAppliedFields, primaryGpu, renderParameters, saveCurrentOverrides, selectedMode, setParamOverrides } from './parameters.js';
 import { setModelNote } from './models.js';
 import { showLogPreview } from './logs.js';
 import { $, escapeHtml, formatMib, formatNumber, hasOwn } from '../util.js';
 import { renderTuneSummary, shouldAutoApplyTune } from '../tune.js';
 import { state } from '../state.js';
-import { refresh } from '../refresh.js';
+import { refreshResources } from '../refresh.js';
 import { fitItem, fitStatusLabel } from '../format.js';
 import { confirmAction, toast, withBusy } from '../feedback.js';
 import { api } from '../api.js';
@@ -290,7 +290,7 @@ export function applyTuneSuggestion(index) {
 export function applyTunedParams(tuned) {
   const mode = selectedMode();
   if (!mode) return {};
-  const applied = { ...collectOverrides(), ...(tuned || {}) };
+  const applied = alignKvCacheParams({ ...collectOverrides(), ...(tuned || {}) });
   setParamOverrides(mode, applied);
   renderParameters();
   markAppliedFields(tuned || {});
@@ -498,7 +498,7 @@ export async function runBenchmark() {
         `Endpoint: ${result.benchmark.endpoint}`,
       ].join('\n'));
       toast(`Benchmark: ${result.benchmark.tokens_per_second} tok/s`);
-      await refresh();
+      await refreshResources(['benchmarks', 'servers']);
       renderBenchmarkHistory();
       const currentKey = estimateKey(selectedMode() || '', collectOverrides());
       if (currentKey === state.lastBenchmarkKey && state.measuredTps) {

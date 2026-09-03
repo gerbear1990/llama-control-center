@@ -1,14 +1,15 @@
 // Servers panel.
 
 import { profileLabel, renderProfiles, setSelectedProfileMode } from './profiles.js';
-import { collectOverrides, renderLaunchLock, renderParameters, selectedMode, setLaunchWaiting } from './parameters.js';
+import { collectOverrides, renderLaunchLock, renderParameters, saveCurrentOverrides, selectedMode, setLaunchWaiting } from './parameters.js';
 import { loadLogs, showLogEmpty, showLogPreview } from './logs.js';
 import { liveBarClass } from './hardware.js';
 import { $, $$, escapeHtml } from '../util.js';
 import { state } from '../state.js';
 import { revealPanel, showPanel } from '../router.js';
-import { refresh, refreshGeneration, refreshInFlight } from '../refresh.js';
+import { refreshGeneration, refreshInFlight } from '../refresh.js';
 import { listeningToast, releasedToast, serverEndpoint } from '../launch.js';
+import { markServersStopped, purgeServersState } from '../server-state.js';
 import { buildServerMetricsRows, formatServerMetricsLine } from '../format.js';
 import { confirmAction, setActionsBusy, toast, withBusy } from '../feedback.js';
 import { emptyStateHtml, serversEmptyCopy } from '../copy.js';
@@ -64,6 +65,7 @@ export function buildServerItemHtml(server) {
   const status = server.status || (isRunning ? 'running' : 'stopped');
   const isCrashed = status === 'crashed' || (!isRunning && server.last_stderr);
   const oom = server.oom_likely ? ' <span class="badge error" title="Likely OOM">OOM</span>' : '';
+  const adopted = server.origin === 'adopted' ? ' <span class="badge" title="Already running when LCC started — not launched from this dashboard">external</span>' : '';
   const metrics = formatServerMetricsLine(server.metrics);
   const metricsLine = metrics ? `<div class="server-metrics">${escapeHtml(metrics)}</div>` : '';
   const stderrSnippet = (isCrashed && server.last_stderr) ? `<pre class="server-stderr" title="Last stderr (truncated)">${escapeHtml(String(server.last_stderr).slice(0, 300))}</pre>` : '';
@@ -73,7 +75,7 @@ export function buildServerItemHtml(server) {
   const badgeText = isCrashed ? 'crashed' : (isRunning ? 'running' : status);
   return `
     <article class="server-item${isRunning ? ' running' : ''}${server.id === state.selectedServerId ? ' selected' : ''}" data-server-id="${escapeHtml(server.id)}" tabindex="0" aria-selected="${server.id === state.selectedServerId ? 'true' : 'false'}">
-      <span class="badge ${badgeClass}">${escapeHtml(badgeText)}</span>${oom}
+      <span class="badge ${badgeClass}">${escapeHtml(badgeText)}</span>${oom}${adopted}
       <strong>${escapeHtml(server.mode)}</strong>
       <p>PID ${escapeHtml(server.pid || '-')} on ${escapeHtml(server.host || '127.0.0.1')}:${escapeHtml(server.port || '-')}</p>
       ${metricsLine}
@@ -98,6 +100,10 @@ export const SERVER_POLL_ACTIVE_MS = 5000;
 export const SERVER_POLL_IDLE_MS = 30000;
 
 export let serverPollTimer = null;
+
+// Stop/purge paint immediately. While that write is in flight the 5s poll
+// must not put the old running cards back.
+export let serversWriteInFlight = false;
 
 export function serversBusy(servers) {
   return (servers || []).some((server) => (
@@ -165,8 +171,32 @@ export function announceServerTransitions(previousById, servers) {
   });
 }
 
+export function applyServersView(servers, { announce = true } = {}) {
+  const previous = state.servers || [];
+  const previousById = new Map(previous.map((server) => [server.id, server]));
+  const next = servers || [];
+  next.forEach((server) => {
+    if (server.metrics === undefined) {
+      const before = previousById.get(server.id);
+      if (before?.metrics) server.metrics = before.metrics;
+    }
+  });
+  state.servers = next;
+  withFocusPreserved(() => {
+    renderServers();
+    renderProfiles();
+    renderLaunchLock();
+  });
+  if (announce) announceServerTransitions(previousById, next);
+}
+
+export async function refreshServers() {
+  const data = await api('/api/servers');
+  applyServersView(data.servers || [], { announce: false });
+}
+
 export async function pollServers() {
-  if (refreshInFlight) return;
+  if (refreshInFlight || serversWriteInFlight) return;
   const generation = refreshGeneration;
   let servers;
   try {
@@ -178,25 +208,10 @@ export async function pollServers() {
   // A full refresh may have started or landed while this request was in
   // flight; its data is newer, so drop ours rather than writing stale state
   // back over a stop or start the user just performed.
-  if (refreshInFlight || refreshGeneration !== generation) return;
+  if (refreshInFlight || serversWriteInFlight || refreshGeneration !== generation) return;
   const previous = state.servers || [];
   if (serverStateSignature(previous) === serverStateSignature(servers)) return;
-  const previousById = new Map(previous.map((server) => [server.id, server]));
-  servers.forEach((server) => {
-    // /api/servers carries no metrics; keep the last enrichment so the metrics
-    // line does not blink out between full refreshes.
-    if (server.metrics === undefined) {
-      const before = previousById.get(server.id);
-      if (before?.metrics) server.metrics = before.metrics;
-    }
-  });
-  state.servers = servers;
-  withFocusPreserved(() => {
-    renderServers();
-    renderProfiles();
-    renderLaunchLock();
-  });
-  announceServerTransitions(previousById, servers);
+  applyServersView(servers);
 }
 
 export function scheduleServerPoll(delay) {
@@ -276,8 +291,17 @@ export async function startProfile(mode, trigger) {
       label: 'Open Chat',
       onClick: () => showPanel('chat'),
     });
-    await refresh();
-    renderProfiles();
+    const warnings = result.server?.warnings || result.prepared?.warnings || [];
+    const kvWarning = warnings.find((line) => /KV cache|flash-attn/i.test(String(line)));
+    if (kvWarning) {
+      const k = $('#param-cache-k')?.value;
+      if (k && $('#param-cache-v') && $('#param-cache-v').value !== k) {
+        $('#param-cache-v').value = k;
+        saveCurrentOverrides();
+      }
+      toast(kvWarning);
+    }
+    await refreshServers();
     renderLaunchLock({ justLocked: true });
   } catch (error) {
     const detail = error.detail;
@@ -344,18 +368,31 @@ export async function stopTracked(serverId, trigger) {
     confirmKind: 'danger',
   });
   if (!confirmed) return;
+  serversWriteInFlight = true;
+  applyServersView(
+    markServersStopped(state.servers, (server) => server.id === serverId),
+    { announce: false },
+  );
+  toast(releasedToast(tracked, tracked?.mode ? profileLabel(tracked.mode) : 'server'));
   await withBusy(trigger, async () => {
     try {
-      await api('/api/servers/stop', {
+      const result = await api('/api/servers/stop', {
         method: 'POST',
         body: JSON.stringify({ server_id: serverId }),
       });
-      toast(releasedToast(tracked, tracked?.mode ? profileLabel(tracked.mode) : 'server'));
-      await refresh();
-      renderProfiles();
-      renderLaunchLock();
+      if (result.server) {
+        applyServersView(
+          markServersStopped(state.servers, (server) => server.id === serverId),
+          { announce: false },
+        );
+      } else {
+        await refreshServers();
+      }
     } catch (error) {
       toast(`Stop failed: ${error.message}`);
+      await refreshServers();
+    } finally {
+      serversWriteInFlight = false;
     }
   });
 }
@@ -386,8 +423,7 @@ export async function restartTracked(serverId, trigger) {
         label: 'Open Chat',
         onClick: () => showPanel('chat'),
       });
-      await refresh();
-      renderProfiles();
+      await refreshServers();
       renderLaunchLock({ justLocked: true });
     } catch (error) {
       toast(`Restart failed: ${error.message}`);
@@ -413,18 +449,24 @@ export async function stopProfileByMode(mode, trigger) {
     confirmKind: 'danger',
   });
   if (!confirmed) return;
+  serversWriteInFlight = true;
+  applyServersView(
+    markServersStopped(state.servers, (server) => server.mode === mode && server.running),
+    { announce: false },
+  );
+  toast(releasedToast(tracked, profileLabel(mode)));
   await withBusy(trigger, async () => {
     try {
       await api('/api/servers/stop', {
         method: 'POST',
         body: JSON.stringify({ mode }),
       });
-      toast(releasedToast(tracked, profileLabel(mode)));
-      await refresh();
-      renderProfiles();
-      renderLaunchLock();
+      await refreshServers();
     } catch (error) {
       toast(`Stop failed: ${error.message}`);
+      await refreshServers();
+    } finally {
+      serversWriteInFlight = false;
     }
   });
 }
@@ -433,15 +475,25 @@ export async function purgeServers(onlyNonRunning = true, trigger = null, clearA
   const label = clearAll ? 'Clear all server history' : (onlyNonRunning ? 'Purge stopped/crashed servers' : 'Purge servers');
   const ok = await confirmAction({ title: label, message: clearAll ? 'This will remove every tracked server entry (running or not). Continue?' : 'Remove non-running server entries from history?', confirmLabel: 'Purge', confirmKind: clearAll ? 'danger' : 'primary' });
   if (!ok) return;
+  serversWriteInFlight = true;
+  applyServersView(
+    purgeServersState(state.servers, { all: clearAll, onlyNonRunning }),
+    { announce: false },
+  );
+  toast(clearAll ? 'Cleared server history' : 'Removed stopped servers from the list');
   await withBusy(trigger, async () => {
     try {
       const params = clearAll ? { all: 'true' } : { only_non_running: onlyNonRunning ? 'true' : 'false' };
       const qs = new URLSearchParams(params).toString();
       const res = await api(`/api/servers/purge?${qs}`, { method: 'POST' });
       toast(res.message || 'Server history purged');
-      await refresh();
+      if (Array.isArray(res.servers)) applyServersView(res.servers, { announce: false });
+      else await refreshServers();
     } catch (error) {
       toast(`Purge failed: ${error.message}`);
+      await refreshServers();
+    } finally {
+      serversWriteInFlight = false;
     }
   });
 }

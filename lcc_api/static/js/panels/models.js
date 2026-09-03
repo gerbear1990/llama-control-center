@@ -8,7 +8,7 @@ import { $, dirname, escapeHtml, formatBytes } from '../util.js';
 import { state } from '../state.js';
 import { openSettings } from '../settings.js';
 import { showPanel } from '../router.js';
-import { refresh } from '../refresh.js';
+import { refreshResources } from '../refresh.js';
 import { modelMatches, profileForModelPath } from '../matching.js';
 import { confirmAction, toast, withBusy } from '../feedback.js';
 import { emptyStateHtml, modelsEmptyCopy } from '../copy.js';
@@ -81,7 +81,7 @@ export async function handleModelAction(action, path, trigger) {
         toast(result.registered_count
           ? `Registered ${result.registered_count} profile${result.registered_count === 1 ? '' : 's'} for this model`
           : 'No new profile for this model');
-        await refresh();
+        await refreshResources(['profiles', 'inventory']);
       } catch (error) {
         toast(`Register failed: ${error.message}`);
       }

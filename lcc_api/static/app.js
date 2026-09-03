@@ -132,7 +132,7 @@ const COMMAND_REGISTRY = {
     if (s) { s.focus(); s.select(); }
   },
   'open-settings': () => openSettings(),
-  'refresh': () => { refresh(); },
+  'refresh': () => { refresh({ interactive: true }); },
   'start-profile': () => {
     const profile = requireSelectedProfile();
     if (profile) startProfile(profile.mode, $('#start-selected-button'));
@@ -264,7 +264,7 @@ function wireEvents() {
   // Enable layout transitions only after the initial collapsed state is painted,
   // so panels and the sidebar don't animate from open→closed on first load.
   requestAnimationFrame(() => $('.app-shell').classList.add('anim-ready'));
-  $('#refresh-button').addEventListener('click', refresh);
+  $('#refresh-button').addEventListener('click', () => refresh({ interactive: true }));
   // While following the system, an OS-level switch has to land immediately.
   $('#search-input').addEventListener('input', (event) => {
     state.query = event.target.value;

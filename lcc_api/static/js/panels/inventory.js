@@ -4,7 +4,7 @@ import { getSelectedProfile, renderProfiles } from './profiles.js';
 import { $, escapeHtml } from '../util.js';
 import { state } from '../state.js';
 import { DESTINATIONS, showPanel } from '../router.js';
-import { refresh } from '../refresh.js';
+import { refreshResources } from '../refresh.js';
 import { toast, withBusy } from '../feedback.js';
 import { emptyStateInner, stageFirstRunCopy } from '../copy.js';
 import { api } from '../api.js';
@@ -136,7 +136,7 @@ export async function rescanModels(trigger) {
       toast(count
         ? `Registered ${count} new profile${count === 1 ? '' : 's'}`
         : 'Rescanned - no new models found');
-      await refresh();
+      await refreshResources(['profiles', 'inventory']);
     } catch (error) {
       toast(`Rescan failed: ${error.message}`);
     }

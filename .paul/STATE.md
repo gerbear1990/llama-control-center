@@ -8,15 +8,15 @@ about: "llama-control-center"
 
 ## Project Reference
 
-See: .paul/PROJECT.md (updated 2026-08-21)
+See: .paul/PROJECT.md (updated 2026-09-03)
 
 **Core value:** Operators can see whether a local model actually fits this machine before they launch it — and watch it once it runs.
-**Current focus:** v0.17.0 — Close the Open Loops, Phase 5 (Frontend Module Split)
+**Current focus:** v0.17.0 — Close the Open Loops, Phase 5 (Frontend Module Split). llama.cpp only.
 
 ## Current Position
 
 Milestone: v0.17.0 — Close the Open Loops (0.17.0)
-Phase: 5 of 6 (Frontend Module Split) — phases 3 and 4 taken out of order by choice
+Phase: 5 of 6 (Frontend Module Split) — Phase 4 taken out of order; Phase 3 parked out of the milestone
 Plan: 05-01 applied (05-02 covers the CSS, not yet written)
 Status: Applied — T1–T4 done, awaiting the human-verify checkpoint
 Branch: feat/frontend-module-split (from main @ 190fd74)
@@ -24,10 +24,12 @@ Branch: feat/frontend-module-split (from main @ 190fd74)
 ⏸ Phase 2 is complete in code but parked on its human-verify checkpoint: the embedded-MTP
 launch path is proven against `--help` and upstream source at the build commit, but not by
 a running server. Issue #14 stays open until it is.
-Last activity: 2026-08-22 — 05-01 applied: app.js 5,222 → 472 across 25 modules; boot bug found by the operator, fixed, and guarded
+⏸ Phase 3 (vLLM-WSL fit + auto-tune) parked 2026-09-03. Operator: focus purely on llama.cpp.
+Does not block v0.17.0. Unpark only on an explicit ask.
+Last activity: 2026-09-03 — parked on PR #18: adopt running llama-server, KV-cache guard, snappy mutations/refresh. Phase 3 still parked.
 
 Progress:
-- Milestone: [████░░░░░░] 42% (2 complete, 1 of those awaiting its own verify)
+- Milestone: [████░░░░░░] 40% (2 of 5 in-milestone complete; Phase 3 parked out)
 - Phase 5: [███████░░░] 70% (05-01 code-complete, human-verify open; 05-02 not written)
 
 ## Loop Position
@@ -117,8 +119,8 @@ cache-buster is `?v=0.16.17` against `__version__` 0.16.0 (audit said `?v=0.15.0
 
 ## Session Continuity
 
-**Next action:** walk the dashboard against 05-01's human-verify checkpoint, then plan
-05-02 (the CSS split).
+**Next action:** parked on PR #18 (https://github.com/gerbear1990/llama-control-center/pull/18).
+Resume there. 05-02 (CSS split) is not written. Do not start work on vLLM fit/auto-tune.
 
 ⚠️ **05-01 shipped a dead app once.** `wireEvents` was partitioned by selector, which
 separated `const palBack = $('#command-palette')` from the `if (palBack)` that used it; the

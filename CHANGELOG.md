@@ -8,6 +8,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Instant Stop/Purge feedback.** Those actions paint the new server list
+  immediately instead of waiting on a full dashboard refresh (model scan,
+  GitHub runtime-updates, hardware). Stop lookup no longer rescans live
+  llama-server processes.
+- **The same instant-paint path for other mutations.** Rename, delete, save
+  parameters, register, rescan, settings save, and benchmark no longer wait
+  on a full dashboard refresh. They paint locally or refresh only the slices
+  they changed (`refreshResources`).
+- **Refresh button returns after the core scan.** Profiles, servers, inventory,
+  settings, hardware and meta still reload together. GitHub runtime-updates,
+  HF CLI and benchmarks continue in the background so the button is not held
+  by a cold cache. A click toasts "Refreshed"; boot does not.
+- **Guard mismatched KV-cache types on launch.** Default CUDA flash-attention
+  has no kernel for mixed `-ctk`/`-ctv` (e.g. `f16`/`q8_0`); llama.cpp then
+  silently runs attention on the CPU. Start now emits a matching pair (V set
+  to K) and warns. The Parameters panel shows the same trap with a Match V to K
+  control. CPU and Metal are left alone.
+- **Adopt already-running llama-server processes.** A `llama-server` started
+  outside the dashboard (script, terminal, previous session with an empty
+  `servers.json`) is discovered by PID and command line, pinned to a profile
+  when `-m` matches a `model_path`, and shown on the Servers panel so Stop,
+  Chat and metrics work. Marked `origin: adopted`; no captured logs.
 - **Models pane action strip.** Per-model Parameters / Fit / Auto-tune / Hugging
   Face / Register actions, plus a pure `profileForModelPath` matcher with its
   own node unit test ([app.js](lcc_api/static/app.js),

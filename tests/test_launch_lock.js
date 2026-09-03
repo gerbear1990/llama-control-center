@@ -71,6 +71,8 @@ const paramsSrc = read('js/panels/parameters.js');
     && startSrc.includes('Start server')
     && /Waiting to listen/.test(waitingSrc)
     && stopSrc.includes('releasedToast')
+    && stopSrc.includes('applyServersView')
+    && !stopSrc.includes('await refresh()')
     && /Open logs/.test(crashSrc)
   );
 

@@ -8,7 +8,7 @@ import { $, escapeHtml } from '../util.js';
 import { state } from '../state.js';
 import { openSettings } from '../settings.js';
 import { DESTINATIONS, showPanel, syncSearchInputs } from '../router.js';
-import { refresh } from '../refresh.js';
+import { refreshResources } from '../refresh.js';
 import { showPopupMenu } from '../menus.js';
 import { profileForModelPath, profileMatches } from '../matching.js';
 import { serverEndpoint } from '../launch.js';
@@ -233,6 +233,14 @@ export function openRenameDialog(mode, currentName) {
   });
 }
 
+export function applyProfilesView(profiles) {
+  state.profiles = profiles || [];
+  renderProfiles();
+  renderParameters();
+  renderModels();
+  renderStageFirstRun();
+}
+
 export async function saveProfileName(mode, currentName) {
   const newName = await openRenameDialog(mode, currentName);
   if (!newName) return;
@@ -241,8 +249,10 @@ export async function saveProfileName(mode, currentName) {
       method: 'POST',
       body: JSON.stringify({ mode, name: newName }),
     });
+    applyProfilesView((state.profiles || []).map((profile) => (
+      profile.mode === mode ? { ...profile, name: newName } : profile
+    )));
     toast(`Renamed to "${newName}"`);
-    await refresh();
   } catch (error) {
     toast(`Failed to save profile name: ${error.message}`);
   }
@@ -340,10 +350,8 @@ export async function createNewProfile(trigger) {
       });
       if (saveResult.success) {
         toast(saveResult.message || `Created "${result.name}"`);
-        await refresh();
         setSelectedProfileMode(mode);
-        renderParameters();
-        renderProfiles();
+        await refreshResources(['profiles', 'inventory']);
       } else {
         toast(saveResult.message || 'Could not create profile');
       }
@@ -383,7 +391,7 @@ export async function saveProfileAsCopy(profile) {
     });
     if (saveResult.success) {
       toast(saveResult.message || `Saved copy '${result.name}'`);
-      await refresh();
+      await refreshResources(['profiles', 'inventory']);
     } else {
       toast(saveResult.message || 'Save failed');
     }
@@ -402,21 +410,20 @@ export async function deleteProfileConfirm(mode) {
     confirmKind: 'danger',
   });
   if (!ok) return;
+  const previous = state.profiles || [];
+  const previousSelected = state.selectedProfileMode;
+  if (previousSelected === mode) setSelectedProfileMode(null);
+  applyProfilesView(previous.filter((profile) => profile.mode !== mode));
+  toast(`Deleted "${displayName}"`);
   try {
     const result = await api('/api/profiles/delete', {
       method: 'POST',
       body: JSON.stringify({ mode }),
     });
-    if (result.success) {
-      toast(result.message || `Deleted "${displayName}"`);
-      if (state.selectedProfileMode === mode) {
-        setSelectedProfileMode(null);
-      }
-      await refresh();
-    } else {
-      toast(result.message || 'Delete failed');
-    }
+    if (!result.success) throw new Error(result.message || 'Delete failed');
   } catch (error) {
+    applyProfilesView(previous);
+    setSelectedProfileMode(previousSelected);
     toast(`Delete failed: ${error.message}`);
   }
 }

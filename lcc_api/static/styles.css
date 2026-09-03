@@ -2611,6 +2611,29 @@ td:nth-child(7) {
   background: color-mix(in srgb, var(--accent) 12%, var(--surface));
 }
 
+.kv-cache-mismatch {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--amber) 45%, var(--border));
+  background: color-mix(in srgb, var(--amber) 10%, var(--surface));
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.kv-cache-mismatch[hidden] {
+  display: none;
+}
+
+.kv-cache-mismatch-text {
+  flex: 1 1 16rem;
+}
+
 .app-shell {
   grid-template-columns: clamp(236px, 14vw, 294px) minmax(0, 1fr);
 }

@@ -1,6 +1,6 @@
 // Settings modal and portable config export.
 
-import { refresh } from './refresh.js';
+import { refreshResources } from './refresh.js';
 import { $, linesToList, listToLines } from './util.js';
 import { state } from './state.js';
 import { enhanceTooltips, toast, withBusy } from './feedback.js';
@@ -91,7 +91,7 @@ export async function saveSettings(event) {
     state.config = result.config;
     closeSettings();
     toast('Settings saved');
-    await refresh();
+    await refreshResources(['settings', 'inventory', 'profiles', 'runtimes']);
   } catch (error) {
     toast(`Settings failed: ${error.message}`);
   }
@@ -184,7 +184,7 @@ export function initSettings() {
   $('#portability-open-settings')?.addEventListener('click', () => openSettings());
   $('#portability-rescan')?.addEventListener('click', async (e) => {
     await withBusy(e.currentTarget, async () => {
-      await refresh();
+      await refreshResources(['inventory', 'profiles', 'runtimes', 'settings']);
       toast('Rescanned inventory and portability issues');
     });
   });

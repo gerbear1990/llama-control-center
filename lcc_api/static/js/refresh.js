@@ -23,9 +23,9 @@ export const DASHBOARD_RESOURCES = [
   { label: 'settings', path: '/api/config', apply: (d) => { state.config = d; }, render: () => { renderSettings(); renderParameters(); renderPortability(); } },
   { label: 'hardware', path: '/api/system', apply: (d) => { state.hardware = d; }, render: renderParameters },
   { label: 'meta', path: '/api/meta', apply: (d) => { state.meta = d; }, render: renderVersion },
-  { label: 'runtime-updates', path: '/api/runtime-updates', apply: (d) => { state.runtimeUpdates = d; }, render: renderRuntimes },
-  { label: 'hf-cli', path: '/api/hf-cli', apply: (d) => { updateHfCliUi(d); }, render: () => {} },
-  { label: 'benchmarks', path: '/api/benchmarks', apply: (d) => { state.benchmarks = d.benchmarks || []; }, render: renderBenchmarkHistory },
+  { label: 'runtime-updates', path: '/api/runtime-updates', background: true, apply: (d) => { state.runtimeUpdates = d; }, render: renderRuntimes },
+  { label: 'hf-cli', path: '/api/hf-cli', background: true, apply: (d) => { updateHfCliUi(d); }, render: () => {} },
+  { label: 'benchmarks', path: '/api/benchmarks', background: true, apply: (d) => { state.benchmarks = d.benchmarks || []; }, render: renderBenchmarkHistory },
 ];
 
 // The background server poll uses these two to tell whether its in-flight
@@ -47,7 +47,53 @@ export function reconcileSelectedMode() {
   }
 }
 
-export async function refresh() {
+export function selectDashboardResources(labels) {
+  const wanted = new Set(labels || []);
+  return DASHBOARD_RESOURCES.filter((resource) => wanted.has(resource.label));
+}
+
+// Fetch only the slices an action changed. Does not flip the global
+// "Refreshing" status or wait on GitHub/HF/hardware.
+export async function refreshResources(labels) {
+  const wanted = selectDashboardResources(labels);
+  if (!wanted.length) return [];
+  return (await Promise.all(wanted.map(async (resource) => {
+    const error = await loadDashboardResource(resource.label, resource.path, resource.apply);
+    if (!error) resource.render();
+    return error;
+  }))).filter(Boolean);
+}
+
+async function loadAndRender(resource) {
+  const error = await loadDashboardResource(resource.label, resource.path, resource.apply);
+  if (!error) resource.render();
+  return error;
+}
+
+async function enrichRunningServerMetrics() {
+  const servers = state.servers || [];
+  const toPoll = servers.filter((s) => s.running || s.status === 'crashed' || s.status === 'startup_timeout');
+  if (!toPoll.length) return;
+  await Promise.all(toPoll.map(async (srv) => {
+    try {
+      srv.metrics = await api(`/api/servers/${encodeURIComponent(srv.id)}/metrics`);
+    } catch (_) {
+      // non-fatal; render will show what it has
+    }
+  }));
+  renderServers();
+}
+
+function reportRefreshFailures(failures, total, interactive) {
+  const summary = failures.slice(0, 2).join('; ');
+  const suffix = failures.length > 2 ? ` and ${failures.length - 2} more` : '';
+  const detailText = failures.join('\n');
+  setApiStatus(false, failures.length >= total ? 'API error' : 'API partial', detailText);
+  if (interactive) toast(`Refresh partial: ${summary}${suffix}`);
+}
+
+export async function refresh(options = {}) {
+  const interactive = Boolean(options.interactive);
   const refreshButton = $('#refresh-button');
   if (refreshButton) {
     refreshButton.disabled = true;
@@ -56,45 +102,24 @@ export async function refresh() {
   setApiStatus(false, 'Refreshing');
   state.lastEstimateKey = '';
   refreshInFlight = true;
+  const core = DASHBOARD_RESOURCES.filter((resource) => !resource.background);
+  const background = DASHBOARD_RESOURCES.filter((resource) => resource.background);
   try {
-    const failures = (await Promise.all(DASHBOARD_RESOURCES.map(async (resource) => {
-      const error = await loadDashboardResource(resource.label, resource.path, resource.apply);
-      if (!error) resource.render();
-      return error;
-    }))).filter(Boolean);
-    if (failures.length) {
-      const summary = failures.slice(0, 2).join('; ');
-      const suffix = failures.length > 2 ? ` and ${failures.length - 2} more` : '';
-      const detailText = failures.join('\n');
-      setApiStatus(false, failures.length >= DASHBOARD_RESOURCES.length ? 'API error' : 'API partial', detailText);
-      toast(`Refresh partial: ${summary}${suffix}`);
-    } else {
-      setApiStatus(true, 'API ready');
-    }
-
-    // M2 observability (M1.3/M2.1): extend polling to fetch /metrics for running/crashed
-    // servers on refresh. Attach to the server objects in state so renderers can use them.
-    // Logs remain on-demand via loadLogs (already wired in UI).
+    const coreFailures = (await Promise.all(core.map(loadAndRender))).filter(Boolean);
     try {
-      const servers = state.servers || [];
-      const toPoll = servers.filter((s) => s.running || s.status === 'crashed' || s.status === 'startup_timeout');
-      if (toPoll.length > 0) {
-        await Promise.all(toPoll.map(async (srv) => {
-          try {
-            const m = await api(`/api/servers/${encodeURIComponent(srv.id)}/metrics`);
-            srv.metrics = m;
-          } catch (_) {
-            // non-fatal; render will show what it has
-          }
-        }));
-        renderServers();
-      }
+      await enrichRunningServerMetrics();
     } catch (_) {
       // enrichment must never break refresh
     }
+    if (coreFailures.length) {
+      reportRefreshFailures(coreFailures, core.length, interactive);
+    } else {
+      setApiStatus(true, 'API ready');
+      if (interactive) toast('Refreshed');
+    }
   } catch (error) {
     setApiStatus(false, 'API error', `API error: ${error.message}`);
-    toast(`Refresh failed: ${error.message}`);
+    if (interactive) toast(`Refresh failed: ${error.message}`);
   } finally {
     refreshInFlight = false;
     refreshGeneration += 1;
@@ -104,4 +129,10 @@ export async function refresh() {
     }
     scheduleServerPoll();
   }
+  Promise.all(background.map(loadAndRender)).then((results) => {
+    const failures = results.filter(Boolean);
+    if (interactive && failures.length) {
+      toast(`Refresh partial: ${failures.slice(0, 2).join('; ')}`);
+    }
+  }).catch(() => {});
 }

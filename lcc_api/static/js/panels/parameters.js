@@ -1,13 +1,13 @@
 // Parameters panel.
 
-import { refresh } from '../refresh.js';
+import { refreshResources } from '../refresh.js';
 import { promptProfileDetails, toast, withBusy } from '../feedback.js';
 import { consoleSummaryLine, getSelectedProfile, renderProfiles, serverRunningForMode, setSelectedProfileMode } from './profiles.js';
 import { scheduleTpsEstimate } from './fit.js';
 import { renderChatLog } from './chat.js';
 import { $, escapeHtml, hasOwn } from '../util.js';
 import { state } from '../state.js';
-import { launchControlState, launchLockCopy, launchLockHtml } from '../launch.js';
+import { kvCacheMismatchNote, launchControlState, launchLockCopy, launchLockHtml } from '../launch.js';
 import { api } from '../api.js';
 
 export const PARAM_DEFAULTS = {
@@ -323,6 +323,7 @@ export function renderParameters() {
   setFieldValue('#param-fit-headroom', params.fit_headroom_mib);
   setFieldValue('#param-cache-k', params.cache_type_k);
   setFieldValue('#param-cache-v', params.cache_type_v);
+  renderKvCacheMismatch();
   setFieldValue('#param-temperature', params.temperature);
   setFieldValue('#param-predict', params.n_predict);
   setFieldValue('#param-top-k', params.top_k);
@@ -487,10 +488,29 @@ export function markAppliedFields(params) {
   }, 4200);
 }
 
+export function alignKvCacheParams(params) {
+  const note = kvCacheMismatchNote(params?.cache_type_k, params?.cache_type_v, {
+    acceleration: params?.acceleration_backend,
+  });
+  if (!note) return params;
+  return { ...params, cache_type_v: String(params.cache_type_k).trim().toLowerCase() };
+}
+
+export function renderKvCacheMismatch() {
+  const el = $('#kv-cache-mismatch');
+  if (!el) return;
+  const note = kvCacheMismatchNote($('#param-cache-k')?.value, $('#param-cache-v')?.value, {
+    acceleration: $('#param-acceleration')?.value,
+  });
+  const text = el.querySelector('.kv-cache-mismatch-text');
+  if (text) text.textContent = note;
+  el.hidden = !note;
+}
+
 export function applyFitResultParams(result) {
   const mode = selectedMode();
   if (!mode) return {};
-  const applied = { ...collectOverrides(), ...(result.applied_params || {}) };
+  const applied = alignKvCacheParams({ ...collectOverrides(), ...(result.applied_params || {}) });
   const suggestions = result.suggestions || {};
   if (hasOwn(suggestions, 'headroom_mib')) {
     applied.fit_headroom_mib = suggestions.headroom_mib;
@@ -546,7 +566,9 @@ export function initParametersPanel() {
             // The edits are on disk now, so the local draft is no longer "unsaved".
             clearParamOverrides(mode);
             toast(saveResult.message || `Saved "${result.name}"`);
-            await refresh();
+            renderParameters();
+            renderProfiles();
+            await refreshResources(['profiles']);
           } else {
             toast(saveResult.message || 'Save failed');
           }
@@ -564,6 +586,7 @@ export function initParametersPanel() {
     state.paramPreviewPort = numericValue('#param-port') || 8080;
     scheduleTpsEstimate();
     schedulePortCheck();
+    renderKvCacheMismatch();
   });
   $('#param-form').addEventListener('input', () => {
     saveCurrentOverrides();
@@ -571,6 +594,14 @@ export function initParametersPanel() {
     state.paramPreviewPort = numericValue('#param-port') || 8080;
     scheduleTpsEstimate();
     schedulePortCheck();
+    renderKvCacheMismatch();
+  });
+  $('#kv-cache-match')?.addEventListener('click', () => {
+    const k = $('#param-cache-k')?.value;
+    const v = $('#param-cache-v');
+    if (!k || !v) return;
+    v.value = k;
+    v.dispatchEvent(new Event('change', { bubbles: true }));
   });
   $('#param-port-status')?.addEventListener('click', () => schedulePortCheck());
   $('#param-port-status')?.addEventListener('keydown', (event) => {
