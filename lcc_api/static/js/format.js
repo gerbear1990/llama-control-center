@@ -73,8 +73,12 @@ export function buildServerMetricsRows(m) {
     push('KV cache', `${(sum.kv_cache_usage_ratio * 100).toFixed(0)}%`, sum.kv_cache_usage_ratio);
   }
   if (sum.kv_cache_tokens != null) push('KV tokens', String(sum.kv_cache_tokens));
-  if (sum.slots_active != null || sum.slots_processing != null) {
-    push('Slots', `${sum.slots_active || 0} active / ${sum.slots_processing || 0} processing`);
+  if (sum.slots_active != null) {
+    push('Slots', `${sum.slots_active} active / ${sum.slots_processing || 0} processing`);
+  } else if (sum.slots_processing != null) {
+    // Current llama-server builds export only the busy count, not "active".
+    const total = props.total_slots != null ? ` of ${props.total_slots}` : '';
+    push('Slots', `${sum.slots_processing} busy${total}`);
   }
   if (sum.predicted_tokens_per_second != null) push('Decode', `${sum.predicted_tokens_per_second.toFixed(1)} t/s`);
   if (sum.prompt_tokens_per_second != null) push('Prompt', `${sum.prompt_tokens_per_second.toFixed(1)} t/s`);
@@ -85,5 +89,7 @@ export function buildServerMetricsRows(m) {
   push('Model', props.model_name);
   push('Build', props.build_info);
   if (m.health && m.health !== 'unknown') push('Health', String(m.health));
+  // Without this the panel just goes quiet, which reads as "nothing to report".
+  if (m.metrics_available === false) push('Metrics', 'Off — restart this server from LCC to enable');
   return rows;
 }

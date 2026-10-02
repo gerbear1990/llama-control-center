@@ -60,6 +60,11 @@ _METRIC_ALIASES = {
     "num_requests_running": "requests_in_flight",
     "num_requests_waiting": "requests_waiting",
     "generation_tokens_total": "predicted_tokens_total",
+    # Current llama-server names (verified against b10752). The ones above are
+    # kept for older builds; KV usage is no longer exported at all.
+    "predicted_tokens_seconds": "predicted_tokens_per_second",
+    "requests_processing": "slots_processing",
+    "requests_deferred": "requests_waiting",
 }
 
 
@@ -284,18 +289,24 @@ def fetch_server_metrics(server_id: str | None = None, mode: str | None = None) 
     gpu_apps = _safe(lambda: _compute_apps_vram(), None) or {}
     pid_int = int(server["pid"]) if server.get("pid") else None
     gpu_used_bytes = gpu_apps.get(pid_int) if pid_int is not None else None
+    generation = props.get("default_generation_settings") or {}
+    n_ctx = vllm_model.get("max_model_len") or generation.get("n_ctx") or props.get("n_ctx")
     return {
         "success": True,
         "server": server,
         "health": health_text or "unknown",
         "props": {
-            "model_name": vllm_model.get("id") or props.get("model_name") or props.get("default_generation_settings", {}).get("model"),
-            "context_length": props.get("total_slots"),
+            "model_name": vllm_model.get("id") or props.get("model_alias") or props.get("model_name") or generation.get("model"),
+            "context_length": n_ctx,
+            "total_slots": props.get("total_slots"),
             "chat_template": props.get("chat_template"),
-            "n_ctx": vllm_model.get("max_model_len") or props.get("n_ctx"),
+            "n_ctx": n_ctx,
             "build_info": "vLLM" if is_vllm else props.get("build_info"),
         },
         "metrics": parsed_metrics,
+        # False when /metrics did not answer (server started without --metrics,
+        # e.g. before LCC passed it), so the UI can say so instead of going blank.
+        "metrics_available": bool(metrics),
         "process": {
             "rss_bytes": proc_mem["rss_bytes"],
             "cpu_percent": proc_mem["cpu_percent"],

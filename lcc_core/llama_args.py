@@ -177,6 +177,10 @@ def build_llama_server_args(
     # injected wrong and tool-capable models loop the same call forever.
     if params.get("jinja"):
         args.append("--jinja")
+    # /metrics is off by default in llama-server; without it the dashboard's
+    # metrics panel (KV usage, slots, token rates) is empty for every server
+    # LCC launches. Prometheus text on localhost costs nothing.
+    args.append("--metrics")
     args.append("--kv-offload" if params.get("kv_offload", True) else "--no-kv-offload")
     args.append("--op-offload" if params.get("op_offload", True) else "--no-op-offload")
 
