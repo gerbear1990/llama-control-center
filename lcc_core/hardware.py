@@ -330,8 +330,11 @@ def _nvidia_smi_gpus() -> list[dict[str, Any]]:
         # clocks.current.memory and clocks.max.memory may be "N/A" on some GPUs
         current_mem_clock = _int_or_none(parts[5]) if len(parts) > 5 else None
         max_mem_clock = _int_or_none(parts[6]) if len(parts) > 6 else None
-        # Use max memory clock as the data rate (in MHz = MT/s for DDR)
-        data_rate = max_mem_clock if max_mem_clock and max_mem_clock > 0 else current_mem_clock
+        # nvidia-smi reports the memory clock at half the effective transfer
+        # rate for every memory type it exposes (GDDR5X/6/6X/7, HBM): an RTX
+        # 4090 reads 10501 MHz for 21 Gbps GDDR6X, a 5090 14001 for 28 Gbps GDDR7.
+        mem_clock = max_mem_clock if max_mem_clock and max_mem_clock > 0 else current_mem_clock
+        data_rate = mem_clock * 2 if mem_clock and mem_clock > 0 else None
         # Look up bus width and compute bandwidth from GPU name
         gpu_name = parts[1] if len(parts) > 1 else ""
         bus_width = _nvidia_bus_width_from_name(gpu_name)
@@ -479,67 +482,42 @@ def live_system_status() -> dict[str, Any]:
     }
 
 
-def _nvidia_bus_width_from_name(name: str) -> int | None:
-    """Guess NVIDIA bus width from GPU product name."""
-    if not name:
-        return None
-    lowered = name.lower()
-    # RTX 50-series
-    if any(m in lowered for m in ["rtx 5090"]):
-        return 384
-    if any(m in lowered for m in ["rtx 5080"]):
-        return 256
-    if any(m in lowered for m in ["rtx 5070 ti", "rtx 5070"]):
-        return 192
-    if any(m in lowered for m in ["rtx 5060"]):
-        return 128
-    # RTX 40-series
-    if any(m in lowered for m in ["rtx 4090"]):
-        return 384
-    if any(m in lowered for m in ["rtx 4080 super", "rtx 4080"]):
-        return 256
-    if any(m in lowered for m in ["rtx 4070 ti super", "rtx 4070 ti", "rtx 4070 super", "rtx 4070"]):
-        return 192
-    if any(m in lowered for m in ["rtx 4060 ti 16gb", "rtx 4060 ti 8gb", "rtx 4060 ti", "rtx 4060"]):
-        return 128
-    # RTX 30-series
-    if any(m in lowered for m in ["rtx 3090 ti", "rtx 3090"]):
-        return 384
-    if any(m in lowered for m in ["rtx 3080 ti", "rtx 3080 16gb", "rtx 3080"]):
-        return 384
-    if any(m in lowered for m in ["rtx 3070 ti", "rtx 3070"]):
-        return 192
-    if any(m in lowered for m in ["rtx 3060 12gb", "rtx 3060 ti", "rtx 3060"]):
-        return 192
-    # RTX 20-series
-    if any(m in lowered for m in ["rtx 2080 ti", "rtx 2080 super", "rtx 2080"]):
-        return 256
-    if any(m in lowered for m in ["rtx 2070 super", "rtx 2070"]):
-        return 192
-    if any(m in lowered for m in ["rtx 2060"]):
-        return 192
-    # GTX series
-    if any(m in lowered for m in ["gtx 1660 ti", "gtx 1660 super", "gtx 1660"]):
-        return 192
-    if any(m in lowered for m in ["gtx 1080 ti", "gtx 1080"]):
-        return 256
-    if any(m in lowered for m in ["gtx 1070 ti", "gtx 1070"]):
-        return 192
-    if any(m in lowered for m in ["gtx 1650", "gtx 1060 6gb", "gtx 1060 3gb", "gtx 1050 ti", "gtx 1050"]):
-        return 128
-    # Tesla / Quadro / A-series / L-series
-    if any(m in lowered for m in ["a100", "a100 pcie", "a100 sfp+", "a800"]):
-        return 5120 if "hbm" in lowered or "hbm2" in lowered else 384
-    if any(m in lowered for m in ["a10", "a40"]):
-        return 384 if "a40" in lowered else 256
-    if any(m in lowered for m in ["l40", "l40s"]):
-        return 384
-    if any(m in lowered for m in ["l4"]):
-        return 96
-    if any(m in lowered for m in ["quadro", "tesla"]):
-        return 256
-    return None
+# Published memory bus widths, matched as substrings of the lowercased product
+# name. ORDER MATTERS: the more specific name must come first ("5070 ti" before
+# "5070", "a100" before "a10", "l40" before "l4"). Unknown cards return None
+# rather than a guess -- a wrong width silently skews the TPS ceiling.
+_NVIDIA_BUS_WIDTHS: tuple[tuple[str, int], ...] = (
+    # RTX 50 (Blackwell)
+    ("rtx 5090", 512), ("rtx 5080", 256), ("rtx 5070 ti", 256), ("rtx 5070", 192),
+    ("rtx 5060", 128), ("rtx 5050", 128),
+    # RTX 40 (Ada)
+    ("rtx 4090", 384), ("rtx 4080", 256), ("rtx 4070 ti super", 256),
+    ("rtx 4070", 192), ("rtx 4060", 128),
+    # RTX 30 (Ampere)
+    ("rtx 3090", 384), ("rtx 3080 ti", 384), ("rtx 3080 12gb", 384), ("rtx 3080", 320),
+    ("rtx 3070", 256), ("rtx 3060 ti", 256), ("rtx 3060 8gb", 128), ("rtx 3060", 192),
+    ("rtx 3050", 128),
+    # RTX 20 (Turing)
+    ("rtx 2080 ti", 352), ("rtx 2080", 256), ("rtx 2070", 256),
+    ("rtx 2060 super", 256), ("rtx 2060", 192),
+    # GTX 16 / 10
+    ("gtx 1660", 192), ("gtx 1650", 128),
+    ("gtx 1080 ti", 352), ("gtx 1080", 256), ("gtx 1070", 256),
+    ("gtx 1060 3gb", 192), ("gtx 1060", 192), ("gtx 1050", 128),
+    # Datacenter / workstation
+    ("h100", 5120), ("a100", 5120), ("a800", 5120),
+    ("a40", 384), ("a10", 384), ("l40", 384), ("l4", 192),
+    ("rtx 6000 ada", 384), ("rtx a6000", 384),
+)
 
+
+def _nvidia_bus_width_from_name(name: str) -> int | None:
+    """Published bus width for an NVIDIA product name, or None if unknown."""
+    lowered = (name or "").lower()
+    for marker, bits in _NVIDIA_BUS_WIDTHS:
+        if marker in lowered:
+            return bits
+    return None
 
 def _guess_vram_specs(name: str, vendor: str | None, revision: str, device_id: str, pnp_id: str) -> dict[str, Any]:
     """Guess VRAM bus width and data rate from GPU name, revision, and device ID."""
@@ -581,7 +559,7 @@ def _nvidia_bus_width(device_id: str, rev: int | None) -> int | None:
     dev = int(device_id, 16) if device_id else 0
     width_map = {
         # RTX 50-series (Blackwell)
-        0x2784: 384, 0x2785: 384, 0x2B85: 384, 0x2789: 384, 0x278A: 384, 0x278B: 384,
+        0x2784: 384, 0x2785: 384, 0x2B85: 512, 0x2789: 384, 0x278A: 384, 0x278B: 384,
         0x278C: 384, 0x278D: 256, 0x278E: 256, 0x2790: 256, 0x2791: 256,
         0x2792: 256, 0x2793: 256, 0x2794: 256, 0x2795: 256, 0x2796: 256,
         0x2797: 128, 0x2798: 128, 0x2799: 128, 0x279A: 128,

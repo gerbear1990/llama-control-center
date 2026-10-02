@@ -970,15 +970,18 @@ def estimate_tokens_per_second(
     if params.get("draft_model") and str(params.get("spec_type", "")).strip():
         batch_factor *= 1.08
 
-    # Memory bandwidth is a hard ceiling on decode speed: a token cannot be
-    # produced faster than the weights it reads can be streamed. Apply it as a
-    # cap (min), never a boost, and only trust "high" confidence when the cap
-    # actually binds — having the numbers present is not the same as using them.
+    # Fully offloaded decode is memory-bound: every token streams the weights
+    # it uses once, so tps = efficiency * bandwidth / bytes-per-token. That is a
+    # physical model, not a cap on the curve fit above, and it is what we report
+    # whenever the bandwidth and the model's size are known.
     bandwidth_bound = False
+    moe_fraction = None
     if layer_fraction >= 1.0 and gpu_bandwidth_gbps and gpu_bandwidth_gbps > 0:
-        ceiling = _estimate_gpu_bandwidth_speed(gpu_bandwidth_gbps, gpu_name, model_params_b, quant_factor, layer_fraction)
-        if ceiling > 0 and ceiling < blended:
-            blended = ceiling
+        moe_fraction = _moe_active_fraction(model)
+        physical = _bandwidth_decode_tps(gpu_bandwidth_gbps, model, model_params_b, moe_fraction)
+        if physical > 0:
+            blended = physical
+            ctx_factor = batch_factor = 1.0
             bandwidth_bound = True
     if layer_fraction < 1.0 and ram_bandwidth_gbps and ram_bandwidth_gbps > 0:
         ceiling = _estimate_ram_spill_speed(ram_bandwidth_gbps, model_params_b, layer_fraction)
@@ -987,14 +990,14 @@ def estimate_tokens_per_second(
             bandwidth_bound = True
 
     estimate = max(0.5, blended * ctx_factor * batch_factor)
-    if bandwidth_bound and model:
+    if bandwidth_bound and model and moe_fraction is None:
         confidence = "high"
     elif model and primary_gpu:
         confidence = "medium"
     else:
         confidence = "low"
-    low = estimate * (0.82 if confidence == "high" else 0.72 if confidence == "medium" else 0.55)
-    high = estimate * (1.18 if confidence == "high" else 1.28 if confidence == "medium" else 1.55)
+    low = estimate * (0.88 if confidence == "high" else 0.72 if confidence == "medium" else 0.55)
+    high = estimate * (1.12 if confidence == "high" else 1.28 if confidence == "medium" else 1.55)
 
     assumptions = [
         "Estimate is for decode speed after the prompt is processed.",
@@ -1006,7 +1009,12 @@ def estimate_tokens_per_second(
         if ram_bandwidth_gbps:
             assumptions.append(f"System RAM bandwidth detected: {ram_bandwidth_gbps} GB/s.")
     if bandwidth_bound:
-        assumptions.append("Estimate is capped by measured memory bandwidth (decode is bandwidth-bound).")
+        assumptions.append("Decode is bandwidth-bound: estimate is memory bandwidth / bytes read per token.")
+    if moe_fraction is not None:
+        assumptions.append(
+            f"Mixture-of-experts: ~{moe_fraction:.0%} of the weights are read per token; "
+            "shared and attention weights make the real share somewhat higher."
+        )
     if layer_fraction < 1:
         assumptions.append("Partial GPU layers usually means more system RAM traffic and lower speed.")
     if not params.get("kv_offload", True):
@@ -1024,26 +1032,55 @@ def estimate_tokens_per_second(
     }
 
 
-def _estimate_gpu_bandwidth_speed(gpu_bandwidth_gbps: float, gpu_name: str, model_params_b: float, quant_factor: float, layer_fraction: float) -> float:
-    """Estimate TPS based on GPU memory bandwidth bound."""
-    if model_params_b <= 0:
+# Fraction of peak VRAM bandwidth llama.cpp's decode kernels actually achieve.
+# Calibrated 2026-10-02 on an RTX 5090 (1792 GB/s): Qwen3.8-27B UD-Q5_K_XL,
+# 20.9 GB, decoded at 51.6-59.7 t/s through LCC -> 0.60-0.70.
+_DECODE_BANDWIDTH_EFFICIENCY = 0.66
+
+_ACTIVE_PARAMS_RE = re.compile(r"(?i)(?:^|[-_.\s])a(\d+(?:\.\d+)?)b(?:$|[-_.\s])")
+
+
+def _active_fraction_from_name(name: str, params_b: float | None) -> float | None:
+    """Active-parameter share from the MoE naming convention ("35B-A3B")."""
+    match = _ACTIVE_PARAMS_RE.search(name or "")
+    if not match or not params_b:
+        return None
+    active = float(match.group(1))
+    return active / params_b if 0 < active < params_b else None
+
+
+def _moe_active_fraction(model: dict[str, Any] | None) -> float | None:
+    """Share of the weights a MoE model reads per token, or None if dense."""
+    if not model:
+        return None
+    text = " ".join(str(model.get(key) or "") for key in ("name", "path"))
+    from_name = _active_fraction_from_name(text, _model_params_b(model))
+    if from_name:
+        return from_name
+    path = model.get("path") or model.get("model_path")
+    if not path or not str(path).lower().endswith(".gguf") or not os.path.isfile(path):
+        return None
+    try:
+        from .truth.gguf import read_facts
+        facts = read_facts(str(path))
+    except Exception:
+        return None
+    if facts.n_experts and facts.n_experts_used:
+        return facts.n_experts_used / facts.n_experts
+    return None
+
+
+def _bandwidth_decode_tps(gpu_bandwidth_gbps: float, model: dict[str, Any] | None,
+                          model_params_b: float, moe_fraction: float | None) -> float:
+    """Decode t/s when every layer is on the GPU: bandwidth / bytes per token."""
+    size_bytes = _float_or_none((model or {}).get("size_bytes"))
+    if not size_bytes:
+        # No file size: assume a Q4-class file (~4.8 bits per weight).
+        size_bytes = model_params_b * 1e9 * 4.8 / 8
+    bytes_per_token = size_bytes * (moe_fraction or 1.0)
+    if bytes_per_token <= 0:
         return 0.0
-    model_size_mib = model_params_b * 1e9 * 4.8 / 8 / 1024 / 1024
-    
-    gpu_bw = gpu_bandwidth_gbps
-    if "4090" in gpu_name.lower():
-        gpu_bw = min(gpu_bw, 1000)
-    elif "3090" in gpu_name.lower():
-        gpu_bw = min(gpu_bw, 600)
-    elif "4080" in gpu_name.lower():
-        gpu_bw = min(gpu_bw, 450)
-    elif "4070" in gpu_name.lower():
-        gpu_bw = min(gpu_bw, 350)
-    
-    # gpu_bw is GB/s; bytes/s / bytes-per-token -> tokens/s
-    tps = (gpu_bw * 1000) / (model_size_mib * 1024 * 1024 / 1e6) * quant_factor * layer_fraction
-    tps = min(tps, gpu_bw / model_params_b * 500 * quant_factor)
-    return max(tps, 1.0)
+    return _DECODE_BANDWIDTH_EFFICIENCY * gpu_bandwidth_gbps * 1e9 / bytes_per_token
 
 
 def _estimate_ram_spill_speed(ram_bandwidth_gbps: float, model_params_b: float, layer_fraction: float) -> float:
@@ -1052,7 +1089,7 @@ def _estimate_ram_spill_speed(ram_bandwidth_gbps: float, model_params_b: float, 
     ram_bandwidth_gbps is GB/s (bytes). Each token must stream the spilled
     fraction of the weights through host RAM (the slow path that dominates),
     so tps_ceiling = (RAM bytes/s) / (spilled model bytes per token). Weight
-    size assumes ~4.8 bits/param (Q4-class), matching _estimate_gpu_bandwidth_speed.
+    size assumes ~4.8 bits/param (Q4-class), matching _bandwidth_decode_tps.
     """
     if ram_bandwidth_gbps <= 0 or model_params_b <= 0:
         return 0.0
