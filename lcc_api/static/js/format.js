@@ -4,7 +4,7 @@ import { escapeHtml, formatBytes, formatNumber } from './util.js';
 export function fitStatusClass(status) {
   if (status === 'good') return 'ok';
   if (status === 'tight') return 'warn';
-  if (status === 'near_limit') return 'error';
+  if (status === 'near_limit' || status === 'missing') return 'error';
   return '';
 }
 
@@ -13,8 +13,19 @@ export function fitStatusLabel(status) {
     good: 'Good',
     tight: 'Tight',
     near_limit: 'Near Limit',
+    missing: 'Missing file',
     unknown: 'Unknown',
   }[status] || 'Unknown';
+}
+
+// A heuristic fit is a guess from parameter count, not a verdict; it can be off
+// by 10x on hybrid models. Mark it so the badge isn't read as a measurement.
+export function fitBadgeHtml(fit) {
+  const status = fit?.status;
+  const rough = fit?.basis === 'heuristic' && status !== 'missing';
+  const label = `${rough ? '≈ ' : ''}${fitStatusLabel(status)}`;
+  const title = rough ? ' title="Rough estimate — model header not read yet. Refresh shortly for exact figures."' : '';
+  return `<span class="badge ${fitStatusClass(status)}"${title}>${escapeHtml(label)}</span>`;
 }
 
 export function fitItem(label, value, unit = '') {

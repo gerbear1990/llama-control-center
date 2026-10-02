@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -18,7 +19,7 @@ except ImportError as exc:  # pragma: no cover - exercised by runtime import
 
 from lcc_core.benchmark import load_benchmark_results, run_profile_benchmark, send_chat_prompt
 from lcc_core.config import AppConfig
-from lcc_core.estimates import enrich_profiles_with_fit_status, estimate_memory_fit, estimate_tokens_per_second
+from lcc_core.estimates import enrich_profiles_with_fit_status, estimate_memory_fit, estimate_tokens_per_second, prewarm_gguf_meta
 from lcc_core.fit import run_fit_test
 from lcc_core.hardware import detect_system_hardware
 from lcc_core.hf_cli import detect_hf_cli as hf_cli_detect, check_for_updates
@@ -32,10 +33,30 @@ from lcc_core.profile_registry import (
 from lcc_core.profile_resolver import resolved_inventory, resolve_profiles
 from lcc_core.hf_metadata import fetch_model_info, check_model_update
 from lcc_core.manifest import ManifestReadError
+from lcc_core.models import discover_models
 from lcc_core.runtime_updates import check_runtime_updates
 from lcc_core.sampling import list_sampling_intents, suggest_sampling
 from lcc_core.server_manager import list_servers, prepare_launch_command, start_profile, stop_server
 from lcc_core.smart_tune import auto_tune_fit
+
+
+def _prewarm_headers_in_background() -> None:
+    """Read every discovered GGUF header off the request path.
+
+    The profiles list badges from cached headers only; anything uncached falls
+    back to a params-count guess. Warming here makes the list exact shortly
+    after startup or a scan instead of only after someone opens the Fit pane.
+    """
+
+    def run() -> None:
+        try:
+            config = AppConfig.load()
+            models = discover_models([Path(path) for path in config.model_dirs] or None)
+            prewarm_gguf_meta(model.path for model in models)
+        except Exception:  # pragma: no cover - prewarm is best-effort
+            pass
+
+    threading.Thread(target=run, name="lcc-gguf-prewarm", daemon=True).start()
 
 
 @asynccontextmanager
@@ -46,6 +67,7 @@ async def _lifespan(app: FastAPI):
         startup_autoscan_if_enabled()
     except Exception:  # pragma: no cover - autoscan must never break startup
         pass
+    _prewarm_headers_in_background()
     yield
 
 
@@ -739,6 +761,7 @@ def scan_profiles(request: ScanRequest = ScanRequest()) -> dict[str, Any]:
     """
     only = [request.model_path] if request.model_path else None
     result = register_discovered_models(only_paths=only)
+    _prewarm_headers_in_background()
     payload = result.to_dict()
     payload["success"] = True
     return payload

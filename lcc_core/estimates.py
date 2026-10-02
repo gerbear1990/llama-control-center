@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import math
 import os
+import threading
 import re
-from typing import Any
+from typing import Any, Iterable
 
 
 QUANT_FACTORS = {
@@ -278,6 +279,7 @@ def _extract_kv_dims(reader, arch: str | None, n_layer: int | None) -> tuple[int
 # (keyed by size+mtime) survives restarts, so a profiles refresh never re-parses.
 _GGUF_META_CACHE_FILENAME = "gguf_meta_cache.json"
 _KV_META_CACHE_VERSION = 4  # bump when kv_dims computation changes to invalidate stale entries
+_meta_cache_lock = threading.Lock()
 _gguf_meta_mem: dict[str, tuple[tuple[int, int], int | None, tuple | None, bool | None, int | None]] = {}
 
 # Substrings that, in a GGUF chat template, indicate the model was trained to emit
@@ -330,19 +332,22 @@ def _store_meta_cache(model_path: str, sig: tuple[int, int], n_layer: int | None
         return
     try:
         import json
-        data = _load_meta_cache()
-        data["_version"] = _KV_META_CACHE_VERSION
-        data[str(model_path)] = {
-            "size": sig[0],
-            "mtime": sig[1],
-            "n_layer": n_layer,
-            "kv_dims": list(kv_dims) if kv_dims else None,
-            "supports_tools": supports_tools,
-            "context_length": context_length,
-        }
-        tmp = path.with_suffix(path.suffix + ".tmp")
-        tmp.write_text(json.dumps(data), encoding="utf-8")
-        tmp.replace(path)
+        # Startup prewarm and the Fit pane can write concurrently; without the
+        # lock they race on one .tmp file and the loser's entry is dropped.
+        with _meta_cache_lock:
+            data = _load_meta_cache()
+            data["_version"] = _KV_META_CACHE_VERSION
+            data[str(model_path)] = {
+                "size": sig[0],
+                "mtime": sig[1],
+                "n_layer": n_layer,
+                "kv_dims": list(kv_dims) if kv_dims else None,
+                "supports_tools": supports_tools,
+                "context_length": context_length,
+            }
+            tmp = path.with_suffix(path.suffix + ".tmp")
+            tmp.write_text(json.dumps(data), encoding="utf-8")
+            tmp.replace(path)
     except Exception:
         pass
 
@@ -703,6 +708,7 @@ def _status_label(status: str) -> str:
         "good": "Good",
         "tight": "Tight",
         "near_limit": "Near Limit",
+        "missing": "Missing file",
         "unknown": "Unknown",
     }.get(status, "Unknown")
 
@@ -736,6 +742,9 @@ def estimate_memory_fit(
     cache_k = _cache_bytes(params.get("cache_type_k"))
     cache_v = _cache_bytes(params.get("cache_type_v"))
     kv_dims = _kv_dims(model, probe=probe_model)
+    # "exact" when KV dimensions came from the GGUF header; otherwise the KV term
+    # is a params-count guess that can be off by 10x on hybrid architectures.
+    basis = "exact" if kv_dims is not None else "heuristic"
     if kv_dims is not None:
         total_kv_heads, k_dim, v_dim = kv_dims
         k_elems = total_kv_heads * k_dim
@@ -816,6 +825,11 @@ def estimate_memory_fit(
     warnings: list[str] = []
     if not model:
         warnings.append("No matched model was available; fit estimate uses generic model assumptions.")
+    elif basis == "heuristic":
+        warnings.append(
+            "Rough estimate: the model header has not been read yet, so the KV cache "
+            "is guessed from parameter count. Refresh shortly for exact figures."
+        )
     if not accelerator_capacity_mib and layer_fraction > 0:
         warnings.append("Accelerator memory capacity is unknown, so the fit badge is approximate.")
     if host_used_mib > 512 and ram_capacity_mib is None:
@@ -834,6 +848,7 @@ def estimate_memory_fit(
     return {
         "status": status,
         "label": _status_label(status),
+        "basis": basis,
         "accelerator_status": accelerator_status,
         "ram_status": ram_status,
         "accelerator_name": accelerator_name,
@@ -870,9 +885,39 @@ def enrich_profiles_with_fit_status(
     enriched: list[dict[str, Any]] = []
     for profile in profiles:
         item = dict(profile)
-        item["fit_status"] = estimate_memory_fit(item.get("params") or {}, item.get("model"), hardware)
+        fit = estimate_memory_fit(item.get("params") or {}, item.get("model"), hardware)
+        if "model" in (item.get("missing") or []):
+            # Nothing to load, so nothing can fit: a generic-model estimate here
+            # used to render as a green Good badge.
+            fit["status"] = fit["accelerator_status"] = fit["ram_status"] = "missing"
+            fit["label"] = _status_label("missing")
+        item["fit_status"] = fit
         enriched.append(item)
     return enriched
+
+
+def prewarm_gguf_meta(paths: Iterable[str | None]) -> int:
+    """Read and cache the header of every existing GGUF in ``paths``.
+
+    The profiles list never parses headers (a cold read takes seconds), so a model
+    nobody has opened in the Fit pane would badge from a heuristic indefinitely.
+    Run this off the request path — at startup and after a scan — so the list
+    serves exact figures. Returns how many headers were read; never raises.
+    """
+    seen: set[str] = set()
+    read = 0
+    for path in paths:
+        if not path or path in seen or not str(path).lower().endswith(".gguf"):
+            continue
+        seen.add(path)
+        if not os.path.isfile(path):
+            continue
+        try:
+            _gguf_meta(str(path), parse=True)
+            read += 1
+        except Exception:
+            pass
+    return read
 
 
 def estimate_tokens_per_second(

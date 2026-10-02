@@ -12,7 +12,7 @@ import { refreshResources } from '../refresh.js';
 import { showPopupMenu } from '../menus.js';
 import { profileForModelPath, profileMatches } from '../matching.js';
 import { serverEndpoint } from '../launch.js';
-import { fitStatusClass, fitStatusLabel } from '../format.js';
+import { fitBadgeHtml } from '../format.js';
 import { confirmAction, promptProfileDetails, toast, trapTab, withBusy } from '../feedback.js';
 import { emptyStateHtml, profilesEmptyCopy } from '../copy.js';
 import { api } from '../api.js';
@@ -458,7 +458,7 @@ export function renderProfiles() {
               <div class="cell-title">${escapeHtml(profile.name || profile.mode)}</div>
               <div class="cell-subtitle">${escapeHtml(profile.mode)}</div>
             </td>
-            <td data-label="Fit"><span class="badge ${fitStatusClass(profile.fit_status?.status)}">${escapeHtml(fitStatusLabel(profile.fit_status?.status))}</span></td>
+            <td data-label="Fit">${fitBadgeHtml(profile.fit_status)}</td>
             <td data-label="Port"><code>${escapeHtml(profile.params?.port || '—')}</code></td>
             <td data-label="Status">${statusBadge(profile)}</td>
             <td data-label="Actions">
