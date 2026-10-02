@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import os
+import re
 import subprocess
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from functools import lru_cache
 from typing import Any
 
 
@@ -20,6 +23,45 @@ class LaunchCommand:
         data = asdict(self)
         data["command_line"] = self.command_line
         return data
+
+
+# Flags come from the installed binary's --help, not from the build this code
+# was written against: llama-server renames flags between builds (b11349
+# dropped --mmap/--no-mmap for --load-mode) and an unknown flag makes it exit
+# before it listens, which the UI can only report as a startup timeout.
+_HELP_FLAG_RE = re.compile(r"(?<![\w-])(--?[A-Za-z][\w-]*)")
+
+
+def _parse_help_flags(text: str) -> frozenset[str]:
+    return frozenset(_HELP_FLAG_RE.findall(text or ""))
+
+
+@lru_cache(maxsize=8)
+def _supported_flags_cached(binary: str, size: int, mtime: int) -> frozenset[str] | None:
+    try:
+        result = subprocess.run(
+            [binary, "--help"], capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    flags = _parse_help_flags((result.stdout or "") + (result.stderr or ""))
+    # A real llama-server --help lists hundreds of flags; anything sparse is
+    # not a help page we can trust to veto flags.
+    return flags if len(flags) > 50 else None
+
+
+def supported_flags(binary: str) -> frozenset[str] | None:
+    """Flags the llama-server at ``binary`` accepts, or None if unknown.
+
+    Cached per (path, size, mtime), so an in-place upgrade is picked up on the
+    next launch without restarting the dashboard.
+    """
+    try:
+        st = os.stat(binary)
+    except OSError:
+        return None
+    return _supported_flags_cached(str(binary), st.st_size, int(st.st_mtime))
 
 
 # Accepted values of llama.cpp's --spec-type. Anything else makes llama-server
@@ -119,6 +161,7 @@ def build_llama_server_args(
     if kv_warning:
         warnings.append(kv_warning)
         params = {**params, "cache_type_k": cache_k, "cache_type_v": cache_v}
+    flags = supported_flags(llama_server)
     args = [
         llama_server,
         "-m",
@@ -187,7 +230,12 @@ def build_llama_server_args(
     device = params.get("device", params.get("cuda_device"))
     if device not in (None, "", "auto"):
         args.extend(["--device", str(device)])
-    if params.get("mmap", True):
+    if flags is not None and "--load-mode" in flags and "--mmap" not in flags:
+        # --load-mode defaults to auto (mmap unless the device can't), so only
+        # opting out needs a flag.
+        if not params.get("mmap", True):
+            args.extend(["--load-mode", "none"])
+    elif params.get("mmap", True):
         args.append("--mmap")
     else:
         args.append("--no-mmap")
@@ -231,5 +279,13 @@ def build_llama_server_args(
 
     if extra_args:
         args.extend(extra_args)
+
+    if flags is not None:
+        for token in args[1:]:
+            if token.startswith("-") and not re.match(r"-\d", token) and token not in flags:
+                warnings.append(
+                    f"{token} is not recognised by this llama-server build; "
+                    "it will likely refuse to start."
+                )
 
     return LaunchCommand(argv=args, cwd=str(Path(llama_server).parent), warnings=warnings)
