@@ -1363,10 +1363,11 @@ def start_profile(
             stderr=stderr_handle,
             stdin=subprocess.DEVNULL,
             shell=False,
-            # Detach so the managed server outlives the control center: a
-            # terminal/process-group signal (Ctrl-C, systemd stop) to us must
-            # not take down the servers we track in state. setsid on POSIX,
-            # ignored on Windows (CREATE_NO_WINDOW already detaches the console).
+            # Detach from our terminal/process group so a Ctrl-C or console
+            # close aimed at the dashboard can't take down a tracked server.
+            # setsid on POSIX, ignored on Windows (CREATE_NO_WINDOW already
+            # detaches the console). `stop-lcc.py` still stops these servers on
+            # purpose (#11), so this is not "outlives the control center".
             start_new_session=True,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )

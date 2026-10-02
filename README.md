@@ -51,7 +51,9 @@ variables, not in source code.
 - Runs a benchmark against the local OpenAI-compatible chat endpoint to capture
   measured tokens/sec.
 - Starts and stops only servers tracked by this app. Started servers are detached
-  so they outlive the control center, and Stop escalates to a forced kill (POSIX
+  from the dashboard's terminal, so Ctrl-C or closing the console leaves them
+  running; `stop-lcc.py` (and `lcc stop`) deliberately stops every tracked model
+  server before the dashboard itself. Stop escalates to a forced kill (POSIX
   `SIGKILL`) if a server ignores the graceful signal.
 - Tracked server history is configurable (default 5) via Settings.
 - Hugging Face CLI widget: detect, version display, update check against PyPI,
