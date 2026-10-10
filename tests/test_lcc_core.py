@@ -569,7 +569,8 @@ class LaunchArgsTests(unittest.TestCase):
         self.assertIn("--gpu-layers", cmd.argv)
         self.assertIn("all", cmd.argv)
         self.assertIn("--model-draft", cmd.argv)
-        # Upstream only knows --draft-max, not --spec-draft-n-max.
+        # No readable --help here, so the legacy name; the b11349 rename is
+        # covered in test_flag_drift.py.
         self.assertNotIn("--spec-draft-n-max", cmd.argv)
         # --spec-type IS emitted alongside --model-draft: upstream treats the two
         # as independent, and an explicit type overrides the inference llama.cpp

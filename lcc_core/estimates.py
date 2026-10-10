@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import math
 import os
+import threading
 import re
-from typing import Any
+from typing import Any, Iterable
 
 
 QUANT_FACTORS = {
@@ -50,6 +51,11 @@ KV_FALLBACK_FACTOR = 0.012
 # model-load time — independent of model or context size. Typical 200-400 MiB on
 # NVIDIA consumer GPUs; folded into the accelerator estimate.
 _CUDA_CONTEXT_OVERHEAD_MIB = 300.0
+
+# Compute buffer of an embedded-MTP draft context. Measured, not derived:
+# llama.cpp b11349, Qwen3.8-27B, -c 65536, default batch -> "CUDA0 compute
+# buffer size = 132.02 MiB" for the draft context.
+_MTP_DRAFT_COMPUTE_MIB = 132.0
 
 # GGUF tensor name patterns that reveal n_layer. Compiled into one alternation
 # so the layer-index scan and the attention-layer scan always agree on naming,
@@ -194,11 +200,20 @@ def _extract_n_attn_layers(reader, arch: str | None, n_layer: int | None) -> int
     1. Tensor scan: count layers with explicit ``attn_k.weight`` / ``attn_v.weight``
        tensors. SSM-only layers lack these. This is ground truth.
     2. Architecture-specific interval metadata (``full_attention_interval``), for
-       files whose tensor names match no known pattern. Note this is a derived
-       shortcut: ``n_layer // interval`` cannot see an MTP/nextn layer that also
-       carries attention, which is why it is not tried first.
+       files whose tensor names match no known pattern.
     3. Fall back to ``n_layer`` (standard all-attention architecture).
+
+    MTP/nextn blocks (the last ``nextn_predict_layers``) carry attention tensors
+    but get no slot in the main KV cache -- llama.cpp b11349 logs "16 layers" for
+    Qwen3.8-27B's 17 attention-bearing blocks -- so they are excluded. With MTP
+    on they cost a draft context instead; see ``embedded_mtp_extra_mib``.
     """
+    n_nextn = _gguf_field_value(reader.get_field(f"{arch}.nextn_predict_layers")) if arch else None
+    first_nextn = (
+        n_layer - n_nextn
+        if isinstance(n_nextn, int) and n_nextn > 0 and isinstance(n_layer, int) and n_layer > n_nextn
+        else None
+    )
     attn_layers: set[int] = set()
     for tensor in reader.tensors:
         name = tensor.name
@@ -218,7 +233,7 @@ def _extract_n_attn_layers(reader, arch: str | None, n_layer: int | None) -> int
         if not is_attn:
             continue
         idx = _layer_index_from_tensor(name)
-        if idx is not None:
+        if idx is not None and (first_nextn is None or idx < first_nextn):
             attn_layers.add(idx)
     if attn_layers:
         return len(attn_layers)
@@ -226,11 +241,11 @@ def _extract_n_attn_layers(reader, arch: str | None, n_layer: int | None) -> int
     if arch:
         val = _gguf_field_value(reader.get_field(f"{arch}.full_attention_interval"))
         if isinstance(val, int) and val > 1 and isinstance(n_layer, int) and n_layer > 0:
-            result = n_layer // val
+            result = (first_nextn or n_layer) // val
             if result > 0:
                 return result
 
-    return n_layer
+    return first_nextn or n_layer
 
 
 def _extract_kv_dims(reader, arch: str | None, n_layer: int | None) -> tuple[int, int, int] | None:
@@ -277,7 +292,8 @@ def _extract_kv_dims(reader, arch: str | None, n_layer: int | None) -> tuple[int
 # the tiny result. ``_gguf_meta_mem`` caches within a process; the on-disk cache
 # (keyed by size+mtime) survives restarts, so a profiles refresh never re-parses.
 _GGUF_META_CACHE_FILENAME = "gguf_meta_cache.json"
-_KV_META_CACHE_VERSION = 4  # bump when kv_dims computation changes to invalidate stale entries
+_KV_META_CACHE_VERSION = 5  # bump when kv_dims computation changes to invalidate stale entries
+_meta_cache_lock = threading.Lock()
 _gguf_meta_mem: dict[str, tuple[tuple[int, int], int | None, tuple | None, bool | None, int | None]] = {}
 
 # Substrings that, in a GGUF chat template, indicate the model was trained to emit
@@ -330,19 +346,22 @@ def _store_meta_cache(model_path: str, sig: tuple[int, int], n_layer: int | None
         return
     try:
         import json
-        data = _load_meta_cache()
-        data["_version"] = _KV_META_CACHE_VERSION
-        data[str(model_path)] = {
-            "size": sig[0],
-            "mtime": sig[1],
-            "n_layer": n_layer,
-            "kv_dims": list(kv_dims) if kv_dims else None,
-            "supports_tools": supports_tools,
-            "context_length": context_length,
-        }
-        tmp = path.with_suffix(path.suffix + ".tmp")
-        tmp.write_text(json.dumps(data), encoding="utf-8")
-        tmp.replace(path)
+        # Startup prewarm and the Fit pane can write concurrently; without the
+        # lock they race on one .tmp file and the loser's entry is dropped.
+        with _meta_cache_lock:
+            data = _load_meta_cache()
+            data["_version"] = _KV_META_CACHE_VERSION
+            data[str(model_path)] = {
+                "size": sig[0],
+                "mtime": sig[1],
+                "n_layer": n_layer,
+                "kv_dims": list(kv_dims) if kv_dims else None,
+                "supports_tools": supports_tools,
+                "context_length": context_length,
+            }
+            tmp = path.with_suffix(path.suffix + ".tmp")
+            tmp.write_text(json.dumps(data), encoding="utf-8")
+            tmp.replace(path)
     except Exception:
         pass
 
@@ -703,8 +722,53 @@ def _status_label(status: str) -> str:
         "good": "Good",
         "tight": "Tight",
         "near_limit": "Near Limit",
+        "missing": "Missing file",
         "unknown": "Unknown",
     }.get(status, "Unknown")
+
+
+def _spec_types(params: dict[str, Any]) -> set[str]:
+    return {part.strip() for part in str(params.get("spec_type") or "").split(",") if part.strip()}
+
+
+def embedded_mtp_extra_mib(
+    params: dict[str, Any], model: dict[str, Any] | None, probe: bool = False
+) -> tuple[float | None, bool]:
+    """VRAM an embedded-MTP draft context adds: ``(mib, applies)``.
+
+    ``applies`` is True when the profile speculates with ``draft-mtp`` and no
+    separate draft file. ``mib`` is None when it applies but the header has not
+    been read (cache-only unless ``probe``) or the model has no MTP head.
+
+    Checked against b11349 on Qwen3.8-27B at -c 65536: this prices 855 MiB
+    (draft KV + recurrent copies) + 132 (draft compute); nvidia-smi measured
+    +1311. The remainder is the ~335 MiB of nextn weights the plain load skips,
+    which are already inside the file size this estimator charges.
+    """
+    if "draft-mtp" not in _spec_types(params) or str(params.get("draft_model") or "").strip():
+        return None, False
+    path = (model or {}).get("path") or (model or {}).get("model_path")
+    if not path:
+        return None, True
+    try:
+        from .truth import gguf as _truth_gguf
+        from .truth.kv import DRAFT_CACHE_DEFAULT, mtp_extra_bytes
+        facts = _truth_gguf.read_facts(path) if probe else _truth_gguf.peek_facts(path)
+        if facts is None:
+            return None, True
+        n_max = params.get("spec_draft_n_max", params.get("draft_max"))
+        extra = mtp_extra_bytes(
+            facts,
+            ctx=int(_float_or_none(params.get("ctx_size")) or 4096),
+            n_max=int(n_max) if n_max is not None else 3,  # llama-server default
+            ctk_draft=params.get("cache_type_k_draft") or DRAFT_CACHE_DEFAULT,
+            ctv_draft=params.get("cache_type_v_draft") or DRAFT_CACHE_DEFAULT,
+        )
+    except Exception:
+        return None, True
+    if extra is None:
+        return None, True
+    return extra / 1024.0 / 1024.0 + _MTP_DRAFT_COMPUTE_MIB, True
 
 
 def estimate_memory_fit(
@@ -736,6 +800,9 @@ def estimate_memory_fit(
     cache_k = _cache_bytes(params.get("cache_type_k"))
     cache_v = _cache_bytes(params.get("cache_type_v"))
     kv_dims = _kv_dims(model, probe=probe_model)
+    # "exact" when KV dimensions came from the GGUF header; otherwise the KV term
+    # is a params-count guess that can be off by 10x on hybrid architectures.
+    basis = "exact" if kv_dims is not None else "heuristic"
     if kv_dims is not None:
         total_kv_heads, k_dim, v_dim = kv_dims
         k_elems = total_kv_heads * k_dim
@@ -768,10 +835,13 @@ def estimate_memory_fit(
     if not mmap and model_size_mib:
         host_model_mib += model_size_mib * 0.35
 
+    mtp_extra_mib, mtp_applies = embedded_mtp_extra_mib(params, model, probe=probe_model)
+
     accelerator_used_mib = 0.0
     if layer_fraction > 0:
         accelerator_used_mib += accelerator_model_mib
         accelerator_used_mib += _CUDA_CONTEXT_OVERHEAD_MIB
+        accelerator_used_mib += mtp_extra_mib or 0.0
     if kv_offload and layer_fraction > 0:
         # KV lives with its layer: only the offloaded layers' share sits in VRAM.
         accelerator_used_mib += kv_cache_mib * layer_fraction
@@ -816,6 +886,16 @@ def estimate_memory_fit(
     warnings: list[str] = []
     if not model:
         warnings.append("No matched model was available; fit estimate uses generic model assumptions.")
+    elif basis == "heuristic":
+        warnings.append(
+            "Rough estimate: the model header has not been read yet, so the KV cache "
+            "is guessed from parameter count. Refresh shortly for exact figures."
+        )
+    if mtp_applies and mtp_extra_mib is None and model:
+        warnings.append(
+            "MTP speculative decoding is on, but its draft context (~1-2 GB on a 27B) "
+            "is not priced yet: the model header has not been read. Refresh shortly."
+        )
     if not accelerator_capacity_mib and layer_fraction > 0:
         warnings.append("Accelerator memory capacity is unknown, so the fit badge is approximate.")
     if host_used_mib > 512 and ram_capacity_mib is None:
@@ -834,6 +914,7 @@ def estimate_memory_fit(
     return {
         "status": status,
         "label": _status_label(status),
+        "basis": basis,
         "accelerator_status": accelerator_status,
         "ram_status": ram_status,
         "accelerator_name": accelerator_name,
@@ -849,6 +930,7 @@ def estimate_memory_fit(
             "ram_headroom_mib": _round_mib(ram_headroom_mib),
             "kv_cache_mib": _round_mib(kv_cache_mib),
             "compute_mib": _round_mib(compute_mib),
+            "spec_draft_mib": _round_mib(mtp_extra_mib),
             "target_headroom_mib": _round_mib(target_mib),
         },
         "inputs": {
@@ -870,9 +952,39 @@ def enrich_profiles_with_fit_status(
     enriched: list[dict[str, Any]] = []
     for profile in profiles:
         item = dict(profile)
-        item["fit_status"] = estimate_memory_fit(item.get("params") or {}, item.get("model"), hardware)
+        fit = estimate_memory_fit(item.get("params") or {}, item.get("model"), hardware)
+        if "model" in (item.get("missing") or []):
+            # Nothing to load, so nothing can fit: a generic-model estimate here
+            # used to render as a green Good badge.
+            fit["status"] = fit["accelerator_status"] = fit["ram_status"] = "missing"
+            fit["label"] = _status_label("missing")
+        item["fit_status"] = fit
         enriched.append(item)
     return enriched
+
+
+def prewarm_gguf_meta(paths: Iterable[str | None]) -> int:
+    """Read and cache the header of every existing GGUF in ``paths``.
+
+    The profiles list never parses headers (a cold read takes seconds), so a model
+    nobody has opened in the Fit pane would badge from a heuristic indefinitely.
+    Run this off the request path — at startup and after a scan — so the list
+    serves exact figures. Returns how many headers were read; never raises.
+    """
+    seen: set[str] = set()
+    read = 0
+    for path in paths:
+        if not path or path in seen or not str(path).lower().endswith(".gguf"):
+            continue
+        seen.add(path)
+        if not os.path.isfile(path):
+            continue
+        try:
+            _gguf_meta(str(path), parse=True)
+            read += 1
+        except Exception:
+            pass
+    return read
 
 
 def estimate_tokens_per_second(
@@ -925,15 +1037,18 @@ def estimate_tokens_per_second(
     if params.get("draft_model") and str(params.get("spec_type", "")).strip():
         batch_factor *= 1.08
 
-    # Memory bandwidth is a hard ceiling on decode speed: a token cannot be
-    # produced faster than the weights it reads can be streamed. Apply it as a
-    # cap (min), never a boost, and only trust "high" confidence when the cap
-    # actually binds — having the numbers present is not the same as using them.
+    # Fully offloaded decode is memory-bound: every token streams the weights
+    # it uses once, so tps = efficiency * bandwidth / bytes-per-token. That is a
+    # physical model, not a cap on the curve fit above, and it is what we report
+    # whenever the bandwidth and the model's size are known.
     bandwidth_bound = False
+    moe_fraction = None
     if layer_fraction >= 1.0 and gpu_bandwidth_gbps and gpu_bandwidth_gbps > 0:
-        ceiling = _estimate_gpu_bandwidth_speed(gpu_bandwidth_gbps, gpu_name, model_params_b, quant_factor, layer_fraction)
-        if ceiling > 0 and ceiling < blended:
-            blended = ceiling
+        moe_fraction = _moe_active_fraction(model)
+        physical = _bandwidth_decode_tps(gpu_bandwidth_gbps, model, model_params_b, moe_fraction)
+        if physical > 0:
+            blended = physical
+            ctx_factor = batch_factor = 1.0
             bandwidth_bound = True
     if layer_fraction < 1.0 and ram_bandwidth_gbps and ram_bandwidth_gbps > 0:
         ceiling = _estimate_ram_spill_speed(ram_bandwidth_gbps, model_params_b, layer_fraction)
@@ -942,14 +1057,14 @@ def estimate_tokens_per_second(
             bandwidth_bound = True
 
     estimate = max(0.5, blended * ctx_factor * batch_factor)
-    if bandwidth_bound and model:
+    if bandwidth_bound and model and moe_fraction is None:
         confidence = "high"
     elif model and primary_gpu:
         confidence = "medium"
     else:
         confidence = "low"
-    low = estimate * (0.82 if confidence == "high" else 0.72 if confidence == "medium" else 0.55)
-    high = estimate * (1.18 if confidence == "high" else 1.28 if confidence == "medium" else 1.55)
+    low = estimate * (0.88 if confidence == "high" else 0.72 if confidence == "medium" else 0.55)
+    high = estimate * (1.12 if confidence == "high" else 1.28 if confidence == "medium" else 1.55)
 
     assumptions = [
         "Estimate is for decode speed after the prompt is processed.",
@@ -961,7 +1076,12 @@ def estimate_tokens_per_second(
         if ram_bandwidth_gbps:
             assumptions.append(f"System RAM bandwidth detected: {ram_bandwidth_gbps} GB/s.")
     if bandwidth_bound:
-        assumptions.append("Estimate is capped by measured memory bandwidth (decode is bandwidth-bound).")
+        assumptions.append("Decode is bandwidth-bound: estimate is memory bandwidth / bytes read per token.")
+    if moe_fraction is not None:
+        assumptions.append(
+            f"Mixture-of-experts: ~{moe_fraction:.0%} of the weights are read per token; "
+            "shared and attention weights make the real share somewhat higher."
+        )
     if layer_fraction < 1:
         assumptions.append("Partial GPU layers usually means more system RAM traffic and lower speed.")
     if not params.get("kv_offload", True):
@@ -979,26 +1099,55 @@ def estimate_tokens_per_second(
     }
 
 
-def _estimate_gpu_bandwidth_speed(gpu_bandwidth_gbps: float, gpu_name: str, model_params_b: float, quant_factor: float, layer_fraction: float) -> float:
-    """Estimate TPS based on GPU memory bandwidth bound."""
-    if model_params_b <= 0:
+# Fraction of peak VRAM bandwidth llama.cpp's decode kernels actually achieve.
+# Calibrated 2026-10-02 on an RTX 5090 (1792 GB/s): Qwen3.8-27B UD-Q5_K_XL,
+# 20.9 GB, decoded at 51.6-59.7 t/s through LCC -> 0.60-0.70.
+_DECODE_BANDWIDTH_EFFICIENCY = 0.66
+
+_ACTIVE_PARAMS_RE = re.compile(r"(?i)(?:^|[-_.\s])a(\d+(?:\.\d+)?)b(?:$|[-_.\s])")
+
+
+def _active_fraction_from_name(name: str, params_b: float | None) -> float | None:
+    """Active-parameter share from the MoE naming convention ("35B-A3B")."""
+    match = _ACTIVE_PARAMS_RE.search(name or "")
+    if not match or not params_b:
+        return None
+    active = float(match.group(1))
+    return active / params_b if 0 < active < params_b else None
+
+
+def _moe_active_fraction(model: dict[str, Any] | None) -> float | None:
+    """Share of the weights a MoE model reads per token, or None if dense."""
+    if not model:
+        return None
+    text = " ".join(str(model.get(key) or "") for key in ("name", "path"))
+    from_name = _active_fraction_from_name(text, _model_params_b(model))
+    if from_name:
+        return from_name
+    path = model.get("path") or model.get("model_path")
+    if not path or not str(path).lower().endswith(".gguf") or not os.path.isfile(path):
+        return None
+    try:
+        from .truth.gguf import read_facts
+        facts = read_facts(str(path))
+    except Exception:
+        return None
+    if facts.n_experts and facts.n_experts_used:
+        return facts.n_experts_used / facts.n_experts
+    return None
+
+
+def _bandwidth_decode_tps(gpu_bandwidth_gbps: float, model: dict[str, Any] | None,
+                          model_params_b: float, moe_fraction: float | None) -> float:
+    """Decode t/s when every layer is on the GPU: bandwidth / bytes per token."""
+    size_bytes = _float_or_none((model or {}).get("size_bytes"))
+    if not size_bytes:
+        # No file size: assume a Q4-class file (~4.8 bits per weight).
+        size_bytes = model_params_b * 1e9 * 4.8 / 8
+    bytes_per_token = size_bytes * (moe_fraction or 1.0)
+    if bytes_per_token <= 0:
         return 0.0
-    model_size_mib = model_params_b * 1e9 * 4.8 / 8 / 1024 / 1024
-    
-    gpu_bw = gpu_bandwidth_gbps
-    if "4090" in gpu_name.lower():
-        gpu_bw = min(gpu_bw, 1000)
-    elif "3090" in gpu_name.lower():
-        gpu_bw = min(gpu_bw, 600)
-    elif "4080" in gpu_name.lower():
-        gpu_bw = min(gpu_bw, 450)
-    elif "4070" in gpu_name.lower():
-        gpu_bw = min(gpu_bw, 350)
-    
-    # gpu_bw is GB/s; bytes/s / bytes-per-token -> tokens/s
-    tps = (gpu_bw * 1000) / (model_size_mib * 1024 * 1024 / 1e6) * quant_factor * layer_fraction
-    tps = min(tps, gpu_bw / model_params_b * 500 * quant_factor)
-    return max(tps, 1.0)
+    return _DECODE_BANDWIDTH_EFFICIENCY * gpu_bandwidth_gbps * 1e9 / bytes_per_token
 
 
 def _estimate_ram_spill_speed(ram_bandwidth_gbps: float, model_params_b: float, layer_fraction: float) -> float:
@@ -1007,7 +1156,7 @@ def _estimate_ram_spill_speed(ram_bandwidth_gbps: float, model_params_b: float, 
     ram_bandwidth_gbps is GB/s (bytes). Each token must stream the spilled
     fraction of the weights through host RAM (the slow path that dominates),
     so tps_ceiling = (RAM bytes/s) / (spilled model bytes per token). Weight
-    size assumes ~4.8 bits/param (Q4-class), matching _estimate_gpu_bandwidth_speed.
+    size assumes ~4.8 bits/param (Q4-class), matching _bandwidth_decode_tps.
     """
     if ram_bandwidth_gbps <= 0 or model_params_b <= 0:
         return 0.0

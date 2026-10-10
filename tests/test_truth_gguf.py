@@ -148,12 +148,15 @@ ORNITH = Path(r"C:\Users\filth\models\Ornith-1.5-35B-A3B-GGUF\Ornith-1.5-35B-A3B
 
 @pytest.mark.skipif(not ORNITH.exists(), reason="model not present on this machine")
 def test_golden_ornith():
-    """Hand-verified against the GGUF header on 2026-08-21."""
+    """Hand-verified against the GGUF header on 2026-08-21; KV layers corrected
+    2026-10-10 against llama.cpp b11349's own allocation ("10 layers", RS 62.81 MiB
+    = 30 SSM layers). Block 40 is the nextn/MTP block: no main KV slot."""
     facts = read_facts(ORNITH)
     assert facts.arch == "qwen35moe"
     assert facts.n_layers == 41
-    assert facts.attn_layer_indices == (3, 7, 11, 15, 19, 23, 27, 31, 35, 39, 40)
-    assert facts.total_kv_heads == 22
+    assert facts.n_nextn_layers == 1
+    assert facts.attn_layer_indices == (3, 7, 11, 15, 19, 23, 27, 31, 35, 39)
+    assert facts.total_kv_heads == 20
     assert facts.k_len == 256 and facts.v_len == 256
     assert facts.native_ctx == 262144
     assert facts.n_experts == 256 and facts.n_experts_used == 8
@@ -229,3 +232,17 @@ def test_read_facts_remote_bounds_the_read(tmp_path, monkeypatch):
     assert facts == read_facts(path)
     assert calls == [len(data)]
     assert calls[0] is not None
+
+
+def test_nextn_block_is_not_a_kv_layer(tmp_path):
+    # Its attn_k/attn_v tensors exist, but llama.cpp gives it no main KV slot.
+    path = write_minimal_gguf(
+        tmp_path / "mtp.gguf",
+        arch="qwen35moe", n_layer=41, attn_layers=[3, 7, 11, 15, 19, 23, 27, 31, 35, 39, 40],
+        n_kv_heads=2, k_len=256, v_len=256,
+        extra_kv={"nextn_predict_layers": 1},
+    )
+    facts = read_facts(path)
+    assert facts.n_nextn_layers == 1 and facts.has_mtp
+    assert 40 not in facts.attn_layer_indices
+    assert facts.n_attn_layers == 10 and facts.n_ssm_layers == 30

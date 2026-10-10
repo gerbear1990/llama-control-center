@@ -7,6 +7,86 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-10-10
+
+### Added
+- **Embedded-MTP models speculate out of the box.** A GGUF that carries its own
+  multi-token-prediction head (Qwen3.5/3.6/3.8, `blk.N.nextn.*`) now registers
+  with `spec_type: draft-mtp` and `spec_draft_n_max: 4`, with no draft file.
+  Measured on Qwen3.8-27B UD-Q5_K_XL, RTX 5090, llama.cpp b11349, temperature 0
+  and token-identical output:
+
+  | config | VRAM | prose / code / recall / copy t/s |
+  |---|---|---|
+  | no speculation, 64k | 23.9 GB | 61 / 60 / 58 / 59 |
+  | separate `mtp-*.gguf` draft, 64k | 27.0 GB | 87 / 151 / 165 / 173 |
+  | embedded head, 64k | 25.2 GB | 88 / 154 / 169 / 176 |
+  | embedded head, 131k | 28.1 GB | 90 / 152 / 165 / 175 |
+  | embedded head, 262k | 32.0 GB | 17 / 30 / 34 / 39 (VRAM thrash) |
+
+  ([profile_registry.py](lcc_core/profile_registry.py))
+- **The fit badge prices speculative decoding.** For `draft-mtp` on an embedded
+  head, the estimate adds the draft context llama.cpp builds: the nextn layers'
+  KV at the draft cache type (`-ctkd`, f16 by default whatever `-ctk` says),
+  one recurrent-state copy per drafted token, and the draft compute buffer.
+  That is ~1.0 GB at 64k and ~1.2 GB at 131k on Qwen3.8-27B, shown as
+  `spec_draft_mib`. Smart Fit reserves the same amount through `-fitt`, since
+  `llama-fit-params` rejects `--spec-type` and can't see the draft at all. A
+  cold header gives a warning, not a guess.
+  ([estimates.py](lcc_core/estimates.py), [truth/kv.py](lcc_core/truth/kv.py))
+- **Launch flags follow the installed llama-server.** The argument builder reads
+  the binary's `--help` (cached per path, size and mtime, so an in-place
+  upgrade is picked up on the next launch) and warns in Prepare/Start about any
+  flag the binary doesn't list. Unreadable help falls back to legacy flags.
+  ([llama_args.py](lcc_core/llama_args.py))
+- **Startup header prewarm.** Every discovered GGUF header is read in a
+  background thread at startup and after a scan, so profile badges turn exact
+  without opening the Fit pane.
+
+### Fixed
+- **Every launch failed on llama.cpp b11349.** That build replaced
+  `--mmap`/`--no-mmap` with `--load-mode` and turned `--draft-max`/`--draft-min`
+  into hard errors ("the argument has been removed"). LCC still emitted the old
+  names, and the UI could only report a startup timeout. It now emits
+  `--load-mode none` and `--spec-draft-n-max`/`--spec-draft-n-min` when the
+  binary lists them. The old draft names still appear in `--help` on the
+  "removed" line, so only the new name is tested. Draft tuning now also reaches
+  embedded-head profiles, which have no `--model-draft`. This supersedes
+  0.17.0's "Invalid speculative-decoding flags" entry, which named
+  `--draft-max` as correct.
+- **The KV estimate over-counted every Qwen3.5+ model by one layer.** The
+  MTP/nextn block carries attention tensors, but llama.cpp gives it no
+  main-cache slot: b11349 allocates "16 layers" for Qwen3.8-27B's 17
+  attention-bearing blocks, and "10 layers" for Ornith-1.5-35B-A3B's 11. Both
+  estimators counted it, a 6–10% KV over-count, and a test asserted it as a
+  fix. KV figures now match llama.cpp's own allocation exactly at
+  64k/131k/262k. Header caches are versioned up, so stale entries re-read.
+- **Fit badges presented guesses as verdicts.** On a cold header cache the
+  profiles list fell back to a parameter-count KV guess and badged it plainly:
+  Qwen3.8-27B at 131k read "Near Limit, 45.6 GB" cold and "Good, 24.2 GB" warm,
+  against 22.7 GB measured. The fit result now carries `basis: exact |
+  heuristic`, and heuristic badges render as "≈ Good" with a tooltip. Profiles
+  whose model file is gone read **Missing file** instead of "Good". Concurrent
+  meta-cache writes from the prewarm and the Fit pane no longer race on one
+  `.tmp` file.
+- **The metrics panel was empty for every server LCC launched.** llama-server's
+  `/metrics` is off by default and LCC never passed `--metrics`, so it returned
+  501. On top of that, the alias table matched only 3 of the 15 exported names,
+  and context length was read from `total_slots` (it showed 4). The panel now
+  reads the current names, says "Metrics: Off" when the endpoint doesn't answer,
+  and shows "N busy of M" when only the busy count is exported.
+- **VRAM bandwidth was wrong for 14 of 24 GPUs checked.** An RTX 5090 read
+  672 GB/s (real: 1792) because nvidia-smi's memory clock was taken as the data
+  rate. The name table is now an ordered spec table that returns nothing when
+  unsure. Fully offloaded decode speed is modelled physically, as efficiency ×
+  bandwidth ÷ bytes per token, using the real file size and the MoE active
+  share. Qwen3.8-27B now estimates 56.7 t/s, against 58–61 measured.
+- **Draft heads were registered as standalone models.** `dflash-kquant.gguf`
+  (a DFlash head) became a third same-named "Muse-Glimmer" profile, badged Good
+  at 5.9 GB. Draft-family prefixes (`dflash-`, `dspark-`, `eagle3-` …) are now
+  companions, and so is any GGUF whose architecture is a draft head, whatever
+  its name.
+
 ## [0.17.0] - 2026-09-03
 
 ### Added

@@ -40,6 +40,8 @@ MANIFEST_PARAM_KEYS = (
     "cache_ram_mib",
     "cache_reuse",
     "slot_prompt_similarity",
+    "spec_type",
+    "spec_draft_n_max",
 )
 
 
@@ -66,26 +68,54 @@ def normalize_model_path(value: str) -> str:
     return _norm_path(value)
 
 
+# GGUF architectures that are speculative-decoding heads, never standalone
+# models. The header is the reliable signal: draft files are named freely
+# (``dflash-kquant.gguf`` slipped past the name rule and became a profile).
+_DRAFT_ARCHES = frozenset({"dflash", "dspark", "eagle", "eagle3", "medusa", "mtp"})
+_DRAFT_NAME_PREFIX_RE = re.compile(r"(?:mtp|draft|dflash|dspark|eagle3?)[-_.]")
+
+
+def _gguf_arch(model_path: str) -> str | None:
+    """``general.architecture`` via the memoized, disk-cached truth reader."""
+    try:
+        from .truth.gguf import read_facts
+        return read_facts(model_path).arch
+    except Exception:
+        return None
+
+
+def _has_builtin_mtp(model_path: str) -> bool:
+    """True when the GGUF carries its own multi-token-prediction head."""
+    try:
+        from .truth.gguf import read_facts
+        return bool(read_facts(model_path).has_mtp)
+    except Exception:
+        return False
+
+
 def _is_draft_model(model_path: str) -> bool:
-    """Heuristically detect speculative/draft companion models.
+    """Detect speculative/draft companion models.
 
     These are consumed via a profile's ``draft_model`` parameter and must
     not be registered as standalone server profiles. A path segment of
-    ``mtp`` / ``draft``, a ``mtp-`` / ``draft-`` filename prefix, or a
-    ``-draft-`` token is a companion. ``-MTP-`` in the middle of a product
-    name (e.g. NVFP4-MTP-Q8attn) is not.
+    ``mtp`` / ``draft``, a draft-family filename prefix (``mtp-``, ``draft-``,
+    ``dflash-``, ``eagle3-`` ...), or a ``-draft-`` token is a companion, as is
+    any GGUF whose architecture is a draft head. ``-MTP-`` in the middle of a
+    product name (e.g. NVFP4-MTP-Q8attn) is not.
     """
     path = Path(model_path)
     parts = {segment.lower() for segment in path.parts[:-1]}
     if "mtp" in parts or "draft" in parts:
         return True
     name = path.name.lower()
-    if re.match(r"(?:mtp|draft)[-_.]", name):
+    if _DRAFT_NAME_PREFIX_RE.match(name):
         return True
     if re.search(r"[-_.]draft[-_.]", name) or re.search(r"[-_.]draft\.gguf$", name):
         return True
     if re.search(r"[-_.]mtp\.gguf$", name):
         return True
+    if name.endswith(".gguf") and path.is_file():
+        return (_gguf_arch(str(path)) or "").lower() in _DRAFT_ARCHES
     return False
 
 
@@ -117,6 +147,14 @@ def _default_params_for_model(model: dict[str, Any], config: AppConfig) -> dict[
         "reasoning": False,
     }
     params.update(_autotune_params_from_size(model, params))
+    if model.get("path") and _has_builtin_mtp(str(model["path"])):
+        # Embedded MTP head (Qwen3.5+): speculate with no draft file. Measured
+        # 2026-10-10 on Qwen3.8-27B, RTX 5090, b11349: 1.45x prose, 2.6x code,
+        # 2.9x copy/recall over no-spec, output token-identical at temp 0, and
+        # +1.3 GB VRAM vs +3.1 GB for the separate mtp-*.gguf. n-max 4 was
+        # the best acceptance trade-off on both MTP models benched here.
+        params["spec_type"] = "draft-mtp"
+        params["spec_draft_n_max"] = 4
     return params
 
 
