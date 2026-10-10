@@ -115,3 +115,38 @@ def breakdown(facts: ArchFacts, *, weights_bytes: int, ctx: int,
     total = weights_bytes + mmproj_bytes + kv_bytes + ssm
     return Breakdown(weights_bytes, mmproj_bytes, kv_bytes, ssm, total,
                      per_token, "computed")
+
+
+# Draft-context KV defaults to f16 whatever -ctk/-ctv say: llama-server takes
+# the draft's types from -ctkd/-ctvd ("default: f16").
+DRAFT_CACHE_DEFAULT = "f16"
+
+
+def mtp_extra_bytes(facts: ArchFacts, *, ctx: int, n_max: int = 3,
+                    ctk_draft: str | None = DRAFT_CACHE_DEFAULT,
+                    ctv_draft: str | None = DRAFT_CACHE_DEFAULT) -> int | None:
+    """Resident bytes that ``--spec-type draft-mtp`` adds on an embedded head.
+
+    Two terms, both from llama.cpp b11349's own allocation log for Qwen3.8-27B
+    at -c 65536 (no MTP -> MTP):
+
+    * draft KV: the nextn layers' attention, in a context of their own at the
+      draft cache type -- "256.00 MiB (65536 cells, 1 layers) K (f16)".
+    * recurrent state: one extra copy per drafted position, so verification can
+      roll back -- RS buffer 149.62 -> 748.12 MiB with n_max 4 (5x).
+
+    Excludes the draft compute buffer (measured, see estimates) and the nextn
+    weights, which are part of the file and so already in its size. None when
+    the model has no MTP head or its KV dims are unknown.
+    """
+    n_nextn = facts.n_nextn_layers or 0
+    if not facts.has_mtp or n_nextn <= 0 or not facts.n_attn_layers:
+        return None
+    if facts.total_kv_heads is None or facts.k_len is None or facts.v_len is None:
+        return None
+    heads_per_layer = facts.total_kv_heads / facts.n_attn_layers
+    per_token = n_nextn * heads_per_layer * (
+        facts.k_len * cache_bytes_per_elem(ctk_draft)
+        + facts.v_len * cache_bytes_per_elem(ctv_draft)
+    )
+    return int(round(per_token * int(ctx))) + ssm_state_bytes(facts) * max(0, int(n_max))

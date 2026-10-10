@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import math
 import re
 import shlex
 import subprocess
 from pathlib import Path
 from typing import Any
 
-from .estimates import estimate_tokens_per_second
+from .estimates import embedded_mtp_extra_mib, estimate_tokens_per_second
 from .hardware import detect_system_hardware
 from .llama_args import normalize_gpu_layers
 from .server_manager import prepare_launch_command
@@ -99,9 +100,10 @@ def build_fit_args(fit_binary: str, model_path: str, params: dict[str, Any], tar
 
     Speculative decoding, deliberately (issue #14 follow-up):
 
-    - **Embedded MTP** (Qwen3.5/3.6/3.8) needs nothing here. The MTP head lives
-      inside the same GGUF passed as ``-m``, so llama-fit-params already reads
-      those tensors and prices them. They are not "dead capacity".
+    - **Embedded MTP** (Qwen3.5/3.6/3.8): llama-fit-params rejects --spec-type
+      (b11349: "invalid argument"), so it never sees the draft context -- ~1.3 GB
+      at 64k on Qwen3.8-27B (draft KV, recurrent-state copies, draft compute).
+      It is reserved by raising ``-fitt`` by the same amount instead.
     - **A separate draft model** is NOT priced. ``draft_model`` is never passed
       through, so for a profile using a companion file the estimate under-counts
       by roughly the whole draft model. Tracked in the ROADMAP backlog; fixing it
@@ -111,6 +113,9 @@ def build_fit_args(fit_binary: str, model_path: str, params: dict[str, Any], tar
     if gpu_layers is None:
         gpu_layers = 999
     gpu_layers_arg = "-2" if gpu_layers >= 999 else str(gpu_layers)
+    mtp_extra_mib, _ = embedded_mtp_extra_mib(params, {"path": model_path}, probe=True)
+    if mtp_extra_mib:
+        target_mib = int(target_mib) + int(math.ceil(mtp_extra_mib))
     args = [
         fit_binary,
         "-m",

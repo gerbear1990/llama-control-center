@@ -48,6 +48,7 @@ class ArchFacts:
     n_experts: int
     n_experts_used: int
     has_mtp: bool
+    n_nextn_layers: int
     needs_mmproj: bool
     ssm_conv_kernel: int | None
     ssm_state_size: int | None
@@ -63,7 +64,8 @@ class ArchFacts:
     def n_ssm_layers(self) -> int:
         if self.n_layers is None:
             return 0
-        return max(0, self.n_layers - self.n_attn_layers)
+        # nextn blocks are neither: no main KV slot, no recurrent state.
+        return max(0, self.n_layers - (self.n_nextn_layers or 0) - self.n_attn_layers)
 
     @property
     def is_hybrid(self) -> bool:
@@ -129,6 +131,12 @@ def _facts_from_kv_and_tensors(meta: dict, tensor_names: list[str]) -> ArchFacts
     arch = arch if isinstance(arch, str) and arch else None
 
     n_layers = _int(meta, f"{arch}.block_count") if arch else None
+    # MTP/nextn layers are the last ``nextn_predict_layers`` blocks. llama.cpp
+    # gives them no slot in the main KV cache (b11349 logs "16 layers" for
+    # Qwen3.8-27B's 17 attention-bearing blocks); with MTP on they get their own
+    # draft context instead -- see kv.mtp_extra_bytes.
+    n_nextn = (_int(meta, f"{arch}.nextn_predict_layers") or 0) if arch else 0
+    first_nextn = n_layers - n_nextn if n_layers and n_nextn else None
 
     attn: set[int] = set()
     has_mtp = False
@@ -140,7 +148,7 @@ def _facts_from_kv_and_tensors(meta: dict, tensor_names: list[str]) -> ArchFacts
             needs_mmproj = True
         if _is_attn_tensor(name):
             idx = _layer_index(name)
-            if idx is not None:
+            if idx is not None and (first_nextn is None or idx < first_nextn):
                 attn.add(idx)
 
     if arch and meta.get(f"{arch}.rope.dimension_sections") is not None:
@@ -150,10 +158,10 @@ def _facts_from_kv_and_tensors(meta: dict, tensor_names: list[str]) -> ArchFacts
     if not attn and arch and n_layers:
         interval = _int(meta, f"{arch}.full_attention_interval")
         if interval and interval > 1:
-            attn = set(range(interval - 1, n_layers, interval))
+            attn = set(range(interval - 1, first_nextn or n_layers, interval))
             source = "interval-metadata"
         else:
-            attn = set(range(n_layers))
+            attn = set(range(first_nextn or n_layers))
             source = "assumed-dense"
 
     indices = tuple(sorted(attn))
@@ -178,7 +186,8 @@ def _facts_from_kv_and_tensors(meta: dict, tensor_names: list[str]) -> ArchFacts
         native_ctx=_int(meta, f"{arch}.context_length") if arch else None,
         n_experts=(_int(meta, f"{arch}.expert_count") or 0) if arch else 0,
         n_experts_used=(_int(meta, f"{arch}.expert_used_count") or 0) if arch else 0,
-        has_mtp=has_mtp or bool(arch and _int(meta, f"{arch}.nextn_predict_layers")),
+        has_mtp=has_mtp or bool(n_nextn),
+        n_nextn_layers=n_nextn,
         needs_mmproj=needs_mmproj,
         ssm_conv_kernel=_int(meta, f"{arch}.ssm.conv_kernel") if arch else None,
         ssm_state_size=_int(meta, f"{arch}.ssm.state_size") if arch else None,
@@ -201,7 +210,7 @@ _facts_memo: dict[str, tuple[tuple[int, int], ArchFacts]] = {}
 # restart (~5.5s measured on a real file) -- the in-process memo above only
 # helps within one process's lifetime.
 _FACTS_CACHE_FILENAME = "truth_facts_cache.json"
-_FACTS_CACHE_VERSION = 1  # bump when ArchFacts's fields change
+_FACTS_CACHE_VERSION = 2  # bump when ArchFacts's fields change
 
 _ARCHFACTS_FIELDS = tuple(ArchFacts.__dataclass_fields__)
 
@@ -262,6 +271,30 @@ def _store_facts_cache(key: str, sig: tuple[int, int], facts: ArchFacts) -> None
         tmp.replace(path)
     except Exception:
         pass
+
+
+def peek_facts(path: Path | str) -> ArchFacts | None:
+    """``read_facts`` from the memo or disk cache only; None on a miss.
+
+    For fast paths (the profiles-list badge) that must never pay a cold header
+    read. Never raises.
+    """
+    key = str(path)
+    sig = _signature(key)
+    if sig is None:
+        return None
+    cached = _facts_memo.get(key)
+    if cached is not None and cached[0] == sig:
+        return cached[1]
+    disk_entry = _load_facts_cache().get(key)
+    if disk_entry and disk_entry.get("size") == sig[0] and disk_entry.get("mtime") == sig[1]:
+        try:
+            facts = _facts_from_cache_entry(disk_entry)
+        except Exception:
+            return None
+        _facts_memo[key] = (sig, facts)
+        return facts
+    return None
 
 
 def read_facts(path: Path | str) -> ArchFacts:

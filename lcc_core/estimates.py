@@ -52,6 +52,11 @@ KV_FALLBACK_FACTOR = 0.012
 # NVIDIA consumer GPUs; folded into the accelerator estimate.
 _CUDA_CONTEXT_OVERHEAD_MIB = 300.0
 
+# Compute buffer of an embedded-MTP draft context. Measured, not derived:
+# llama.cpp b11349, Qwen3.8-27B, -c 65536, default batch -> "CUDA0 compute
+# buffer size = 132.02 MiB" for the draft context.
+_MTP_DRAFT_COMPUTE_MIB = 132.0
+
 # GGUF tensor name patterns that reveal n_layer. Compiled into one alternation
 # so the layer-index scan and the attention-layer scan always agree on naming,
 # covering blk.N / block.N / model.layers.N / transformer.layer.N / h[N].
@@ -195,11 +200,20 @@ def _extract_n_attn_layers(reader, arch: str | None, n_layer: int | None) -> int
     1. Tensor scan: count layers with explicit ``attn_k.weight`` / ``attn_v.weight``
        tensors. SSM-only layers lack these. This is ground truth.
     2. Architecture-specific interval metadata (``full_attention_interval``), for
-       files whose tensor names match no known pattern. Note this is a derived
-       shortcut: ``n_layer // interval`` cannot see an MTP/nextn layer that also
-       carries attention, which is why it is not tried first.
+       files whose tensor names match no known pattern.
     3. Fall back to ``n_layer`` (standard all-attention architecture).
+
+    MTP/nextn blocks (the last ``nextn_predict_layers``) carry attention tensors
+    but get no slot in the main KV cache -- llama.cpp b11349 logs "16 layers" for
+    Qwen3.8-27B's 17 attention-bearing blocks -- so they are excluded. With MTP
+    on they cost a draft context instead; see ``embedded_mtp_extra_mib``.
     """
+    n_nextn = _gguf_field_value(reader.get_field(f"{arch}.nextn_predict_layers")) if arch else None
+    first_nextn = (
+        n_layer - n_nextn
+        if isinstance(n_nextn, int) and n_nextn > 0 and isinstance(n_layer, int) and n_layer > n_nextn
+        else None
+    )
     attn_layers: set[int] = set()
     for tensor in reader.tensors:
         name = tensor.name
@@ -219,7 +233,7 @@ def _extract_n_attn_layers(reader, arch: str | None, n_layer: int | None) -> int
         if not is_attn:
             continue
         idx = _layer_index_from_tensor(name)
-        if idx is not None:
+        if idx is not None and (first_nextn is None or idx < first_nextn):
             attn_layers.add(idx)
     if attn_layers:
         return len(attn_layers)
@@ -227,11 +241,11 @@ def _extract_n_attn_layers(reader, arch: str | None, n_layer: int | None) -> int
     if arch:
         val = _gguf_field_value(reader.get_field(f"{arch}.full_attention_interval"))
         if isinstance(val, int) and val > 1 and isinstance(n_layer, int) and n_layer > 0:
-            result = n_layer // val
+            result = (first_nextn or n_layer) // val
             if result > 0:
                 return result
 
-    return n_layer
+    return first_nextn or n_layer
 
 
 def _extract_kv_dims(reader, arch: str | None, n_layer: int | None) -> tuple[int, int, int] | None:
@@ -278,7 +292,7 @@ def _extract_kv_dims(reader, arch: str | None, n_layer: int | None) -> tuple[int
 # the tiny result. ``_gguf_meta_mem`` caches within a process; the on-disk cache
 # (keyed by size+mtime) survives restarts, so a profiles refresh never re-parses.
 _GGUF_META_CACHE_FILENAME = "gguf_meta_cache.json"
-_KV_META_CACHE_VERSION = 4  # bump when kv_dims computation changes to invalidate stale entries
+_KV_META_CACHE_VERSION = 5  # bump when kv_dims computation changes to invalidate stale entries
 _meta_cache_lock = threading.Lock()
 _gguf_meta_mem: dict[str, tuple[tuple[int, int], int | None, tuple | None, bool | None, int | None]] = {}
 
@@ -713,6 +727,50 @@ def _status_label(status: str) -> str:
     }.get(status, "Unknown")
 
 
+def _spec_types(params: dict[str, Any]) -> set[str]:
+    return {part.strip() for part in str(params.get("spec_type") or "").split(",") if part.strip()}
+
+
+def embedded_mtp_extra_mib(
+    params: dict[str, Any], model: dict[str, Any] | None, probe: bool = False
+) -> tuple[float | None, bool]:
+    """VRAM an embedded-MTP draft context adds: ``(mib, applies)``.
+
+    ``applies`` is True when the profile speculates with ``draft-mtp`` and no
+    separate draft file. ``mib`` is None when it applies but the header has not
+    been read (cache-only unless ``probe``) or the model has no MTP head.
+
+    Checked against b11349 on Qwen3.8-27B at -c 65536: this prices 855 MiB
+    (draft KV + recurrent copies) + 132 (draft compute); nvidia-smi measured
+    +1311. The remainder is the ~335 MiB of nextn weights the plain load skips,
+    which are already inside the file size this estimator charges.
+    """
+    if "draft-mtp" not in _spec_types(params) or str(params.get("draft_model") or "").strip():
+        return None, False
+    path = (model or {}).get("path") or (model or {}).get("model_path")
+    if not path:
+        return None, True
+    try:
+        from .truth import gguf as _truth_gguf
+        from .truth.kv import DRAFT_CACHE_DEFAULT, mtp_extra_bytes
+        facts = _truth_gguf.read_facts(path) if probe else _truth_gguf.peek_facts(path)
+        if facts is None:
+            return None, True
+        n_max = params.get("spec_draft_n_max", params.get("draft_max"))
+        extra = mtp_extra_bytes(
+            facts,
+            ctx=int(_float_or_none(params.get("ctx_size")) or 4096),
+            n_max=int(n_max) if n_max is not None else 3,  # llama-server default
+            ctk_draft=params.get("cache_type_k_draft") or DRAFT_CACHE_DEFAULT,
+            ctv_draft=params.get("cache_type_v_draft") or DRAFT_CACHE_DEFAULT,
+        )
+    except Exception:
+        return None, True
+    if extra is None:
+        return None, True
+    return extra / 1024.0 / 1024.0 + _MTP_DRAFT_COMPUTE_MIB, True
+
+
 def estimate_memory_fit(
     params: dict[str, Any],
     model: dict[str, Any] | None = None,
@@ -777,10 +835,13 @@ def estimate_memory_fit(
     if not mmap and model_size_mib:
         host_model_mib += model_size_mib * 0.35
 
+    mtp_extra_mib, mtp_applies = embedded_mtp_extra_mib(params, model, probe=probe_model)
+
     accelerator_used_mib = 0.0
     if layer_fraction > 0:
         accelerator_used_mib += accelerator_model_mib
         accelerator_used_mib += _CUDA_CONTEXT_OVERHEAD_MIB
+        accelerator_used_mib += mtp_extra_mib or 0.0
     if kv_offload and layer_fraction > 0:
         # KV lives with its layer: only the offloaded layers' share sits in VRAM.
         accelerator_used_mib += kv_cache_mib * layer_fraction
@@ -830,6 +891,11 @@ def estimate_memory_fit(
             "Rough estimate: the model header has not been read yet, so the KV cache "
             "is guessed from parameter count. Refresh shortly for exact figures."
         )
+    if mtp_applies and mtp_extra_mib is None and model:
+        warnings.append(
+            "MTP speculative decoding is on, but its draft context (~1-2 GB on a 27B) "
+            "is not priced yet: the model header has not been read. Refresh shortly."
+        )
     if not accelerator_capacity_mib and layer_fraction > 0:
         warnings.append("Accelerator memory capacity is unknown, so the fit badge is approximate.")
     if host_used_mib > 512 and ram_capacity_mib is None:
@@ -864,6 +930,7 @@ def estimate_memory_fit(
             "ram_headroom_mib": _round_mib(ram_headroom_mib),
             "kv_cache_mib": _round_mib(kv_cache_mib),
             "compute_mib": _round_mib(compute_mib),
+            "spec_draft_mib": _round_mib(mtp_extra_mib),
             "target_headroom_mib": _round_mib(target_mib),
         },
         "inputs": {
