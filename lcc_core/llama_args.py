@@ -246,13 +246,20 @@ def build_llama_server_args(
     spec_type = str(params.get("spec_type", "")).strip()
     if draft_model:
         args.extend(["--model-draft", draft_model])
-        # spec_draft_n_max is a legacy manifest key; upstream only knows
-        # --draft-max (aliases --draft/--draft-n).
+    # Draft tuning applies to embedded heads too (draft-mtp with no draft file),
+    # so it follows any draft-* type, not just a --model-draft.
+    if draft_model or any(part.strip().startswith("draft-") for part in spec_type.split(",")):
+        # b11349 renamed --draft-max/--draft-min to --spec-draft-n-max/-n-min and
+        # made the old names hard errors. The old names still appear in --help
+        # (as "has been removed"), so test for the new name, never the old one.
+        # Unknown help falls back to legacy names, like --mmap above.
+        modern = flags is not None and "--spec-draft-n-max" in flags
         draft_max = params.get("spec_draft_n_max", params.get("draft_max"))
         if draft_max is not None:
-            args.extend(["--draft-max", str(draft_max)])
-        if "draft_min" in params:
-            args.extend(["--draft-min", str(params["draft_min"])])
+            args.extend(["--spec-draft-n-max" if modern else "--draft-max", str(draft_max)])
+        draft_min = params.get("spec_draft_n_min", params.get("draft_min"))
+        if draft_min is not None:
+            args.extend(["--spec-draft-n-min" if modern else "--draft-min", str(draft_min)])
         if "draft_p_min" in params:
             args.extend(["--draft-p-min", str(params["draft_p_min"])])
     if spec_type:

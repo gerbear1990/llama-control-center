@@ -40,6 +40,8 @@ MANIFEST_PARAM_KEYS = (
     "cache_ram_mib",
     "cache_reuse",
     "slot_prompt_similarity",
+    "spec_type",
+    "spec_draft_n_max",
 )
 
 
@@ -80,6 +82,15 @@ def _gguf_arch(model_path: str) -> str | None:
         return read_facts(model_path).arch
     except Exception:
         return None
+
+
+def _has_builtin_mtp(model_path: str) -> bool:
+    """True when the GGUF carries its own multi-token-prediction head."""
+    try:
+        from .truth.gguf import read_facts
+        return bool(read_facts(model_path).has_mtp)
+    except Exception:
+        return False
 
 
 def _is_draft_model(model_path: str) -> bool:
@@ -136,6 +147,14 @@ def _default_params_for_model(model: dict[str, Any], config: AppConfig) -> dict[
         "reasoning": False,
     }
     params.update(_autotune_params_from_size(model, params))
+    if model.get("path") and _has_builtin_mtp(str(model["path"])):
+        # Embedded MTP head (Qwen3.5+): speculate with no draft file. Measured
+        # 2026-10-10 on Qwen3.8-27B, RTX 5090, b11349: 1.45x prose, 2.6x code,
+        # 2.9x copy/recall over no-spec, output token-identical at temp 0, and
+        # +1.3 GB VRAM vs +3.1 GB for the separate mtp-*.gguf. n-max 4 was
+        # the best acceptance trade-off on both MTP models benched here.
+        params["spec_type"] = "draft-mtp"
+        params["spec_draft_n_max"] = 4
     return params
 
 

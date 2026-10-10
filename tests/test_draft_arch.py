@@ -37,3 +37,24 @@ def test_unreadable_header_falls_back_to_the_name(monkeypatch, tmp_path):
     model.write_bytes(b"x")
     monkeypatch.setattr(profile_registry, "_gguf_arch", lambda path: None)
     assert not _is_draft_model(str(model))
+
+
+def _defaults(monkeypatch, has_mtp):
+    from lcc_core.config import AppConfig
+    monkeypatch.setattr(profile_registry, "_has_builtin_mtp", lambda path: has_mtp)
+    return profile_registry._default_params_for_model({"path": "m.gguf", "params_b": 27}, AppConfig())
+
+
+def test_embedded_mtp_model_is_registered_speculating(monkeypatch):
+    # Item F of the 2026-10-02 audit: a Qwen3.8 GGUF carries blk.64.nextn.*, so
+    # a fresh profile should speculate out of the box, with no draft file.
+    params = _defaults(monkeypatch, True)
+    assert params["spec_type"] == "draft-mtp"
+    assert params["spec_draft_n_max"] == 4
+    assert "draft_model" not in params
+    manifest = profile_registry._manifest_params(params)
+    assert manifest["spec_type"] == "draft-mtp" and manifest["spec_draft_n_max"] == 4
+
+
+def test_model_without_mtp_head_gets_no_spec_type(monkeypatch):
+    assert "spec_type" not in _defaults(monkeypatch, False)
