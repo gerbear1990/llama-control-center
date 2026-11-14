@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import os
+from pathlib import Path
 import threading
 import re
 from typing import Any, Iterable
@@ -771,6 +772,74 @@ def embedded_mtp_extra_mib(
     return extra / 1024.0 / 1024.0 + _MTP_DRAFT_COMPUTE_MIB, True
 
 
+def mmproj_size_mib(params: dict[str, Any], model: dict[str, Any] | None = None) -> float | None:
+    """Resolve the vision projector (mmproj) file size in MiB, if present."""
+    mmproj_bytes = _float_or_none((model or {}).get("mmproj_bytes"))
+    if mmproj_bytes and mmproj_bytes > 0:
+        return mmproj_bytes / 1024.0 / 1024.0
+    mmproj_path = (
+        params.get("mmproj")
+        or params.get("mmproj_path")
+        or (model or {}).get("mmproj_path")
+    )
+    if not mmproj_path:
+        return None
+    try:
+        resolved = Path(str(mmproj_path).strip()).expanduser()
+        if not resolved.is_file():
+            return None
+        size = resolved.stat().st_size
+    except OSError:
+        return None
+    return size / 1024.0 / 1024.0 if size > 0 else None
+
+
+def separate_draft_extra_mib(
+    params: dict[str, Any], probe: bool = False
+) -> tuple[float | None, bool, bool]:
+    """VRAM a separate ``draft_model`` file adds: ``(mib, applies, kv_priced)``.
+
+    Charges the draft GGUF file size + its KV cache at ``-ctkd``/``-ctvd``
+    (f16 default) + draft compute buffer. Returns ``(None, True, False)`` when
+    ``draft_model`` is set but the file cannot be read on disk.
+    """
+    draft_raw = str(params.get("draft_model") or "").strip()
+    if not draft_raw:
+        return None, False, False
+    draft_path = Path(draft_raw).expanduser()
+    try:
+        if not draft_path.is_file():
+            return None, True, False
+        size_bytes = draft_path.stat().st_size
+    except OSError:
+        return None, True, False
+    if size_bytes <= 0:
+        return None, True, False
+
+    total_mib = size_bytes / 1024.0 / 1024.0 + _MTP_DRAFT_COMPUTE_MIB
+    kv_priced = False
+    try:
+        from .truth import gguf as _truth_gguf
+        from .truth.kv import DRAFT_CACHE_DEFAULT, kv_bytes_per_token, ssm_state_bytes
+
+        facts = (
+            _truth_gguf.read_facts(str(draft_path))
+            if probe
+            else _truth_gguf.peek_facts(str(draft_path))
+        )
+        if facts is not None:
+            ctx = int(_float_or_none(params.get("ctx_size")) or 4096)
+            ctk_draft = params.get("cache_type_k_draft") or DRAFT_CACHE_DEFAULT
+            ctv_draft = params.get("cache_type_v_draft") or DRAFT_CACHE_DEFAULT
+            per_tok = kv_bytes_per_token(facts, ctk_draft, ctv_draft)
+            if per_tok is not None:
+                total_mib += (per_tok * ctx + ssm_state_bytes(facts)) / 1024.0 / 1024.0
+                kv_priced = True
+    except Exception:
+        pass
+    return total_mib, True, kv_priced
+
+
 def estimate_memory_fit(
     params: dict[str, Any],
     model: dict[str, Any] | None = None,
@@ -825,23 +894,31 @@ def estimate_memory_fit(
         except Exception:
             pass
 
-    compute_mib = 420.0 + min(batch, 4096.0) * 0.28 + min(ubatch, 2048.0) * 0.18
+    compute_mib = 180.0 + min(batch, 4096.0) * 0.28 + min(ubatch, 2048.0) * 0.18
     if params.get("flash_attn", True):
         compute_mib *= 0.86
-    compute_mib += min(ctx, 262144.0) / 262144.0 * 320.0
+    compute_mib += min(ctx, 262144.0) / 262144.0 * 160.0
 
+    mmproj_mib = mmproj_size_mib(params, model) or 0.0
     accelerator_model_mib = model_size_mib * layer_fraction * 1.035
     host_model_mib = model_size_mib * (1.0 - layer_fraction) * 1.05
     if not mmap and model_size_mib:
         host_model_mib += model_size_mib * 0.35
 
     mtp_extra_mib, mtp_applies = embedded_mtp_extra_mib(params, model, probe=probe_model)
+    draft_extra_mib, draft_applies, draft_kv_priced = separate_draft_extra_mib(params, probe=probe_model)
+    spec_draft_mib = (
+        (mtp_extra_mib or 0.0) + (draft_extra_mib or 0.0)
+        if (mtp_extra_mib is not None or draft_extra_mib is not None)
+        else None
+    )
 
     accelerator_used_mib = 0.0
     if layer_fraction > 0:
         accelerator_used_mib += accelerator_model_mib
+        accelerator_used_mib += mmproj_mib
         accelerator_used_mib += _CUDA_CONTEXT_OVERHEAD_MIB
-        accelerator_used_mib += mtp_extra_mib or 0.0
+        accelerator_used_mib += spec_draft_mib or 0.0
     if kv_offload and layer_fraction > 0:
         # KV lives with its layer: only the offloaded layers' share sits in VRAM.
         accelerator_used_mib += kv_cache_mib * layer_fraction
@@ -851,6 +928,9 @@ def estimate_memory_fit(
         accelerator_used_mib += compute_mib * 0.35
 
     host_used_mib = host_model_mib
+    if layer_fraction <= 0:
+        host_used_mib += mmproj_mib
+        host_used_mib += spec_draft_mib or 0.0
     if not kv_offload or layer_fraction <= 0:
         host_used_mib += kv_cache_mib
     elif layer_fraction < 1.0:
@@ -896,6 +976,14 @@ def estimate_memory_fit(
             "MTP speculative decoding is on, but its draft context (~1-2 GB on a 27B) "
             "is not priced yet: the model header has not been read. Refresh shortly."
         )
+    if draft_applies and draft_extra_mib is None:
+        warnings.append(
+            "Separate draft model is configured, but its file could not be read for VRAM pricing."
+        )
+    elif draft_applies and not draft_kv_priced:
+        warnings.append(
+            "Separate draft model KV cache is not priced yet: its GGUF header has not been read. Refresh shortly."
+        )
     if not accelerator_capacity_mib and layer_fraction > 0:
         warnings.append("Accelerator memory capacity is unknown, so the fit badge is approximate.")
     if host_used_mib > 512 and ram_capacity_mib is None:
@@ -930,7 +1018,8 @@ def estimate_memory_fit(
             "ram_headroom_mib": _round_mib(ram_headroom_mib),
             "kv_cache_mib": _round_mib(kv_cache_mib),
             "compute_mib": _round_mib(compute_mib),
-            "spec_draft_mib": _round_mib(mtp_extra_mib),
+            "mmproj_mib": _round_mib(mmproj_mib) if mmproj_mib > 0 else None,
+            "spec_draft_mib": _round_mib(spec_draft_mib),
             "target_headroom_mib": _round_mib(target_mib),
         },
         "inputs": {
