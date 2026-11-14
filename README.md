@@ -4,7 +4,7 @@
 > runtimes, preparing `llama.cpp` launch commands, running fit tests, and managing
 > tracked local inference servers.
 
-**v0.18.0** — Embedded-MTP models (Qwen3.5+) speculate out of the box: ~1.45x prose, ~2.6x code and ~2.9x copy/recall on an RTX 5090, full speed to 131k context, and the fit badge now prices the draft context. Launches work again on llama.cpp b11349+, and KV estimates match llama.cpp's own allocation. See [CHANGELOG.md](./CHANGELOG.md) for details.
+**v0.18.1** — Fit badge and Smart Fit now price vision projectors (`mmproj`) and separate draft models (`draft_model`), and the compute-buffer estimate is calibrated to `llama.cpp` b11349. See [CHANGELOG.md](./CHANGELOG.md) for details.
 
 The app is designed to be portable: paths live in user settings or environment
 variables, not in source code.

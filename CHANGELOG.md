@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.1] - 2026-11-14
+
+### Fixed
+- **Fit badge and Smart Fit price vision projectors (`mmproj`).** `estimate_memory_fit` and `fit.build_fit_args` now resolve `mmproj_bytes` / `mmproj` / `mmproj_path` (verifying regular files in an OS-agnostic way) and charge the projector to VRAM when GPU-offloaded or RAM when `gpu_layers <= 0` (#20).
+- **Compute-buffer term calibrated to `llama.cpp` b11349.** Reduced the legacy compute-buffer estimate in `estimate_memory_fit` (`180 + ... + 160 * ctx/262144`, ~397 MiB at `-c 65536` with Flash Attention), eliminating the ~240 MiB+ over-estimate against `sched_reserve: compute buffer size` (#21).
+- **Separate `draft_model` pricing in badge and Smart Fit.** Added `separate_draft_extra_mib` to price a separate draft GGUF's file size, its KV/SSM cache at `-ctkd`/`-ctvd` (`f16` default), and its draft compute buffer (`132 MiB`), reserving it via `-fitt` in `build_fit_args` and warning when the draft file is unreadable or its header is cold (#22).
+
 ## [0.18.0] - 2026-10-10
 
 ### Added
