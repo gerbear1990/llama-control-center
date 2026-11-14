@@ -772,7 +772,7 @@ def embedded_mtp_extra_mib(
     return extra / 1024.0 / 1024.0 + _MTP_DRAFT_COMPUTE_MIB, True
 
 
-def _mmproj_size_mib(params: dict[str, Any], model: dict[str, Any] | None) -> float | None:
+def mmproj_size_mib(params: dict[str, Any], model: dict[str, Any] | None = None) -> float | None:
     """Resolve the vision projector (mmproj) file size in MiB, if present."""
     mmproj_bytes = _float_or_none((model or {}).get("mmproj_bytes"))
     if mmproj_bytes and mmproj_bytes > 0:
@@ -899,7 +899,7 @@ def estimate_memory_fit(
         compute_mib *= 0.86
     compute_mib += min(ctx, 262144.0) / 262144.0 * 160.0
 
-    mmproj_mib = _mmproj_size_mib(params, model) or 0.0
+    mmproj_mib = mmproj_size_mib(params, model) or 0.0
     accelerator_model_mib = model_size_mib * layer_fraction * 1.035
     host_model_mib = model_size_mib * (1.0 - layer_fraction) * 1.05
     if not mmap and model_size_mib:

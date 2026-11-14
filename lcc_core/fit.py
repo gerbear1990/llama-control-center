@@ -7,7 +7,12 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from .estimates import embedded_mtp_extra_mib, estimate_tokens_per_second, separate_draft_extra_mib
+from .estimates import (
+    embedded_mtp_extra_mib,
+    estimate_tokens_per_second,
+    mmproj_size_mib,
+    separate_draft_extra_mib,
+)
 from .hardware import detect_system_hardware
 from .llama_args import normalize_gpu_layers
 from .server_manager import prepare_launch_command
@@ -95,10 +100,16 @@ FIT_APPLY_KEYS = {
 }
 
 
-def build_fit_args(fit_binary: str, model_path: str, params: dict[str, Any], target_mib: int = 1024) -> list[str]:
+def build_fit_args(
+    fit_binary: str,
+    model_path: str,
+    params: dict[str, Any],
+    target_mib: int = 1024,
+    model: dict[str, Any] | None = None,
+) -> list[str]:
     """Build the llama-fit-params argv for a profile.
 
-    Speculative decoding, deliberately (issue #14 follow-up):
+    Speculative decoding & vision projectors, deliberately (issues #14, #20, #22):
 
     - **Embedded MTP** (Qwen3.5/3.6/3.8): llama-fit-params rejects --spec-type
       (b11349: "invalid argument"), so it never sees the draft context -- ~1.3 GB
@@ -107,6 +118,8 @@ def build_fit_args(fit_binary: str, model_path: str, params: dict[str, Any], tar
     - **A separate draft model** is also reserved in ``-fitt``:
       ``llama-fit-params`` does not accept ``--model-draft``, so we price the
       draft file + its KV + draft compute and raise ``-fitt`` by that amount.
+    - **A vision projector (``mmproj``)** is reserved in ``-fitt`` when present
+      on ``model`` or ``params`` and offloaded to GPU (``gpu_layers > 0``).
     """
     gpu_layers = normalize_gpu_layers(params.get("gpu_layers"))
     if gpu_layers is None:
@@ -119,6 +132,9 @@ def build_fit_args(fit_binary: str, model_path: str, params: dict[str, Any], tar
         draft_extra_mib, _, _ = separate_draft_extra_mib(params, probe=True)
         if draft_extra_mib:
             target_mib = int(target_mib) + int(math.ceil(draft_extra_mib))
+        mmproj_mib = mmproj_size_mib(params, model)
+        if mmproj_mib:
+            target_mib = int(target_mib) + int(math.ceil(mmproj_mib))
     args = [
         fit_binary,
         "-m",
@@ -317,8 +333,9 @@ def run_fit_test(
     if not fit_binary or not Path(fit_binary).is_file():
         return {"success": False, "error": "llama-fit-params was not found.", "prepared": prepared}
 
-    model_path = prepared["profile"]["model"]["path"]
-    args = build_fit_args(fit_binary, model_path, prepared["params"], target_mib)
+    model = prepared["profile"]["model"]
+    model_path = model["path"]
+    args = build_fit_args(fit_binary, model_path, prepared["params"], target_mib, model=model)
     cwd = str(Path(fit_binary).parent)
     try:
         result = subprocess.run(

@@ -62,6 +62,22 @@ def test_mmproj_file_is_charged_to_vram(monkeypatch, tmp_path):
     )["estimated"]
     assert via_bytes["mmproj_mib"] == 50
 
+    # Smart Fit reserves mmproj in -fitt when gpu_layers > 0.
+    fit_with_model = build_fit_args(
+        "llama-fit-params", "main.gguf", BASE_PARAMS, target_mib=1024,
+        model={**BASE_MODEL, "mmproj_path": str(mmproj_file)},
+    )
+    assert fit_with_model[fit_with_model.index("-fitt") + 1] == str(1024 + 100)
+    fit_with_param = build_fit_args(
+        "llama-fit-params", "main.gguf", {**BASE_PARAMS, "mmproj": str(mmproj_file)}, target_mib=1024,
+    )
+    assert fit_with_param[fit_with_param.index("-fitt") + 1] == str(1024 + 100)
+    fit_cpu = build_fit_args(
+        "llama-fit-params", "main.gguf", {**BASE_PARAMS, "gpu_layers": 0}, target_mib=1024,
+        model={**BASE_MODEL, "mmproj_path": str(mmproj_file)},
+    )
+    assert fit_cpu[fit_cpu.index("-fitt") + 1] == "1024"
+
 
 def test_mmproj_cpu_only_charges_ram(monkeypatch, tmp_path):
     _warm_main(monkeypatch)
